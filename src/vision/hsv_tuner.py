@@ -20,6 +20,8 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent
 sys.path.insert(0, str(src_path))
 
+from vision.privacy_utils import request_camera_consent, safe_file_path
+
 
 class HSVTuner:
     """Interaktivt verktøy for å tune HSV-verdier"""
@@ -135,8 +137,16 @@ class HSVTuner:
         """Lagrer verdier til fil"""
         filename = "hsv_calibration.txt"
         
+        # Sikkerhetskontroll: Valider filnavn
+        if not safe_file_path(filename, ['.txt']):
+            print("❌ FEIL: Ugyldig filnavn")
+            return
+        
         try:
-            with open(filename, 'w', encoding='utf-8') as f:
+            # Bruk Path for sikker filhåndtering
+            output_path = Path.cwd() / filename
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
                 f.write("HSV KALIBRERINGSVERDIER\n")
                 f.write("="*70 + "\n\n")
                 
@@ -151,13 +161,21 @@ class HSVTuner:
                     f.write(f"  upper = np.array([{ranges['h_max']}, {ranges['s_max']}, {ranges['v_max']}])\n")
                     f.write("\n" + "-"*70 + "\n\n")
             
-            print(f"✓ Verdier lagret til {filename}")
+            print(f"✓ Verdier lagret til {output_path}")
         
         except Exception as e:
-            print(f"FEIL ved lagring: {e}")
+            print(f"❌ FEIL ved lagring. Prøv igjen.")
+            # Log detaljert feil for debugging
+            import logging
+            logging.error(f"Lagringsfeil: {e}")
     
     def run(self):
         """Hovedløkke"""
+        # GDPR: Be om samtykke før kamerabruk
+        if not request_camera_consent():
+            print("\n❌ Kamerasamtykke ikke gitt. Avslutter.")
+            return
+        
         # Åpne kamera
         self.cap = cv2.VideoCapture(self.camera_index)
         

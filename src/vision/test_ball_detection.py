@@ -35,6 +35,11 @@ from vision.ball_detection import (
     BallColor,
     DetectedBall
 )
+from vision.privacy_utils import (
+    request_camera_consent,
+    get_validated_float_input,
+    validate_camera_index
+)
 
 
 class BallDetectionTester:
@@ -59,7 +64,12 @@ class BallDetectionTester:
         
     def initialize_camera(self):
         """Åpner og konfigurerer kameraet"""
-        print(f"Åpner kamera {self.camera_index}...")
+        # GDPR: Be om samtykke før kamerabruk
+        if not request_camera_consent():
+            print("\n❌ Kamerasamtykke ikke gitt. Avslutter.")
+            return False
+        
+        print(f"\nÅpner kamera {self.camera_index}...")
         self.cap = cv2.VideoCapture(self.camera_index)
         
         if not self.cap.isOpened():
@@ -145,18 +155,19 @@ class BallDetectionTester:
         print("2. Skriv inn avstanden i cm nedenfor")
         print()
         
+        # Bruk sikker input-validering
+        distance = get_validated_float_input(
+            "Avstand til ball (cm)",
+            min_value=5.0,
+            max_value=500.0,
+            allow_cancel=True
+        )
+        
+        if distance is None:
+            print("Kalibrering avbrutt")
+            return
+        
         try:
-            distance_str = input("Avstand til ball (cm), eller 'avbryt': ")
-            
-            if distance_str.lower() in ['avbryt', 'cancel', 'q']:
-                print("Kalibrering avbrutt")
-                return
-            
-            distance = float(distance_str)
-            
-            if distance <= 0:
-                print("FEIL: Avstand må være positiv")
-                return
             
             # Utfør kalibrering
             self.detector.calibrate_camera(distance, ball.radius * 2)
@@ -164,10 +175,11 @@ class BallDetectionTester:
             print(f"  Brennvidde: {self.detector.camera_focal_length:.2f} piksler")
             print()
             
-        except ValueError:
-            print("FEIL: Ugyldig input")
         except Exception as e:
-            print(f"FEIL under kalibrering: {e}")
+            print(f"❌ FEIL under kalibrering. Prøv igjen.")
+            # Log detaljert feil for debugging (ikke vis til bruker)
+            import logging
+            logging.error(f"Kalibreringsfeil: {e}")
     
     def print_controls(self):
         """Skriver ut kontroller"""
