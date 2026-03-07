@@ -23,6 +23,19 @@ from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+try:
+    from vision.lighting_adaptation import (
+        AdaptiveLightingHandler,
+        LightingCondition,
+        apply_clahe,
+        apply_gamma_correction,
+        auto_adjust_brightness
+    )
+    LIGHTING_ADAPTATION_AVAILABLE = True
+except ImportError:
+    LIGHTING_ADAPTATION_AVAILABLE = False
+    print("INFO: Lighting adaptation module ikke tilgjengelig. Kjører i basic modus.")
+
 
 class BallColor(Enum):
     """Enum for ballfarger som skal detekteres"""
@@ -83,7 +96,9 @@ class BallDetector:
                  min_circularity: float = 0.7,
                  known_ball_diameter_cm: float = 7.0,
                  camera_focal_length: Optional[float] = None,
-                 max_detections_per_frame: int = 50):
+                 max_detections_per_frame: int = 50,
+                 enable_adaptive_lighting: bool = True,
+                 enable_preprocessing: bool = False):
         """
         Initialiserer balldetektoren med konfigurerbare parametere.
         
@@ -94,6 +109,8 @@ class BallDetector:
             known_ball_diameter_cm: Kjent diameter på ballene i cm (for avstandsestimering)
             camera_focal_length: Kameraets brennvidde i piksler (kalibrert verdi)
             max_detections_per_frame: Maksimum antall deteksjoner per frame (sikkerhetsbegrensning)
+            enable_adaptive_lighting: Aktiver adaptiv lyshåndtering (anbefalt)
+            enable_preprocessing: Aktiver CLAHE preprocessing (nyttig ved dårlig lys)
         """
         self.min_radius = min_radius
         self.max_radius = max_radius
@@ -101,6 +118,8 @@ class BallDetector:
         self.known_ball_diameter_cm = known_ball_diameter_cm
         self.camera_focal_length = camera_focal_length
         self.max_detections_per_frame = max_detections_per_frame
+        self.enable_adaptive_lighting = enable_adaptive_lighting and LIGHTING_ADAPTATION_AVAILABLE
+        self.enable_preprocessing = enable_preprocessing
         
         # HSV-grenser for fargedeteksjon
         # Disse verdiene er optimalisert for typiske baller under normalt innendørslys
@@ -124,6 +143,14 @@ class BallDetector:
         # Statistikk for debugging/evaluering
         self.frame_count = 0
         self.detection_stats = {'red': 0, 'blue': 0, 'total_frames': 0}
+        
+        # Adaptiv lyshåndtering
+        if self.enable_adaptive_lighting:
+            self.lighting_handler = AdaptiveLightingHandler()
+            self.current_lighting_condition = LightingCondition.UNKNOWN
+        else:
+            self.lighting_handler = None
+            self.current_lighting_condition = None
     
     def calibrate_camera(self, calibration_distance_cm: float, measured_diameter_px: float):
         """
@@ -178,6 +205,9 @@ class BallDetector:
         En maske er et svart-hvitt bilde hvor hvite piksler representerer
         områder som matcher ønsket farge.
         
+        Hvis adaptiv lyshåndtering er aktivert, brukes dynamiske HSV-grenser
+        basert på detekterte lysforhold.
+        
         Args:
             hsv_image: Bildet i HSV-fargerom
             color: Fargen vi skal detektere
@@ -187,11 +217,27 @@ class BallDetector:
         """
         if color == BallColor.RED:
             # For rød: kombiner to masker (lav og høy rød)
-            mask1 = cv2.inRange(hsv_image, self.red_lower_1, self.red_upper_1)
-            mask2 = cv2.inRange(hsv_image, self.red_lower_2, self.red_upper_2)
+            if self.enable_adaptive_lighting and self.lighting_handler:
+                # Bruk adaptive grenser
+                lower1, upper1 = self.lighting_handler.get_adaptive_hsv_ranges('red_low')
+                lower2, upper2 = self.lighting_handler.get_adaptive_hsv_ranges('red_high')
+            else:
+                # Bruk statiske grenser
+                lower1, upper1 = self.red_lower_1, self.red_upper_1
+                lower2, upper2 = self.red_lower_2, self.red_upper_2
+            
+            mask1 = cv2.inRange(hsv_image, lower1, upper1)
+            mask2 = cv2.inRange(hsv_image, lower2, upper2)
             mask = cv2.bitwise_or(mask1, mask2)
         elif color == BallColor.BLUE:
-            mask = cv2.inRange(hsv_image, self.blue_lower, self.blue_upper)
+            if self.enable_adaptive_lighting and self.lighting_handler:
+                # Bruk adaptive grenser
+                lower, upper = self.lighting_handler.get_adaptive_hsv_ranges('blue')
+            else:
+                # Bruk statiske grenser
+                lower, upper = self.blue_lower, self.blue_upper
+            
+            mask = cv2.inRange(hsv_image, lower, upper)
         else:
             raise ValueError(f"Ugyldig farge: {color}")
         
@@ -301,11 +347,13 @@ class BallDetector:
         Den håndterer hele deteksjonspipelinen fra start til slutt.
         
         Prosess:
-        1. Konverter fra BGR (OpenCV standard) til HSV
-        2. Lag fargemasker for rød og blå
-        3. Finn konturer i hver maske
-        4. Filtrer og valider konturer
-        5. Returner liste med detekterte baller
+        0. Analyser lysforhold (hvis adaptiv modus)
+        1. Preprocessing (CLAHE hvis aktivert)
+        2. Konverter fra BGR (OpenCV standard) til HSV
+        3. Lag fargemasker for rød og blå (adaptive hvis aktivert)
+        4. Finn konturer i hver maske
+        5. Filtrer og valider konturer
+        6. Returner liste med detekterte baller
         
         Args:
             frame: Input-bilde i BGR-format (OpenCV standard)
@@ -319,7 +367,21 @@ class BallDetector:
         self.frame_count += 1
         self.detection_stats['total_frames'] += 1
         
-        # Konverter til HSV fargerom
+        # Steg 0: Analyser lysforhold (hvis adaptiv modus)
+        if self.enable_adaptive_lighting and self.lighting_handler:
+            condition, metrics = self.lighting_handler.analyze_lighting(frame)
+            self.current_lighting_condition = condition
+            
+            # Debug: Skriv ut lysinfo hver 100. frame
+            if self.frame_count % 100 == 0:
+                print(f"Lysforhold: {condition.value}, Brightness: {metrics['mean_brightness']:.1f}")
+        
+        # Steg 1: Preprocessing (hvis aktivert)
+        if self.enable_preprocessing:
+            # CLAHE er nyttig ved dårlig lys eller ujevn belysning
+            frame = apply_clahe(frame, clip_limit=2.0)
+        
+        # Steg 2: Konverter til HSV fargerom
         # HSV er mye bedre for fargedeteksjon enn BGR/RGB
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
@@ -417,6 +479,11 @@ class BallDetector:
                 f"Frame: {self.frame_count}"
             ]
             
+            # Legg til lysforhold hvis adaptiv modus
+            if self.enable_adaptive_lighting and self.current_lighting_condition:
+                lighting_text = f"Lys: {self.current_lighting_condition.value}"
+                stats_text.append(lighting_text)
+            
             for i, text in enumerate(stats_text):
                 cv2.putText(output, text, (10, 30 + i * 25),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -431,6 +498,22 @@ class BallDetector:
             Dictionary med statistikk over antall deteksjoner
         """
         return self.detection_stats.copy()
+    
+    def get_lighting_info(self) -> Optional[Dict]:
+        """
+        Returnerer informasjon om nåværende lysforhold.
+        
+        Returns:
+            Dictionary med lysinfo, eller None hvis adaptiv modus er av
+        """
+        if not self.enable_adaptive_lighting or not self.lighting_handler:
+            return None
+        
+        return {
+            'condition': self.current_lighting_condition,
+            'adaptive_enabled': self.enable_adaptive_lighting,
+            'preprocessing_enabled': self.enable_preprocessing
+        }
     
     def adjust_color_range(self, 
                           color: BallColor,
@@ -464,7 +547,8 @@ class BallDetector:
             print(f"Oppdatert blå fargeområde: {lower} til {upper}")
 
 
-def create_default_detector() -> BallDetector:
+def create_default_detector(enable_adaptive_lighting: bool = True, 
+                           enable_preprocessing: bool = False) -> BallDetector:
     """
     Factory-funksjon for å lage en detektor med standardinnstillinger.
     
@@ -475,15 +559,22 @@ def create_default_detector() -> BallDetector:
     - Avstand til baller
     - Lysforhold
     
+    Args:
+        enable_adaptive_lighting: Aktiver adaptiv lyshåndtering (ANBEFALT for varierende lys)
+        enable_preprocessing: Aktiver CLAHE preprocessing (nyttig ved dårlig lys)
+    
     Returns:
         Konfigurert BallDetector-instans
     """
     return BallDetector(
-        min_radius=10,           # Minimum 10 piksler radius
-        max_radius=150,          # Maksimum 150 piksler radius
-        min_circularity=0.7,     # Må være minst 70% sirkulær
-        known_ball_diameter_cm=7.0,  # Antatt 7cm diameter (juster til faktisk størrelse)
-        camera_focal_length=None     # Må kalibreres senere
+        min_radius=10,                          # Minimum 10 piksler radius
+        max_radius=150,                         # Maksimum 150 piksler radius
+        min_circularity=0.7,                    # Må være minst 70% sirkulær
+        known_ball_diameter_cm=7.0,             # Antatt 7cm diameter (juster til faktisk størrelse)
+        camera_focal_length=None,               # Må kalibreres senere
+        max_detections_per_frame=50,            # Sikkerhetsbegrensning
+        enable_adaptive_lighting=enable_adaptive_lighting,
+        enable_preprocessing=enable_preprocessing
     )
 
 
@@ -533,9 +624,10 @@ if __name__ == "__main__":
         elif key == ord('c') and len(balls) > 0:
             # Enkel kalibrering: bruk første detekterte ball
             ball = balls[0]
-            print(f"\nDetektert ball: radius={ball.radius:.1f}px")
+            print(f"\nDetektert ball: radius={ball.radius:.1f}px, diameter={ball.radius * 2:.1f}px")
+            print("Instruksjon: Mål nøyaktig avstand fra kamera til ball i cm")
             try:
-                distance_str = input("Skriv inn faktisk avstand til ballen i cm (eller 'avbryt'): ")
+                distance_str = input("Avstand (cm) eller 'avbryt': ")
                 if distance_str.lower() in ['avbryt', 'cancel', 'q']:
                     print("Kalibrering avbrutt")
                     continue
@@ -545,9 +637,9 @@ if __name__ == "__main__":
                     continue
                 detector.calibrate_camera(distance, ball.radius * 2)
             except ValueError:
-                print("❌ FEIL: Ugyldig input")
-            except Exception:
-                print("❌ FEIL: Kalibrering feilet")
+                print("❌ FEIL: Ugyldig tallverdi")
+            except (ZeroDivisionError, ArithmeticError) as e:
+                print("❌ FEIL: Kunne ikke beregne kalibreringsverdi")
     
     # Rydd opp
     cap.release()
