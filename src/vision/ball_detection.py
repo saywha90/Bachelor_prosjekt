@@ -82,7 +82,8 @@ class BallDetector:
                  max_radius: int = 150,
                  min_circularity: float = 0.7,
                  known_ball_diameter_cm: float = 7.0,
-                 camera_focal_length: Optional[float] = None):
+                 camera_focal_length: Optional[float] = None,
+                 max_detections_per_frame: int = 50):
         """
         Initialiserer balldetektoren med konfigurerbare parametere.
         
@@ -92,12 +93,14 @@ class BallDetector:
             min_circularity: Minimum sirkulærhet (0.0-1.0), høyere = strengere
             known_ball_diameter_cm: Kjent diameter på ballene i cm (for avstandsestimering)
             camera_focal_length: Kameraets brennvidde i piksler (kalibrert verdi)
+            max_detections_per_frame: Maksimum antall deteksjoner per frame (sikkerhetsbegrensning)
         """
         self.min_radius = min_radius
         self.max_radius = max_radius
         self.min_circularity = min_circularity
         self.known_ball_diameter_cm = known_ball_diameter_cm
         self.camera_focal_length = camera_focal_length
+        self.max_detections_per_frame = max_detections_per_frame
         
         # HSV-grenser for fargedeteksjon
         # Disse verdiene er optimalisert for typiske baller under normalt innendørslys
@@ -344,6 +347,11 @@ class BallDetector:
         # Dette er nyttig hvis man kun vil plukke opp den mest pålitelige deteksjonen
         all_balls.sort(key=lambda b: b.confidence, reverse=True)
         
+        # Sikkerhetsbegrensning: Begrens antall deteksjoner for å forhindre resource exhaustion
+        if len(all_balls) > self.max_detections_per_frame:
+            print(f"⚠️  ADVARSEL: Begrenset til {self.max_detections_per_frame} deteksjoner (fant {len(all_balls)})")
+            all_balls = all_balls[:self.max_detections_per_frame]
+        
         return all_balls
     
     def draw_detections(self, 
@@ -525,8 +533,21 @@ if __name__ == "__main__":
         elif key == ord('c') and len(balls) > 0:
             # Enkel kalibrering: bruk første detekterte ball
             ball = balls[0]
-            distance = float(input("Skriv inn faktisk avstand til ballen i cm: "))
-            detector.calibrate_camera(distance, ball.radius * 2)
+            print(f"\nDetektert ball: radius={ball.radius:.1f}px")
+            try:
+                distance_str = input("Skriv inn faktisk avstand til ballen i cm (eller 'avbryt'): ")
+                if distance_str.lower() in ['avbryt', 'cancel', 'q']:
+                    print("Kalibrering avbrutt")
+                    continue
+                distance = float(distance_str)
+                if distance <= 0 or distance > 1000:
+                    print("❌ FEIL: Avstand må være mellom 0 og 1000 cm")
+                    continue
+                detector.calibrate_camera(distance, ball.radius * 2)
+            except ValueError:
+                print("❌ FEIL: Ugyldig input")
+            except Exception:
+                print("❌ FEIL: Kalibrering feilet")
     
     # Rydd opp
     cap.release()
