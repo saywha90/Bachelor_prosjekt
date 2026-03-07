@@ -7,6 +7,7 @@ Dette er et avansert system for deteksjon og lokalisering av røde og blåe ball
 ## 📋 Innholdsfortegnelse
 
 - [Teknisk Tilnærming](#teknisk-tilnærming)
+- [Lyshåndtering](#lyshåndtering)
 - [Installasjon](#installasjon)
 - [Bruk](#bruk)
 - [Konfigurering](#konfigurering)
@@ -137,6 +138,60 @@ Hvor:
 **Intuisjon:**
 - Ball ser stor ut i bildet → Ball er nærme
 - Ball ser liten ut i bildet → Ball er langt borte
+
+---
+
+## 🌞 Lyshåndtering
+
+### Håndtering av Varierende Lysforhold
+
+Systemet har **to-nivå lyshåndtering** for å være robust under forskjellige forhold:
+
+#### Nivå 1: HSV Fargerom (Alltid Aktivt) ✅
+
+HSV-fargerommet gir grunnleggende robusthet fordi:
+- **Hue (fargetone)** er separert fra **Value (lysstyrke)**
+- En rød ball har samme Hue-verdi både i sollys og skygge
+- Kun Value-komponenten endres med lysforhold
+
+**Eksempel:**
+```
+Rød ball i sollys:  HSV(0°, 80%, 100%)  ← Høy lysstyrke
+Rød ball i skygge:  HSV(0°, 80%, 47%)   ← Lav lysstyrke
+                        ↑ Samme Hue!
+```
+
+#### Nivå 2: Adaptiv Lyshåndtering (Anbefalt) ⭐
+
+For **varierende lysforhold**, bruk adaptiv modus:
+
+```python
+# Aktiveres automatisk som standard
+detector = create_default_detector()  # enable_adaptive_lighting=True
+
+# For MEGET dårlig lys eller ujevn belysning
+detector = create_default_detector(
+    enable_adaptive_lighting=True,
+    enable_preprocessing=True  # CLAHE enhancement
+)
+```
+
+**Hva gjør adaptiv modus?**
+1. Analyserer gjennomsnittlig lysstyrke og kontrast i hver frame
+2. Klassifiserer lysforhold (sterkt dagslys, normalt, svakt, skygger)
+3. Justerer HSV-grenser dynamisk:
+   - **Svakt lys**: Senker V_min (aksepterer mørkere baller)
+   - **Sterkt lys**: Senker S_min (aksepterer bleked farger)
+   - **Skygger**: Bred V-range (dekker både lyst og mørkt)
+
+**Støttede Lysforhold:**
+- ✅ Normal innendørs belysning
+- ✅ Sterkt dagslys / sollys
+- ✅ Svakt lys / kveldslys
+- ✅ Mye skygger
+- ✅ Blandet naturlig og kunstig lys
+
+**Se [LIGHTING.md](LIGHTING.md) for fullstendig dokumentasjon om lyshåndtering.**
 
 ---
 
@@ -463,12 +518,22 @@ recall = true_positives / (true_positives + false_negatives)
    - Test: Vis fargemasken med `cv2.imshow('Mask', red_mask)`
 
 2. **For dårlig belysning**
-   - Løsning: Øk lys eller senk minimum V (Value) i HSV
-   - Test: Sjekk at Value i HSV er over terskel
+   - **Løsning: Aktiver adaptiv lyshåndtering**
+   ```python
+   detector = create_default_detector(
+       enable_adaptive_lighting=True,
+       enable_preprocessing=True  # For MEGET dårlig lys
+   )
+   ```
+   - Alternativ: Øk lys eller senk minimum V (Value) manuelt
 
 3. **Ball er for stor/liten**
    - Løsning: Juster `min_radius` / `max_radius`
    - Test: Print radius av detekterte konturer
+
+4. **Ekstreme lysforhold (skygger, direkte sollys)**
+   - **Løsning: Sørg for at adaptiv modus er aktivert**
+   - Se [LIGHTING.md](LIGHTING.md) for detaljert veiledning
 
 ### Problem: Mange falske positiver
 

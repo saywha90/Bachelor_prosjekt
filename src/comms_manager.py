@@ -98,7 +98,6 @@ class CommsManager:
         # --- Send Pakken ---
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.write(packet)
-            # Debug: print(f"Sendte bytes: {list(packet)}")
         else:
             print("FEIL: Seriellport er ikke åpen.")
 
