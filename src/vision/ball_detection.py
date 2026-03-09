@@ -3,11 +3,12 @@ Ball Detection System for Robot Arm Project
 ============================================
 
 Dette modulet implementerer et robust system for deteksjon av røde og blåe baller
-ved hjelp av avansert bildebehandling. Systemet er designet for å være presist,
-raskt og pålitelig under varierende lysforhold.
+ved hjelp av avansert bildebehandling og Machine Learning. Systemet er designet 
+for å være presist, raskt og pålitelig under varierende lysforhold.
 
 Hovedfunksjoner:
-- HSV-basert fargedeteksjon (mer robust enn RGB)
+- ML-basert klassifisering (CNN med MobileNetV2)
+- HSV-basert fargedeteksjon (fallback-metode)
 - Morfologiske operasjoner for støyreduksjon
 - Konturanalyse for objektidentifikasjon
 - Sirkeldeteksjon for validering
@@ -35,6 +36,13 @@ try:
 except ImportError:
     LIGHTING_ADAPTATION_AVAILABLE = False
     print("INFO: Lighting adaptation module ikke tilgjengelig. Kjører i basic modus.")
+
+try:
+    from vision.ml_classifier import MLBallClassifier, BallColorML
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    print("INFO: ML classifier ikke tilgjengelig. Bruker HSV-basert deteksjon.")
 
 
 class BallColor(Enum):
@@ -98,7 +106,9 @@ class BallDetector:
                  camera_focal_length: Optional[float] = None,
                  max_detections_per_frame: int = 50,
                  enable_adaptive_lighting: bool = True,
-                 enable_preprocessing: bool = False):
+                 enable_preprocessing: bool = False,
+                 use_ml_classifier: bool = True,
+                 ml_model_path: Optional[str] = None):
         """
         Initialiserer balldetektoren med konfigurerbare parametere.
         
@@ -111,6 +121,8 @@ class BallDetector:
             max_detections_per_frame: Maksimum antall deteksjoner per frame (sikkerhetsbegrensning)
             enable_adaptive_lighting: Aktiver adaptiv lyshåndtering (anbefalt)
             enable_preprocessing: Aktiver CLAHE preprocessing (nyttig ved dårlig lys)
+            use_ml_classifier: Bruk ML for klassifisering (True) eller HSV (False)
+            ml_model_path: Sti til ML-modell (.tflite fil)
         """
         self.min_radius = min_radius
         self.max_radius = max_radius
@@ -120,8 +132,20 @@ class BallDetector:
         self.max_detections_per_frame = max_detections_per_frame
         self.enable_adaptive_lighting = enable_adaptive_lighting and LIGHTING_ADAPTATION_AVAILABLE
         self.enable_preprocessing = enable_preprocessing
+        self.use_ml_classifier = use_ml_classifier and ML_AVAILABLE
         
-        # HSV-grenser for fargedeteksjon
+        # ML Classifier
+        self.ml_classifier = None
+        if self.use_ml_classifier:
+            try:
+                self.ml_classifier = MLBallClassifier(model_path=ml_model_path)
+                print("✓ ML-klassifisering aktivert")
+            except Exception as e:
+                print(f"ADVARSEL: Kunne ikke laste ML-modell: {e}")
+                print("  → Fallback til HSV-basert deteksjon")
+                self.use_ml_classifier = False
+        
+        # HSV-grenser for fargedeteksjon (brukes som fallback eller primær metode)
         # Disse verdiene er optimalisert for typiske baller under normalt innendørslys
         # OBS: I HSV-fargerommet i OpenCV er Hue skalert til 0-179 (ikke 0-360)
         
@@ -142,7 +166,7 @@ class BallDetector:
         
         # Statistikk for debugging/evaluering
         self.frame_count = 0
-        self.detection_stats = {'red': 0, 'blue': 0, 'total_frames': 0}
+        self.detection_stats = {'red': 0, 'blue': 0, 'total_frames': 0, 'ml_used': 0, 'hsv_used': 0}
         
         # Adaptiv lyshåndtering
         if self.enable_adaptive_lighting:
@@ -279,18 +303,21 @@ class BallDetector:
     
     def _filter_and_validate_contours(self, 
                                       contours: List[np.ndarray],
-                                      color: BallColor) -> List[DetectedBall]:
+                                      color: BallColor,
+                                      frame: Optional[np.ndarray] = None) -> List[DetectedBall]:
         """
         Filtrerer og validerer konturer for å finne gyldige baller.
         
         Denne funksjonen utfører flere kvalitetskontroller:
         1. Størrelsesfiltrering (for små/store objekter forkastes)
         2. Sirkulærhetskontroll (må være tilstrekkelig rund)
-        3. Konfidensvurdering basert på flere faktorer
+        3. ML-klassifisering (hvis aktivert) for å verifisere fargen
+        4. Konfidensvurdering basert på flere faktorer
         
         Args:
             contours: Liste med OpenCV-konturer
-            color: Fargen vi detekterer for
+            color: Fargen vi detekterer for (fra HSV-maske)
+            frame: Original frame (nødvendig hvis ML-klassifisering brukes)
             
         Returns:
             Liste med validerte DetectedBall-objekter
@@ -307,6 +334,7 @@ class BallDetector:
             
             # Beregn minste omkransende sirkel
             (x, y), radius = cv2.minEnclosingCircle(contour)
+            center = (int(x), int(y))
             
             # Filterering basert på radius
             if radius < self.min_radius or radius > self.max_radius:
@@ -317,19 +345,63 @@ class BallDetector:
             if circularity < self.min_circularity:
                 continue
             
+            # ML-klassifisering (hvis aktivert)
+            final_color = color
+            ml_confidence = None
+            
+            if self.use_ml_classifier and self.ml_classifier and frame is not None:
+                # Ekstraher ball-region fra bildet
+                x_min = max(0, int(x - radius * 1.2))
+                y_min = max(0, int(y - radius * 1.2))
+                x_max = min(frame.shape[1], int(x + radius * 1.2))
+                y_max = min(frame.shape[0], int(y + radius * 1.2))
+                
+                ball_roi = frame[y_min:y_max, x_min:x_max]
+                
+                if ball_roi.size > 0:
+                    try:
+                        # Klassifiser med ML
+                        ml_color, ml_confidence = self.ml_classifier.predict(ball_roi)
+                        
+                        # Map ML-farge til BallColor
+                        if ml_color == BallColorML.RED:
+                            final_color = BallColor.RED
+                        elif ml_color == BallColorML.BLUE:
+                            final_color = BallColor.BLUE
+                        elif ml_color == BallColorML.GREEN:
+                            # Ignorer grønne baller
+                            continue
+                        else:
+                            # Ukjent - bruk HSV-resultatet
+                            final_color = color
+                        
+                        self.detection_stats['ml_used'] += 1
+                    except Exception as e:
+                        # Fallback til HSV hvis ML feiler
+                        print(f"ML-klassifisering feilet: {e}")
+                        self.detection_stats['hsv_used'] += 1
+                else:
+                    self.detection_stats['hsv_used'] += 1
+            else:
+                self.detection_stats['hsv_used'] += 1
+            
             # Beregn konfidensverdi basert på flere faktorer
-            # Høyere sirkulærhet og bedre areal-til-sirkel ratio gir høyere konfidens
             ideal_circle_area = np.pi * (radius ** 2)
             area_match = min(area / ideal_circle_area, ideal_circle_area / area)
-            confidence = (circularity * 0.7) + (area_match * 0.3)
+            
+            # Kombiner cirkulærhet, area_match og ML-confidence (hvis tilgjengelig)
+            if ml_confidence is not None:
+                confidence = (circularity * 0.3) + (area_match * 0.2) + (ml_confidence * 0.5)
+            else:
+                confidence = (circularity * 0.7) + (area_match * 0.3)
             
             # Estimer avstand hvis kalibrert
             distance = self.estimate_distance(radius * 2)  # Diameter = 2 * radius
             
-            # Opprett DetectedBall-objekt
+            # Opprett DetectedBall-objekt (bruk final_color fra ML eller HSV)
             ball = DetectedBall(
-                color=color,
-                center=(int(x), int(y)),
+                color=final_color,
+                center=center,
                 radius=float(radius),
                 confidence=float(confidence),
                 distance_cm=distance
@@ -394,14 +466,14 @@ class BallDetector:
         # Detekter røde baller
         red_mask = self._create_color_mask(hsv, BallColor.RED)
         red_contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        red_balls = self._filter_and_validate_contours(red_contours, BallColor.RED)
+        red_balls = self._filter_and_validate_contours(red_contours, BallColor.RED, frame)
         all_balls.extend(red_balls)
         self.detection_stats['red'] += len(red_balls)
         
         # Detekter blåe baller
         blue_mask = self._create_color_mask(hsv, BallColor.BLUE)
         blue_contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        blue_balls = self._filter_and_validate_contours(blue_contours, BallColor.BLUE)
+        blue_balls = self._filter_and_validate_contours(blue_contours, BallColor.BLUE, frame)
         all_balls.extend(blue_balls)
         self.detection_stats['blue'] += len(blue_balls)
         
