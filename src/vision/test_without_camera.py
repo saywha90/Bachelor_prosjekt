@@ -73,7 +73,11 @@ def create_test_image(width=640, height=480):
 
 
 def run_test():
-    """Kjører fullstendig test av deteksjonssystemet"""
+    """Kjører fullstendig test av deteksjonssystemet
+    
+    Returns:
+        bool: True hvis test fullført, False hvis bruker avbrøt
+    """
     
     print("="*70)
     print("BALL DETECTION TEST - SYNTETISK BILDE")
@@ -98,7 +102,12 @@ def run_test():
     print("\n" + "="*70)
     print("RESULTATER")
     print("="*70)
-    print(f"Antall detekterte baller: {len(detected_balls)}")
+    print(f"Totalt baller i bildet: 6")
+    print(f"  → Røde: 3")
+    print(f"  → Blåe: 2")
+    print(f"  → Grønne: 1 (ignoreres - plukkes ikke opp)")
+    print()
+    print(f"Baller detektert for plukking: {len(detected_balls)}")
     print()
     
     if detected_balls:
@@ -135,18 +144,27 @@ def run_test():
     combined = np.hstack([test_image, output_image])
     
     cv2.imshow('Test - Original (venstre) | Deteksjon (høyre)', combined)
-    cv2.waitKey(0)
+    key = cv2.waitKey(0)
     cv2.destroyAllWindows()
+    
+    # Gi litt tid til å lukke vinduet ordentlig
+    cv2.waitKey(1)
+    
+    # Hvis bruker trykket ESC eller 'q', avslutt helt
+    if key == 27 or key == ord('q'):
+        print("\n✓ Avslutter...\n")
+        return False
     
     # Valideringstest
     print("\n" + "="*70)
     print("VALIDERING")
     print("="*70)
     
-    # Vi forventer 3 røde + 2 blåe = 5 totalt
+    # Vi forventer 3 røde + 2 blåe = 5 totalt (grønn ignoreres)
     expected_total = 5
     expected_red = 3
     expected_blue = 2
+    print("(Grønn ball utelates fra validering - skal ignoreres)")
     
     actual_red = sum(1 for b in detected_balls if b.color == BallColor.RED)
     actual_blue = sum(1 for b in detected_balls if b.color == BallColor.BLUE)
@@ -177,6 +195,8 @@ def run_test():
     print(f"  Totalt deteksjoner: {stats['red'] + stats['blue']}")
     
     print("\n✓ Test fullført!\n")
+    
+    return True  # Test fullført
 
 
 def run_performance_test():
@@ -231,14 +251,15 @@ def main():
     
     try:
         # Kjør hovedtest
-        run_test()
+        test_completed = run_test()
         
-        # Spør om ytelsestest
-        print("\nVil du kjøre en ytelsestest?")
-        response = input("Skriv 'ja' for ytelsestest, eller trykk Enter for å avslutte: ")
-        
-        if response.lower() in ['ja', 'j', 'yes', 'y']:
-            run_performance_test()
+        # Spør om ytelsestest bare hvis test ble fullført (ikke avbrutt)
+        if test_completed:
+            print("\nVil du kjøre en ytelsestest?")
+            response = input("Skriv 'ja' for ytelsestest, eller trykk Enter for å avslutte: ")
+            
+            if response.lower() in ['ja', 'j', 'yes', 'y']:
+                run_performance_test()
     
     except KeyboardInterrupt:
         print("\n\nAvbrutt av bruker (Ctrl+C)")

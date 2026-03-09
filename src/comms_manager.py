@@ -59,9 +59,24 @@ class CommsManager:
                            Lengden MÅ matche config.NUM_JOINTS.
         """
         
+        # Type-validering
+        if not isinstance(angles, (list, tuple)):
+            print(f"FEIL: angles må være en liste eller tuple, fikk {type(angles)}")
+            return
+        
         # Sjekk at vi har riktig antall vinkler
         if len(angles) != config.NUM_JOINTS:
             print(f"FEIL: Prøver å sende {len(angles)} vinkler, men systemet er satt opp for {config.NUM_JOINTS}.")
+            return
+        
+        # Valider at alle verdier er numeriske og finite
+        try:
+            import numpy as np
+            if any(not np.isfinite(float(angle)) for angle in angles):
+                print("FEIL: angles inneholder NaN eller Inf verdier")
+                return
+        except (ValueError, TypeError) as e:
+            print(f"FEIL: Ikke-numeriske verdier i angles: {e}")
             return
 
         # Sørg for at vinklene er innenfor grensene (Clamping)
@@ -106,3 +121,12 @@ class CommsManager:
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
             print("Seriellport lukket.")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - sikrer cleanup."""
+        self.close()
+        return False

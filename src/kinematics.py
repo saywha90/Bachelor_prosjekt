@@ -72,10 +72,12 @@ class KinematicsSolver:
 
         # Sjekk om målet er utenfor rekkevidde
         # Hvis D er lengre enn armen (L2 + L3), kan vi ikke nå det.
-        if D > (self.l2 + self.l3):
-            print("ADVARSEL: Målet er utenfor rekkevidde!")
-            # Her kunne vi kastet en feil, men vi returnerer foreløpig 0 for å unngå krasj.
-            return [0, 0, 0]
+        max_reach = self.l2 + self.l3
+        if D > max_reach:
+            raise ValueError(
+                f"Målet ({x}, {y}, {z}) er utenfor rekkevidde. "
+                f"Avstand: {D:.1f}mm, Maks rekkevidde: {max_reach:.1f}mm"
+            )
 
         # --- Steg 3: Cosinussetningen for Albue (q3) ---
         # Vi har en trekant med sider L2, L3 og D.
