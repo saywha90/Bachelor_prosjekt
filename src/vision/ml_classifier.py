@@ -112,8 +112,16 @@ class MLBallClassifier:
             print(f"  Output shape: {self.output_details[0]['shape']}")
         
         elif model_path.suffix in ['.h5', '.keras']:
-            # Last full Keras modell
-            self.model = keras.models.load_model(str(model_path))
+            # Last full Keras modell med custom objects for preprocessing layers
+            custom_objects = {
+                'TrueDivide': keras.layers.Lambda(lambda x: x / 127.5),
+                'Subtract': keras.layers.Lambda(lambda x: x - 1.0)
+            }
+            try:
+                self.model = keras.models.load_model(str(model_path), custom_objects=custom_objects)
+            except Exception:
+                # Fallback: prøv uten custom objects
+                self.model = keras.models.load_model(str(model_path))
             self.use_tflite = False
             print(f"✓ Keras modell lastet: {model_path.name}")
         
@@ -139,11 +147,8 @@ class MLBallClassifier:
         # Resize til modellens input-størrelse
         resized = cv2.resize(image_rgb, self.input_size, interpolation=cv2.INTER_AREA)
         
-        # Normaliser pikselverdier til [0, 1]
-        normalized = resized.astype(np.float32) / 255.0
-        
-        # Legg til batch-dimensjon [1, 224, 224, 3]
-        batched = np.expand_dims(normalized, axis=0)
+        # Konverter til float32 (Rescaling layer gjør resten)
+        batched = np.expand_dims(resized, axis=0).astype(np.float32)
         
         return batched
     
@@ -264,14 +269,14 @@ def create_base_model(input_shape=(224, 224, 3), num_classes=3):
         weights='imagenet'
     )
     
-    # Frys base model (vi finjusterer bare de siste lagene)
+    # Frys hele base model først
     base_model.trainable = False
     
     # Bygg komplett modell
     inputs = keras.Input(shape=input_shape)
     
-    # Pre-processing for MobileNetV2
-    x = keras.applications.mobilenet_v2.preprocess_input(inputs)
+    # Enkel normalisering (0-255 -> 0-1) uten problematiske layers
+    x = keras.layers.Rescaling(1./255)(inputs)
     
     # Base model
     x = base_model(x, training=False)
@@ -279,8 +284,11 @@ def create_base_model(input_shape=(224, 224, 3), num_classes=3):
     # Global average pooling
     x = keras.layers.GlobalAveragePooling2D()(x)
     
-    # Dropout for regularisering
-    x = keras.layers.Dropout(0.2)(x)
+    # Bedre klassifiseringshodet med mer kapasitet
+    x = keras.layers.Dense(256, activation='relu')(x)
+    x = keras.layers.Dropout(0.5)(x)
+    x = keras.layers.Dense(128, activation='relu')(x)
+    x = keras.layers.Dropout(0.3)(x)
     
     # Output-lag
     outputs = keras.layers.Dense(num_classes, activation='softmax')(x)
@@ -301,8 +309,12 @@ def convert_to_tflite(model_path: str, output_path: Optional[str] = None):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow er ikke installert.")
     
-    # Last modell
-    model = keras.models.load_model(model_path)
+    # Last modell med custom objects for preprocessing layers
+    custom_objects = {
+        'TrueDivide': tf.keras.layers.Lambda(lambda x: x / 127.5),
+        'Subtract': tf.keras.layers.Lambda(lambda x: x - 1.0)
+    }
+    model = keras.models.load_model(model_path, custom_objects=custom_objects)
     
     # Konverter til TFLite
     converter = tf.lite.TFLiteConverter.from_keras_model(model)

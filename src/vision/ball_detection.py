@@ -41,8 +41,12 @@ try:
     from vision.ml_classifier import MLBallClassifier, BallColorML
     ML_AVAILABLE = True
 except ImportError:
-    ML_AVAILABLE = False
-    print("INFO: ML classifier ikke tilgjengelig. Bruker HSV-basert deteksjon.")
+    try:
+        from src.vision.ml_classifier import MLBallClassifier, BallColorML
+        ML_AVAILABLE = True
+    except ImportError:
+        ML_AVAILABLE = False
+        print("INFO: ML classifier ikke tilgjengelig. Bruker HSV-basert deteksjon.")
 
 
 class BallColor(Enum):
@@ -99,15 +103,15 @@ class BallDetector:
     """
     
     def __init__(self, 
-                 min_radius: int = 10,
-                 max_radius: int = 150,
-                 min_circularity: float = 0.7,
+                 min_radius: int = 5,
+                 max_radius: int = 200,
+                 min_circularity: float = 0.5,  # Senket fra 0.6 for mer toleranse
                  known_ball_diameter_cm: float = 7.0,
                  camera_focal_length: Optional[float] = None,
                  max_detections_per_frame: int = 50,
                  enable_adaptive_lighting: bool = True,
                  enable_preprocessing: bool = False,
-                 use_ml_classifier: bool = True,
+                 use_ml_classifier: bool = False,  # Disabled by default - HSV is more reliable
                  ml_model_path: Optional[str] = None):
         """
         Initialiserer balldetektoren med konfigurerbare parametere.
@@ -138,6 +142,9 @@ class BallDetector:
         self.ml_classifier = None
         if self.use_ml_classifier:
             try:
+                # Hvis ingen sti oppgitt, prøv default plassering
+                if ml_model_path is None:
+                    ml_model_path = "models/ball_classifier.h5"
                 self.ml_classifier = MLBallClassifier(model_path=ml_model_path)
                 print("✓ ML-klassifisering aktivert")
             except Exception as e:
@@ -151,13 +158,15 @@ class BallDetector:
         
         # RØD FARGE: Rød er spesiell fordi den wrapper rundt i HSV-hjulet
         # Vi må derfor bruke to områder: lav-rød (0-10) og høy-rød (170-179)
-        self.red_lower_1 = np.array([0, 100, 100])      # Lav-rød
-        self.red_upper_1 = np.array([10, 255, 255])
-        self.red_lower_2 = np.array([170, 100, 100])    # Høy-rød
+        # Balanserte verdier som fungerer både på bord og i hånd
+        self.red_lower_1 = np.array([0, 120, 120])     # Lav-rød (mer tolerant for varierende belysning)
+        self.red_upper_1 = np.array([10, 255, 255])    
+        self.red_lower_2 = np.array([170, 120, 120])   # Høy-rød (mer tolerant)
         self.red_upper_2 = np.array([179, 255, 255])
         
         # BLÅ FARGE: Mer rettfram, ett sammenhengende område
-        self.blue_lower = np.array([100, 100, 100])     # Dyp blå
+        # Redusert S-minimum til 70 og V til 50 for å fange mer
+        self.blue_lower = np.array([100, 70, 50])     # Dyp blå
         self.blue_upper = np.array([130, 255, 255])
         
         # Morfologiske kjerner for støyreduksjon
@@ -481,12 +490,57 @@ class BallDetector:
         # Dette er nyttig hvis man kun vil plukke opp den mest pålitelige deteksjonen
         all_balls.sort(key=lambda b: b.confidence, reverse=True)
         
+        # Fjern overlappende deteksjoner (Non-Maximum Suppression)
+        all_balls = self._remove_overlapping_detections(all_balls)
+        
         # Sikkerhetsbegrensning: Begrens antall deteksjoner for å forhindre resource exhaustion
         if len(all_balls) > self.max_detections_per_frame:
             print(f"⚠️  ADVARSEL: Begrenset til {self.max_detections_per_frame} deteksjoner (fant {len(all_balls)})")
             all_balls = all_balls[:self.max_detections_per_frame]
         
         return all_balls
+    
+    def _remove_overlapping_detections(self, balls: List[DetectedBall], overlap_threshold: float = 0.5) -> List[DetectedBall]:
+        """
+        Fjerner overlappende ball-deteksjoner ved Non-Maximum Suppression.
+        
+        Hvis to baller overlapper for mye, beholdes bare den med høyest konfidens.
+        Dette forhindrer at samme ball detekteres flere ganger.
+        
+        Args:
+            balls: Liste med detekterte baller (må være sortert etter konfidens!)
+            overlap_threshold: Hvor mye overlap som tillates (0.0-1.0)
+            
+        Returns:
+            Filtrert liste uten overlappende deteksjoner
+        """
+        if len(balls) <= 1:
+            return balls
+        
+        kept_balls = []
+        
+        for ball in balls:
+            # Sjekk om denne ballen overlapper med noen allerede beholdte baller
+            overlaps = False
+            for kept_ball in kept_balls:
+                # Beregn avstand mellom sentre
+                dx = ball.center[0] - kept_ball.center[0]
+                dy = ball.center[1] - kept_ball.center[1]
+                distance = np.sqrt(dx**2 + dy**2)
+                
+                # Beregn total radius (sum av begge radier)
+                combined_radius = ball.radius + kept_ball.radius
+                
+                # Hvis avstand < (sum av radier * overlap_threshold), overlapper de
+                if distance < (combined_radius * overlap_threshold):
+                    overlaps = True
+                    break
+            
+            # Behold bare hvis den ikke overlapper
+            if not overlaps:
+                kept_balls.append(ball)
+        
+        return kept_balls
     
     def draw_detections(self, 
                        frame: np.ndarray, 
