@@ -80,9 +80,9 @@ class BallDetectionTester:
             print("  - Lukk andre programmer som bruker kameraet")
             return False
         
-        # Sett oppløsning (640x480 er godt balansert for ytelse)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # Sett oppløsning (1280x720 for bedre deteksjon)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
         # Les faktisk oppløsning
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))

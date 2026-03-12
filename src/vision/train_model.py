@@ -50,21 +50,22 @@ from vision.ml_classifier import create_base_model, convert_to_tflite
 
 def setup_data_augmentation():
     """
-    Setter opp data augmentation for å øke variasjonen i treningsdata.
+    Setter opp AGGRESSIV data augmentation for å øke variasjonen i treningsdata.
     
-    Data augmentation hjelper modellen å generalisere bedre ved å lage
-    modifiserte versjoner av treningsbildene (rotasjon, zoom, flip, etc.)
+    Siden vi har begrenset med data (202 bilder), bruker vi kraftig augmentation
+    for å lage mange varianter og forbedre generalisering.
     """
     train_datagen = ImageDataGenerator(
         rescale=1./255,              # Normaliser pikselverdier
-        rotation_range=20,           # Roter opp til 20 grader
-        width_shift_range=0.2,       # Shift horisontalt
-        height_shift_range=0.2,      # Shift vertikalt
-        shear_range=0.2,             # Shear transformation
-        zoom_range=0.2,              # Zoom inn/ut
+        rotation_range=40,           # Roter opp til 40 grader (dobbelt!)
+        width_shift_range=0.3,       # Shift horisontalt (mer!)
+        height_shift_range=0.3,      # Shift vertikalt (mer!)
+        shear_range=0.3,             # Shear transformation (mer!)
+        zoom_range=0.3,              # Zoom inn/ut (mer!)
         horizontal_flip=True,        # Flip horisontalt
-        brightness_range=[0.8, 1.2], # Variere lysstyrke
-        fill_mode='nearest',         # Fyll tomme områder
+        vertical_flip=True,          # Flip vertikalt også!
+        brightness_range=[0.6, 1.4], # Større lysvariasjoner
+        fill_mode='reflect',         # Bedre filling
         validation_split=0.2         # 20% til validering
     )
     
@@ -204,39 +205,46 @@ def train_model(data_dir: str,
     print("\n2. Bygger modell...")
     model = create_base_model(num_classes=num_classes)
     
-    # 3. Kompiler modell
+    # 3. Kompiler modell med bedre optimizer
     print("3. Kompilerer modell...")
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+        optimizer=keras.optimizers.Adam(
+            learning_rate=learning_rate,
+            beta_1=0.9,
+            beta_2=0.999
+        ),
         loss='categorical_crossentropy',
-        metrics=['accuracy']
+        metrics=['accuracy', keras.metrics.Precision(), keras.metrics.Recall()]
     )
     
     # Vis modellstruktur
     model.summary()
     
-    # 4. Setup callbacks
+    # 4. Setup forbedrede callbacks
     callbacks = [
-        # Early stopping hvis val_loss ikke forbedres
+        # Early stopping med mer tålmodighet
         keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=5,
+            monitor='val_accuracy',
+            patience=10,
             restore_best_weights=True,
+            mode='max',
             verbose=1
         ),
-        # Reduser learning rate hvis plateauer
+        # Reduser learning rate mer gradvis
         keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=3,
+            monitor='val_accuracy',
+            factor=0.2,
+            patience=5,
+            mode='max',
             verbose=1,
-            min_lr=1e-7
+            min_lr=1e-8
         ),
-        # Lagre beste modell underveis
+        # Lagre beste modell basert på accuracy
         keras.callbacks.ModelCheckpoint(
             filepath=f'models/{model_name}_best.h5',
             monitor='val_accuracy',
             save_best_only=True,
+            mode='max',
             verbose=1
         )
     ]
@@ -261,7 +269,9 @@ def train_model(data_dir: str,
     
     # 6. Evaluer modell
     print("\n5. Evaluerer modell...")
-    val_loss, val_accuracy = model.evaluate(val_gen, verbose=0)
+    eval_results = model.evaluate(val_gen, verbose=0)
+    val_loss = eval_results[0]
+    val_accuracy = eval_results[1]
     print(f"  Validerings-nøyaktighet: {val_accuracy*100:.2f}%")
     print(f"  Validerings-tap: {val_loss:.4f}")
     
@@ -270,10 +280,11 @@ def train_model(data_dir: str,
     model.save(model_path)
     print(f"\n✓ Modell lagret: {model_path}")
     
-    # 8. Konverter til TensorFlow Lite
-    print("\n6. Konverterer til TensorFlow Lite...")
-    tflite_path = f"models/{model_name}.tflite"
-    convert_to_tflite(model_path, tflite_path)
+    # 8. Konverter til TensorFlow Lite (deaktivert midlertidig pga preprocessing layers)
+    # print("\n6. Konverterer til TensorFlow Lite...")
+    # tflite_path = f"models/{model_name}.tflite"
+    # convert_to_tflite(model_path, tflite_path)
+    print("\n6. TFLite-konvertering hoppet over (bruker .h5 direkte)")
     
     # 9. Plot treningshistorikk
     print("\n7. Genererer treningsplot...")
