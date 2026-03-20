@@ -102,8 +102,14 @@ def main():
         frame_count += 1
         fps_frame_count += 1
         
+        # FPS-beregning
+        if time.time() - fps_time >= 1.0:
+            current_fps = fps_frame_count
+            fps_frame_count = 0
+            fps_time = time.time()
+        
         # Detect balls
-        detected_balls = detector.detect_balls(frame)
+        detected_balls, _ = detector.detect_balls(frame)
         
         # Count colors
         for ball in detected_balls:
@@ -112,37 +118,17 @@ def main():
             elif ball.color == BallColor.BLUE:
                 blue_count += 1
         
-        # Draw detections
-        output = detector.draw_detections(frame, detected_balls, show_info=True)
-        
-        # Calculate FPS
-        if time.time() - fps_time >= 1.0:
-            current_fps = fps_frame_count
-            fps_frame_count = 0
-            fps_time = time.time()
-        
-        # Draw overlay info
-        info_y = 30
-        cv2.putText(output, f"FPS: {current_fps}", (10, info_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        info_y += 30
-        cv2.putText(output, f"Frame: {frame_count}", (10, info_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        info_y += 30
-        cv2.putText(output, f"Detections: {len(detected_balls)}", (10, info_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        info_y += 30
-        red_pct = (red_count / frame_count * 100) if frame_count > 0 else 0
-        cv2.putText(output, f"RED: {red_count} ({red_pct:.1f}%)", (10, info_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        info_y += 30
+        # Draw detections + overlay panel
+        red_pct  = (red_count  / frame_count * 100) if frame_count > 0 else 0
         blue_pct = (blue_count / frame_count * 100) if frame_count > 0 else 0
-        cv2.putText(output, f"BLUE: {blue_count} ({blue_pct:.1f}%)", (10, info_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        overlay = {
+            f"FPS":         current_fps,
+            f"Frame":       frame_count,
+            f"Detections":  len(detected_balls),
+            f"RED":         f"{red_count} ({red_pct:.1f}%)",
+            f"BLUE":        f"{blue_count} ({blue_pct:.1f}%)",
+        }
+        output = detector.draw_detections(frame, detected_balls, show_info=True, overlay=overlay)
         
         # Show frame
         cv2.imshow('Enhanced Ball Detector - TEST', output)

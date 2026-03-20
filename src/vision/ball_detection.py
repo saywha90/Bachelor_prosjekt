@@ -48,6 +48,16 @@ except ImportError:
         ML_AVAILABLE = False
         print("INFO: ML classifier ikke tilgjengelig. Bruker HSV-basert deteksjon.")
 
+try:
+    from vision.color_histogram_classifier import ColorHistogramClassifier
+    HIST_CLF_AVAILABLE = True
+except ImportError:
+    try:
+        from src.vision.color_histogram_classifier import ColorHistogramClassifier
+        HIST_CLF_AVAILABLE = True
+    except ImportError:
+        HIST_CLF_AVAILABLE = False
+
 
 class BallColor(Enum):
     """Enum for ballfarger som skal detekteres"""
@@ -142,11 +152,17 @@ class BallDetector:
         self.ml_classifier = None
         if self.use_ml_classifier:
             try:
-                # Hvis ingen sti oppgitt, prøv default plassering
-                if ml_model_path is None:
-                    ml_model_path = "models/ball_classifier.h5"
-                self.ml_classifier = MLBallClassifier(model_path=ml_model_path)
-                print("✓ ML-klassifisering aktivert")
+                # Prøv ColorHistogramClassifier (32 KB, ingen TensorFlow) først
+                if HIST_CLF_AVAILABLE:
+                    hist_path = ml_model_path or "models/ball_color_classifier.pkl"
+                    self.ml_classifier = ColorHistogramClassifier(hist_path)
+                    print("✓ HSV-histogram + SVM klassifisering aktivert (lett, rask)")
+                else:
+                    # Fallback til MobileNetV2 modell
+                    if ml_model_path is None:
+                        ml_model_path = "models/ball_classifier.h5"
+                    self.ml_classifier = MLBallClassifier(model_path=ml_model_path)
+                    print("✓ ML-klassifisering aktivert (MobileNetV2)")
             except Exception as e:
                 print(f"ADVARSEL: Kunne ikke laste ML-modell: {e}")
                 print("  → Fallback til HSV-basert deteksjon")
@@ -373,11 +389,13 @@ class BallDetector:
                         ml_color, ml_confidence = self.ml_classifier.predict(ball_roi)
                         
                         # Map ML-farge til BallColor
-                        if ml_color == BallColorML.RED:
+                        # Støtter både streng ("red") og BallColorML-enum
+                        ml_color_str = ml_color if isinstance(ml_color, str) else getattr(ml_color, "value", str(ml_color)).lower()
+                        if "red" in ml_color_str:
                             final_color = BallColor.RED
-                        elif ml_color == BallColorML.BLUE:
+                        elif "blue" in ml_color_str:
                             final_color = BallColor.BLUE
-                        elif ml_color == BallColorML.GREEN:
+                        elif "green" in ml_color_str:
                             # Ignorer grønne baller
                             continue
                         else:

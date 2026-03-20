@@ -55,11 +55,16 @@ class SimpleBallDetector:
     Designet for å være ENKEL og PÅLITELIG for statiske baller under varierende lys.
     """
     
+    # Kjent balldiameter i mm (brukes til avstandsberegning)
+    BALL_DIAMETER_MM = 50.0
+
     def __init__(self,
                  min_radius: int = 10,
                  max_radius: int = 150,
                  confidence_threshold: float = 0.35,
-                 enable_adaptive_lighting: bool = True):
+                 enable_adaptive_lighting: bool = True,
+                 focal_length_px: Optional[float] = None,
+                 max_balls_per_color: int = 1):
         """
         Initialiserer forenklet detector.
         
@@ -68,27 +73,37 @@ class SimpleBallDetector:
             max_radius: Maximum ball radius i piksler
             confidence_threshold: Minimum confidence for å godkjenne deteksjon
             enable_adaptive_lighting: Aktiver adaptiv lyshåndtering for 300-700 lux
+            focal_length_px: Kameraets brennvidde i piksler (kalibreres automatisk
+                             første gang en ball detekteres på kjent avstand, eller
+                             settes manuelt). Typisk 800-1200 px for webcam 1280x720.
+            max_balls_per_color: Maks antall baller per farge å returnere per frame.
+                                 Sett til 1 når du bare har én rød og én blå ball.
         """
         self.min_radius = min_radius
         self.max_radius = max_radius
+        self.max_balls_per_color = max_balls_per_color
         self.confidence_threshold = confidence_threshold
         self.enable_adaptive_lighting = enable_adaptive_lighting
+        # Brennvidde: f = (radius_px * 2 * known_dist_mm) / BALL_DIAMETER_MM
+        # Standard estimat for 1280x720 webcam uten kalibrering: ~900 px
+        self.focal_length_px = focal_length_px if focal_length_px is not None else 900.0
         
         # Multi-range HSV thresholds for RED
         # ✅ KALIBRERT basert på analyse av 18 bilder (34M piksler) av din røde ball
         # Hue: 0-11, Saturation: 147-255, Value: 59-255
         self.red_ranges = [
             # Bright red (godt lys) - high saturation, high value
-            (np.array([0, 177, 150]), np.array([11, 255, 255])),
-            (np.array([170, 177, 150]), np.array([179, 255, 255])),
-            
+            # ✅ KALIBRERT fra 107 bilder (18M piksler) - oppdatert 20. mars 2026
+            (np.array([0, 180, 149]), np.array([11, 255, 255])),
+            (np.array([170, 180, 149]), np.array([179, 255, 255])),
+
             # Medium red (medium lys) - medium saturation/value
-            (np.array([0, 157, 96]), np.array([11, 255, 255])),
-            (np.array([170, 157, 96]), np.array([179, 255, 255])),
-            
+            (np.array([0, 150, 114]), np.array([11, 255, 255])),
+            (np.array([170, 150, 114]), np.array([179, 255, 255])),
+
             # Dark red (dårlig lys) - low value for mørke forhold
-            (np.array([0, 147, 59]), np.array([11, 255, 156])),
-            (np.array([170, 147, 59]), np.array([179, 255, 156])),
+            (np.array([0, 130, 99]), np.array([11, 255, 175])),
+            (np.array([170, 130, 99]), np.array([179, 255, 175])),
         ]
         
         # Multi-range HSV thresholds for BLUE
@@ -107,6 +122,9 @@ class SimpleBallDetector:
         # Morphological kernels for noise reduction
         self.morph_kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.morph_kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        
+        # CLAHE opprettes én gang (ikke per frame) for ytelse
+        self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
         
         # Statistics
         self.stats = {
@@ -178,9 +196,8 @@ class SimpleBallDetector:
             lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
             
-            # Appliser CLAHE på L-kanalen
-            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-            l = clahe.apply(l)
+            # Appliser CLAHE på L-kanalen (bruker forhåndsopprettet instans)
+            l = self.clahe.apply(l)
             
             # Merge tilbake
             enhanced = cv2.merge([l, a, b])
@@ -328,9 +345,9 @@ class SimpleBallDetector:
             gray,
             cv2.HOUGH_GRADIENT,
             dp=1,
-            minDist=30,  # Minimum avstand mellom sirkler
-            param1=50,   # Canny edge detection threshold
-            param2=30,   # Accumulator threshold (lower = more sensitive)
+            minDist=max(100, gray.shape[1] // 8),  # Minst 1/8 av bildebredden mellom sirkler
+            param1=60,   # Canny edge threshold (høyere = sterkere kanter kreves)
+            param2=55,   # Akkumulatortreshold (høyere = færre falske sirkler)
             minRadius=self.min_radius,
             maxRadius=self.max_radius
         )
@@ -390,20 +407,32 @@ class SimpleBallDetector:
         if roi.size == 0:
             return BallColor.UNKNOWN
         
-        # Beregn gjennomsnittlig Hue og Saturation
-        mean_hue = np.mean(roi[:, :, 0])
-        mean_sat = np.mean(roi[:, :, 1])
+        # Klassifiser ved piksel-telling per hue-range (håndterer rød wraparound korrekt).
+        # mean_hue fungerer IKKE for rød: piksler ved hue=2 og hue=178 gir mean≈90 → feil BLÅTT.
+        hue_ch = roi[:, :, 0]
+        sat_ch = roi[:, :, 1]
+        val_ch = roi[:, :, 2]
         
-        # Klassifiser basert på Hue og Saturation
-        if mean_sat < 40:  # Low saturation - trolig ikke en farget ball
+        # Bare tell piksler med tilstrekkelig farge og lysstyrke
+        valid_mask = (sat_ch >= 60) & (val_ch >= 40)
+        valid_pixels = int(np.sum(valid_mask))
+        
+        if valid_pixels < roi.shape[0] * roi.shape[1] * 0.1:
             return BallColor.UNKNOWN
         
-        # Rød: Hue 0-20 eller 160-179
-        if (0 <= mean_hue <= 20) or (160 <= mean_hue <= 179):
-            return BallColor.RED
+        # Rød: Hue 0-20 ELLER 160-179 (wraparound)
+        red_mask = valid_mask & ((hue_ch <= 20) | (hue_ch >= 160))
+        red_pixels = int(np.sum(red_mask))
         
         # Blå: Hue 95-135
-        if 95 <= mean_hue <= 135:
+        blue_mask = valid_mask & (hue_ch >= 95) & (hue_ch <= 135)
+        blue_pixels = int(np.sum(blue_mask))
+        
+        # Bestemmelse: flertall av gyldige piksler, minimum 50% av valid
+        # Høy terskel hindrer kabelbøyninger (sirkelformede) i å bli feilklassifisert
+        if red_pixels > blue_pixels and red_pixels >= valid_pixels * 0.5:
+            return BallColor.RED
+        if blue_pixels > red_pixels and blue_pixels >= valid_pixels * 0.5:
             return BallColor.BLUE
         
         return BallColor.UNKNOWN
@@ -411,6 +440,7 @@ class SimpleBallDetector:
     def _validate_contour(self, contour: np.ndarray, color: BallColor, method: str) -> Optional[DetectedBall]:
         """
         Validerer en contour og returnerer DetectedBall hvis valid.
+        Krever at formen er tilnærmet sirkulær (ball-form).
         
         Args:
             contour: OpenCV contour
@@ -434,28 +464,47 @@ class SimpleBallDetector:
         if radius < self.min_radius or radius > self.max_radius:
             return None
         
-        # Circularity check - hvor rund er formen?
+        # Circularity check (4πA / P²) - perfekt sirkel = 1.0
         perimeter = cv2.arcLength(contour, True)
         if perimeter == 0:
             return None
-        
         circularity = (4 * np.pi * area) / (perimeter ** 2)
         
-        # Må være relativt rund (0.4 = 40% av perfekt sirkel)
-        if circularity < 0.4:
+        # Krav: minst 55% sirkulær (baller er runde, ikke firkanter/striper)
+        if circularity < 0.55:
             return None
         
-        # Confidence basert på circularity og area match
+        # Aspect ratio check - bounding box bør være tilnærmet kvadratisk
+        bx, by, bw, bh = cv2.boundingRect(contour)
+        aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
+        if aspect_ratio < 0.65:
+            return None
+        
+        # Soliditet check - contour-areal / konveks skrog-areal
+        # En ball er konveks (~1.0), lange smale former har lav soliditet
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        if hull_area > 0:
+            solidity = area / hull_area
+            if solidity < 0.75:
+                return None
+        
+        # Confidence basert på alle shape-mål
         ideal_area = np.pi * (radius ** 2)
         area_match = min(area / ideal_area, ideal_area / area)
-        confidence = (circularity * 0.6) + (area_match * 0.4)
-        
+        confidence = (circularity * 0.5) + (area_match * 0.3) + (aspect_ratio * 0.2)
+
+        # Avstandsberegning: d = (f * D_real) / D_pixel
+        # D_pixel = diameter i piksler = radius * 2
+        distance_cm = (self.focal_length_px * self.BALL_DIAMETER_MM) / (radius * 2 * 10.0)
+
         return DetectedBall(
             color=color,
             center=center,
             radius=float(radius),
             confidence=float(confidence),
-            detection_method=method
+            detection_method=method,
+            distance_cm=round(distance_cm, 1)
         )
     
     def ensemble_merge(self, hsv_balls: List[DetectedBall], hough_balls: List[DetectedBall]) -> List[DetectedBall]:
@@ -477,54 +526,49 @@ class SimpleBallDetector:
         if len(all_detections) == 0:
             return []
         
-        # Cluster overlappende deteksjoner
-        clusters = []
-        used = set()
+        n = len(all_detections)
         
-        for i, ball1 in enumerate(all_detections):
-            if i in used:
-                continue
-            
-            cluster = [ball1]
-            used.add(i)
-            
-            for j, ball2 in enumerate(all_detections):
-                if j in used or j == i:
-                    continue
-                
-                # Sjekk overlap
-                dx = ball1.center[0] - ball2.center[0]
-                dy = ball1.center[1] - ball2.center[1]
+        # Union-Find for transitiv clustering
+        parent = list(range(n))
+        
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        
+        def union(x, y):
+            parent[find(x)] = find(y)
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                b1, b2 = all_detections[i], all_detections[j]
+                dx = b1.center[0] - b2.center[0]
+                dy = b1.center[1] - b2.center[1]
                 dist = np.sqrt(dx**2 + dy**2)
-                
-                # Hvis sentre er innenfor combined radius * 0.7, er de samme ball
-                combined_radius = (ball1.radius + ball2.radius) * 0.7
-                
-                if dist < combined_radius:
-                    cluster.append(ball2)
-                    used.add(j)
-            
-            clusters.append(cluster)
+                # Merge hvis senter til én sirkel er innenfor radius til den andre
+                if dist < max(b1.radius, b2.radius):
+                    union(i, j)
         
-        # Merge hver cluster
+        # Grupper etter root
+        cluster_map: dict = {}
+        for i in range(n):
+            root = find(i)
+            cluster_map.setdefault(root, []).append(all_detections[i])
+        
+        # Merge hver cluster til én deteksjon
         merged_balls = []
         
-        for cluster in clusters:
-            # Beregn gjennomsnittlig posisjon og radius
+        for cluster in cluster_map.values():
+            best_ball = max(cluster, key=lambda b: b.confidence)
+            color = best_ball.color
+            
             avg_x = int(np.mean([b.center[0] for b in cluster]))
             avg_y = int(np.mean([b.center[1] for b in cluster]))
             avg_radius = np.mean([b.radius for b in cluster])
             
-            # Fargebestemmelse: Velg fargen fra deteksjonen med høyest confidence
-            best_ball = max(cluster, key=lambda b: b.confidence)
-            color = best_ball.color
-            
-            # Confidence boost hvis multiple metoder er enige
             num_methods = len(set(b.detection_method for b in cluster))
             avg_confidence = np.mean([b.confidence for b in cluster])
-            
-            # Boost confidence hvis flere metoder detekterte samme ball
-            # Dette gjør deteksjonen mer pålitelig
             final_confidence = min(avg_confidence * (1.0 + 0.3 * (num_methods - 1)), 1.0)
             
             merged_ball = DetectedBall(
@@ -532,24 +576,78 @@ class SimpleBallDetector:
                 center=(avg_x, avg_y),
                 radius=float(avg_radius),
                 confidence=float(final_confidence),
-                detection_method="ensemble"
+                detection_method="ensemble" if num_methods > 1 else best_ball.detection_method
             )
-            
             merged_balls.append(merged_ball)
         
         self.stats['ensemble_detections'] = len(merged_balls)
         return merged_balls
-    
-    def detect_balls(self, frame: np.ndarray) -> List[DetectedBall]:
+
+    def _post_merge_nms(self, balls: List[DetectedBall]) -> List[DetectedBall]:
+        """
+        Siste NMS-runde per farge: beholder bare den beste deteksjonen
+        innenfor en avstand tilsvarende én radius.
+
+        Håndterer tilfeller der USB-kabelens bøyninger skaper Hough-sirkler
+        langt nok fra ballen til å unngå ensemble_merge, men som likevel er
+        falske duplikater (fargeregion overlapper med den ekte ballen).
+        """
+        if len(balls) <= 1:
+            return balls
+
+        # Sorter: høyest confidence først (vi beholder "vinneren" per klynge)
+        sorted_balls = sorted(balls, key=lambda b: b.confidence, reverse=True)
+        kept = []
+
+        for candidate in sorted_balls:
+            duplicate = False
+            for accepted in kept:
+                if candidate.color != accepted.color:
+                    continue
+                dx = candidate.center[0] - accepted.center[0]
+                dy = candidate.center[1] - accepted.center[1]
+                dist = np.sqrt(dx**2 + dy**2)
+                # Samme ball hvis senter er innenfor den størst aksepterte radiusen
+                if dist < max(accepted.radius, candidate.radius) * 1.5:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept.append(candidate)
+
+        return kept
+
+    def _limit_per_color(self, balls: List[DetectedBall]) -> List[DetectedBall]:
+        """
+        Beholder kun de N beste deteksjonene per farge (sortert etter confidence).
+        Forhindrer at falske positiver teller med når vi vet maks antall baller i scenen.
+        """
+        from collections import defaultdict
+        per_color: dict = defaultdict(list)
+        for b in balls:
+            per_color[b.color].append(b)
+
+        result = []
+        for color_balls in per_color.values():
+            color_balls.sort(key=lambda b: b.confidence, reverse=True)
+            result.extend(color_balls[:self.max_balls_per_color])
+        return result
+
+    def detect_balls(self, frame: np.ndarray) -> Tuple[List[DetectedBall], Dict]:
         """
         Hovedfunksjon for å detektere baller med ensemble pipeline og adaptiv lyshåndtering.
         
         Args:
-            frame: Input frame i BGR
+            frame: Input frame i BGR (3-kanals)
             
         Returns:
-            Liste med detekterte baller
+            Tuple (baller, statistikk): liste med DetectedBall og dict med statistikk
         """
+        # Valider frame-input
+        if frame is None or frame.size == 0:
+            return [], self.stats.copy()
+        if len(frame.shape) != 3 or frame.shape[2] != 3:
+            return [], self.stats.copy()
+        
         # 1. Analyser lysforhold (300-700 lux range)
         lighting_info = self.analyze_lighting(frame)
         self.stats['lighting_level'] = lighting_info['level']
@@ -575,16 +673,25 @@ class SimpleBallDetector:
         # 7. Ensemble merge - kombinerer begge metodene
         merged_balls = self.ensemble_merge(hsv_balls, hough_balls)
         
-        return merged_balls
+        # 8. Post-merge NMS per farge: fjern gjenværende duplikater
+        merged_balls = self._post_merge_nms(merged_balls)
+        
+        # 9. Behold maks N baller per farge (sortert etter confidence)
+        merged_balls = self._limit_per_color(merged_balls)
+        
+        return merged_balls, self.stats.copy()
     
-    def draw_detections(self, frame: np.ndarray, balls: List[DetectedBall], show_info: bool = True) -> np.ndarray:
+    def draw_detections(self, frame: np.ndarray, balls: List[DetectedBall], show_info: bool = True,
+                        overlay: Optional[Dict] = None) -> np.ndarray:
         """
-        Tegner detekterte baller på frame med lysinformasjon.
+        Tegner detekterte baller og valgfri overlay-statistikk på frame.
         
         Args:
             frame: Frame å tegne på
             balls: Liste med baller
-            show_info: Vis info-tekst
+            show_info: Vis info-tekst ved siden av ballene
+            overlay: Valgfri dict med ekstra nøkkel-verdi-par å vise øverst til venstre
+                     Eksempel: {"FPS": 15, "Frame": 42}
             
         Returns:
             Annotated frame
@@ -603,42 +710,101 @@ class SimpleBallDetector:
                 draw_color = (128, 128, 128)
                 color_name = "???"
             
-            # Tegn sirkel
+            # Sirkel med sort kontur for å skille seg fra bakgrunnen
+            cv2.circle(output, ball.center, int(ball.radius), (0, 0, 0), 6)
             cv2.circle(output, ball.center, int(ball.radius), draw_color, 3)
-            cv2.circle(output, ball.center, 5, draw_color, -1)
-            
+            cv2.circle(output, ball.center, 6, (0, 0, 0), -1)
+            cv2.circle(output, ball.center, 4, (255, 255, 255), -1)
+
             if show_info:
-                # Info-tekst
-                text = f"{color_name} C:{ball.confidence:.2f}"
-                
-                # Tegn tekst over ballen
-                y_pos = ball.center[1] - int(ball.radius) - 10
-                cv2.putText(output, text, (ball.center[0] - 50, y_pos),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, draw_color, 2)
+                # Info-tekst med avstand — hvit tekst på mørk boks med farget kant
+                dist_text = f"{ball.distance_cm:.0f} cm" if ball.distance_cm else ""
+                conf_pct = int(ball.confidence * 100)
+                text = f"{color_name}  {dist_text}  {conf_pct}%"
+
+                FONT       = cv2.FONT_HERSHEY_SIMPLEX
+                f_scale    = 0.58
+                f_thick    = 1
+                (tw, th), baseline = cv2.getTextSize(text, FONT, f_scale, f_thick)
+                cx, cy = ball.center
+                r = int(ball.radius)
+
+                # Plasser tekst sentrert over sirkelen, klem til rammen
+                xt = max(6, min(cx - tw // 2, output.shape[1] - tw - 10))
+                yt = max(th + 10, cy - r - 10)
+
+                pad = 5
+                # Mørk boks
+                cv2.rectangle(output,
+                              (xt - pad, yt - th - pad),
+                              (xt + tw + pad, yt + baseline + pad),
+                              (20, 20, 20), -1)
+                # Farget kant rundt boksen
+                cv2.rectangle(output,
+                              (xt - pad, yt - th - pad),
+                              (xt + tw + pad, yt + baseline + pad),
+                              draw_color, 1)
+                # Hvit tekst
+                cv2.putText(output, text, (xt, yt), FONT, f_scale, (255, 255, 255), f_thick)
         
-        # Vis lysinformasjon i øvre venstre hjørne
-        if show_info and self.enable_adaptive_lighting:
-            lighting_level = self.stats.get('lighting_level', 'unknown')
-            
-            # Fargekode basert på lysnivå
-            if lighting_level == 'low':
-                light_color = (0, 165, 255)  # Orange
-                light_text = "Light: LOW (300-400 lux)"
-            elif lighting_level == 'medium':
-                light_color = (0, 255, 0)  # Grønn
-                light_text = "Light: MEDIUM (400-550 lux)"
-            elif lighting_level == 'high':
-                light_color = (0, 255, 255)  # Gul
-                light_text = "Light: HIGH (550-700 lux)"
+        if not show_info:
+            return output
+        
+        # --- Overlay panel øverst til venstre ---
+        FONT       = cv2.FONT_HERSHEY_SIMPLEX
+        FONT_SCALE = 0.65
+        THICKNESS  = 1
+        LINE_H     = 30        # piksel-avstand mellom linjer
+        PAD_X      = 12
+        PAD_TOP    = 10        # avstand fra topp til første linje
+        
+        WHITE = (255, 255, 255)
+        lines = []  # (tekst, BGR-farge)
+        
+        # Lysnivå
+        if self.enable_adaptive_lighting:
+            level = self.stats.get('lighting_level', 'unknown')
+            if level == 'low':
+                lines.append(("Light: LOW (300-400 lux)",    WHITE))
+            elif level == 'medium':
+                lines.append(("Light: MEDIUM (400-550 lux)", WHITE))
+            elif level == 'high':
+                lines.append(("Light: HIGH (550-700 lux)",   WHITE))
             else:
-                light_color = (128, 128, 128)  # Grå
-                light_text = "Light: UNKNOWN"
-            
-            # Tegn bakgrunn for bedre lesbarhet
-            cv2.rectangle(output, (5, 5), (280, 30), (0, 0, 0), -1)
-            cv2.putText(output, light_text, (10, 23),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, light_color, 2)
+                lines.append(("Light: UNKNOWN",               WHITE))
         
+        # Ekstra overlay fra kallende kode (FPS, frame, osv.) — alltid hvit tekst
+        if overlay:
+            for key, val in overlay.items():
+                lines.append((f"{key}: {val}", WHITE))
+        
+        if not lines:
+            return output
+
+        # Beregn boks-størrelse
+        max_w = max(cv2.getTextSize(t, FONT, FONT_SCALE, THICKNESS)[0][0] for t, _ in lines)
+        box_w = PAD_X * 2 + max_w + 8
+        box_h = PAD_TOP * 2 + LINE_H * len(lines)
+        h_fr, w_fr = output.shape[:2]
+        box_w = min(box_w, w_fr)
+        box_h = min(box_h, h_fr)
+
+        # Semi-transparent mørk bakgrunn (75% mørk, 25% original)
+        roi = output[0:box_h, 0:box_w].copy()
+        dark = np.full_like(roi, (15, 15, 15))
+        cv2.addWeighted(dark, 0.78, roi, 0.22, 0, roi)
+        output[0:box_h, 0:box_w] = roi
+
+        # Tynn grå kant rundt panelet
+        cv2.rectangle(output, (0, 0), (box_w - 1, box_h - 1), (80, 80, 80), 1)
+
+        for i, (text, color) in enumerate(lines):
+            y = PAD_TOP + LINE_H // 2 + LINE_H // 4 + i * LINE_H
+            # Sort skygge bak teksten for lesbarhet
+            cv2.putText(output, text, (PAD_X, y), FONT, FONT_SCALE, (0, 0, 0), THICKNESS + 2)
+            # Farget tekst øverst
+            cv2.putText(output, text, (PAD_X, y), FONT, FONT_SCALE, color, THICKNESS)
+
         return output
     
     def get_statistics(self) -> Dict[str, int]:
