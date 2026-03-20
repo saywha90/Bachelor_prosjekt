@@ -162,7 +162,7 @@ for ball in balls:
           f"method={ball.detection_method}")
 
 # Visualiser
-annotated = detector.draw_detections(frame, balls, stats)
+annotated = detector.draw_detections(frame, balls)
 cv2.imshow('Detection', annotated)
 ```
 

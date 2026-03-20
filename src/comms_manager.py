@@ -112,7 +112,10 @@ class CommsManager:
 
         # --- Send Pakken ---
         if self.serial_port and self.serial_port.is_open:
-            self.serial_port.write(packet)
+            try:
+                self.serial_port.write(packet)
+            except serial.SerialException as e:
+                print(f"FEIL: Kunne ikke sende data til Arduino: {e}")
         else:
             print("FEIL: Seriellport er ikke åpen.")
 

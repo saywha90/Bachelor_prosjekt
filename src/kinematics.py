@@ -73,6 +73,11 @@ class KinematicsSolver:
         # Sjekk om målet er utenfor rekkevidde
         # Hvis D er lengre enn armen (L2 + L3), kan vi ikke nå det.
         max_reach = self.l2 + self.l3
+        if D < 1.0:
+            raise ValueError(
+                f"Målet ({x}, {y}, {z}) er for nært skulderleddet (singularitetspunkt). "
+                f"Avstand D={D:.2f}mm. Gi et mål med større avstand fra skulder."
+            )
         if D > max_reach:
             raise ValueError(
                 f"Målet ({x}, {y}, {z}) er utenfor rekkevidde. "
