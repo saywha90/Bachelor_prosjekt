@@ -6,13 +6,16 @@ Dette prosjektet løser problemet med å detektere og klassifisere røde og blå
 
 ### Siste testresultater
 
-| Metrikk | Resultat |
-|---------|----------|
-| Rød ball deteksjon | ~98–100 % |
-| Blå ball deteksjon | ~95–100 % |
-| Gjennomsnitt baller/frame | ~2.00 (nøyaktig 1 rød + 1 blå) |
-| FPS (Raspberry Pi 4) | 15–20 |
-| Vurdering | ✅ EXCELLENT |
+> ⚠️ **Merk:** All testing er gjort på Mac (utviklingsmaskin med webcam). Raspberry Pi 5 er valgt som målplatform, men er ikke satt opp ennå. Ytelsestall for Pi 5 oppdateres etter hardware-integrasjon.
+
+| Metrikk | Resultat | Testet på |
+|---------|----------|----------|
+| Rød ball deteksjon | ~98–100 % | Mac (webcam) |
+| Blå ball deteksjon | ~95–100 % | Mac (webcam) |
+| Gjennomsnitt baller/frame | ~2.00 (nøyaktig 1 rød + 1 blå) | Mac (webcam) |
+| FPS | ~18–19 | Mac (webcam) |
+| FPS på Raspberry Pi 5 | Ikke målt ennå | — |
+| Vurdering | ✅ EXCELLENT | Mac |
 
 ---
 
@@ -224,9 +227,9 @@ Ensemble:    Kun objekter som er BÅDE røde/blå OG sirkulære = baller
 - Lett å debugge: visuell feedback viser lysnivå, deteksjonsmetode, confidence
 
 ### 5. **Performance**
-- 15-20 FPS på Raspberry Pi 4
-- <50ms latency per frame
-- Acceptabel for robotarm-applikasjon (ikke sanntidskritisk)
+- ~18–19 FPS på Mac (utviklingsmaskin, webcam 1280×720)
+- Raspberry Pi 5 er valgt som målplatform — ytelse ikke målt ennå
+- Akseptabel for robotarm-applikasjon (ikke sanntidskritisk)
 
 ---
 
@@ -326,7 +329,8 @@ Bachelor_prosjekt/
 | Lysforhold 300 lux | ✅ Fungerer | CLAHE preprocessing aktiveres |
 | Lysforhold 500 lux | ✅ Fungerer | Standard HSV ranges |
 | Lysforhold 700 lux | ✅ Fungerer | Strammere ranges for presisjon |
-| FPS på Raspberry Pi 4 | ⚠️ 15-20 FPS | Akseptabelt, men ikke 30 FPS |
+| FPS på Mac (webcam) | ✅ ~18–19 FPS | Testet på utviklingsmaskin |
+| FPS på Raspberry Pi 5 | ⏳ Ikke målt | Hardware ikke satt opp ennå |
 | Overlappende baller | ⚠️ Delvis | Ensemble hjelper, men ikke perfekt |
 
 ### Kjente begrensninger
@@ -338,13 +342,15 @@ Bachelor_prosjekt/
 
 ### Performance-måling
 
-**Raspberry Pi 4 (4GB RAM):**
-- Deteksjon: 15-20 FPS (varierende med lysnivå)
-- Latency: <50ms per frame  
-- Memory: ~150MB
-- CPU: 40-60% (single core)
+**Mac (utviklingsmaskin, webcam 1280×720):**
+- Deteksjon: ~18–19 FPS
+- Tid per frame: <55ms
 
-**Optimalisering gjort:**
+**Raspberry Pi 5 (planlagt målplatform — ikke målt ennå):**
+- Forventes raskere enn Pi 4 pga. kraftigere CPU
+- Ytelse oppdateres etter hardware-integrasjon
+
+**Optimalisering gjort:
 - CLAHE kun aktivert ved LOW lux (300-400)
 - Effektiv morfologisk prosessering
 - Minimal Hough overhead (kun på relevante områder)
@@ -496,7 +502,8 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 | Adaptiv lys (300-700 lux) | ✅ Fungerer | CLAHE + dynamisk HSV |
 | Ensemble (HSV + Hough) | ✅ Aktivt | Minimale falske positiver |
 | Gjennomsnitt baller/frame | ✅ ~2.00 | Nøyaktig 1 rød + 1 blå |
-| FPS på Raspberry Pi 4 | ⚠️ 15–20 | Akseptabelt, ikke 30 |
+| FPS på Mac (webcam) | ✅ ~18–19 | Testet på utviklingsmaskin |
+| FPS på Raspberry Pi 5 | ⏳ Ikke målt | Hardware ikke satt opp ennå |
 | Visuell overlay | ✅ Oppdatert | Hvit tekst, mørk boks, sortkontur |
 
 ### 🔑 Nøkkeluttak fra utviklingen
