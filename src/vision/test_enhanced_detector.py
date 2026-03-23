@@ -196,13 +196,21 @@ def main():
     print(f"  Hough detections: {stats['hough_detections']}")
     print(f"  Ensemble detections: {stats['ensemble_detections']}")
     print()
+    if frame_count == 0:
+        print("  No frames captured — camera may not be available.")
+        print("=" * 60)
+        return
+
+    red_pct   = (red_count  / frame_count) * 100
+    blue_pct  = (blue_count / frame_count) * 100
+
     print("Ball Counts:")
     print(f"  Red: {red_count} ({red_pct:.1f}% detection rate)")
     print(f"  Blue: {blue_count} ({blue_pct:.1f}% detection rate)")
     print(f"  Total: {red_count + blue_count}")
     print(f"  Average per frame: {(red_count + blue_count) / frame_count:.2f}")
     print()
-    
+
     # Performance assessment
     print("PERFORMANCE ASSESSMENT:")
     if red_pct >= 90 and blue_pct >= 90:

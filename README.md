@@ -2,7 +2,17 @@
 
 **Bachelor 2026 - Intelligent balldeteksjon for robotarm**
 
-Dette prosjektet løser problemet med å detektere og klassifisereøde og blå baller under varierende lysforhold for en autonom robotarm. Systemet kombinerer Raspberry Pi (high-level kontroll), Arduino Mega (low-level servo-kontroll), og et kamera-basert vision system.
+Dette prosjektet løser problemet med å detektere og klassifisere røde og blå baller under varierende lysforhold for en autonom robotarm. Systemet kombinerer Raspberry Pi (high-level kontroll), Arduino Mega (low-level servo-kontroll), og et kamera-basert vision-system.
+
+### Siste testresultater
+
+| Metrikk | Resultat |
+|---------|----------|
+| Rød ball deteksjon | ~98–100 % |
+| Blå ball deteksjon | ~95–100 % |
+| Gjennomsnitt baller/frame | ~2.00 (nøyaktig 1 rød + 1 blå) |
+| FPS (Raspberry Pi 4) | 15–20 |
+| Vurdering | ✅ EXCELLENT |
 
 ---
 
@@ -49,6 +59,20 @@ Dette prosjektet løser problemet med å detektere og klassifisereøde og blå b
 
 ---
 
+### ⚠️ Forsøk 3: SVM-klassifikator (tilgjengelig, men ikke primær)
+
+**Hva vi bygde:**
+- HSV-histogram + SVM (Support Vector Machine) som alternativ fargeklassifikator
+- Trente på 63 bilder (33 røde, 30 blå) — webcam-bilder ~100×115 px
+- `scikit-learn` med `StandardScaler + SVC(kernel=rbf, C=10)`
+- 100-dimensjonal feature-vektor: HSV-histogram (H:36 bins, S:32 bins, V:32 bins)
+
+**Resultat:** 95,1 % ± 6,6 % kryssvaliderings-nøyaktighet, 32 KB modell (`models/ball_color_classifier.pkl`)
+
+**Begrensning:** `SimpleBallDetector` i `enhanced_detector.py` bruker direkte HSV-deteksjon, som er raskere og ikke krever noen ML-avhengigheter. SVM-modellen er tilgjengelig via `color_histogram_classifier.py` dersom man ønsker et alternativt klassifikasjonstrinn.
+
+---
+
 ### ✅ Løsning: SimpleBallDetector (FUNGERER!)
 
 **Hva vi gikk for:**
@@ -61,9 +85,9 @@ En forenklet, robust ensemble-basert detektor med kun de essensielle komponenten
 
 **Rød ball HSV-ranges:**
 ```python
-# Bright (godt lys): H: 0-11/170-179, S: 177-255, V: 150-255
-# Medium (medium lys): H: 0-11/170-179, S: 157-255, V: 96-255  
-# Dark (dårlig lys): H: 0-11/170-179, S: 147-255, V: 59-156
+# Bright (godt lys):   H: 0-11/170-179, S: 180-255, V: 149-255
+# Medium (medium lys): H: 0-11/170-179, S: 150-255, V: 114-255
+# Dark (dårlig lys):   H: 0-11/170-179, S: 130-255, V:  99-175
 ```
 
 **Hvorfor dette fungerer:**
@@ -122,18 +146,24 @@ estimated_lux = 300 + (mean_brightness - 80) * 4.0
 
 ## 🎯 Hvordan det fungerer nå
 
-### Deteksjonspipeline (7 steg)
+### Deteksjonspipeline (9 steg)
 
 ```
-1. Capture frame → Kamera (640×480 eller høyere)
-2. Analyze lighting → Estimerer lux, klassifiserer LOW/MEDIUM/HIGH
+1. Capture frame      → Kamera (640×480 eller høyere)
+2. Analyze lighting   → Estimerer lux, klassifiserer LOW/MEDIUM/HIGH
 3. Apply compensation → CLAHE hvis LOW, ellers ingen preprocessing
-4. Color conversion → BGR → HSV
-5. Gaussian blur → Støyreduksjon (kernel 5×5)
-6. HSV detection → 6 ranges for rød, 3 for blå
-7. Hough detection → Finn sirkler geometrisk
-8. Ensemble merge → Kombiner resultater, boost confidence ved enighet
+4. Color conversion   → BGR → HSV + Grayscale
+5. Gaussian blur      → Støyreduksjon (kernel 5×5)
+6. HSV detection      → 6 ranges for rød, 3 for blå
+7. Hough detection    → Finn sirkler geometrisk
+8. Ensemble merge     → Union-Find transitiv clustering + confidence boost
+9. Post-processing    → _post_merge_nms() + _limit_per_color(max=1)
 ```
+
+**Nøkkeldetaljer om steg 8–9:**
+- **Union-Find NMS:** Transitiv klynging — hvis A+B overlapper og B+C overlapper, merges alle tre (ikke bare nabopar)
+- **`_post_merge_nms()`:** Sekundær NMS med 1,5× radius-terskel
+- **`_limit_per_color()`:** Hard grense på 1 ball per farge → eliminerer gjenværende duplikater
 
 ### Kodeeksempel
 
@@ -255,37 +285,32 @@ python src/main_rpi.py --port /dev/ttyUSB0
 Bachelor_prosjekt/
 ├── src/
 │   ├── vision/
-│   │   ├── enhanced_detector.py         ⭐ SimpleBallDetector (HOVEDFIL)
-│   │   ├── test_enhanced_detector.py    🧪 Live test av detector
-│   │   ├── ball_detection.py            (Legacy ML-version - ikke i bruk)
-│   │   ├── ml_classifier.py             (Legacy ML - ikke i bruk)
-│   │   ├── hsv_tuner.py                 🎨 HSV-kalibrering
-│   │   ├── ADAPTIVE_LIGHTING.md         📄 Guide til adaptiv lys
-│   │   └── ...
-│   ├── main_rpi.py                      🤖 Hovedprogram
-│   ├── kinematics.py                    📐 IK/FK for robotarm
-│   ├── comms_manager.py                 📡 Seriell kommunikasjon
-│   └── config.py                        ⚙️ Systemkonfigurasjon
+│   │   ├── enhanced_detector.py          ⭐ SimpleBallDetector (HOVEDFIL)
+│   │   ├── test_enhanced_detector.py     🧪 Live kameratest
+│   │   ├── color_histogram_classifier.py 🤖 SVM-inferens (alternativ klassifikator)
+│   │   ├── train_color_classifier.py     🏋️ Trener HSV+SVM-modellen
+│   │   ├── recalibrate_hsv.py            🔬 Analyserer treningsbilder for kalibrering
+│   │   ├── hsv_tuner.py                  🎨 Interaktiv HSV-kalibrering
+│   │   └── models/                       📦 Lagringsplass for .pkl-modeller
+│   ├── main_rpi.py                       🤖 Hovedprogram (Raspberry Pi)
+│   ├── kinematics.py                     📐 IK/FK for robotarm
+│   ├── comms_manager.py                  📡 Seriell kommunikasjon mot Arduino
+│   ├── config.py                         ⚙️ Systemkonfigurasjon
+│   └── requirements.txt                  📋 Python-avhengigheter
 │
 ├── firmware/
-│   └── motor_controller.ino             🎛️ Arduino FreeRTOS firmware
+│   └── motor_controller.ino              🎛️ Arduino FreeRTOS firmware
 │
-├── tests/
-│   ├── end_to_end_test.py               Integration test
-│   └── lighting_test_protocol.md        Lystest prosedyre
+├── models/
+│   └── ball_color_classifier.pkl         ⭐ SVM-klassifikator (32 KB, 95,1 % nøyaktighet)
 │
-├── training_data/                        📸 ML treningsdata (ikke brukt)
-│   ├── red/    (97 bilder)
-│   └── blue/   (105 bilder)
+├── training_data/                        📸 Treningsdata for SVM
+│   ├── red/    (33 bilder — webcam-bilder ~100×115 px)
+│   └── blue/   (30 bilder — webcam-bilder ~100×115 px)
 │
-├── models/                               🧠 ML-modeller (legacy, ikke brukt)
-│   ├── ball_classifier.h5
-│   └── ball_classifier_best.h5
-│
+├── raw_iphone/                           📷 Råbilder av ballene (kalibrering)
 └── README.md                             📖 Denne filen
 ```
-
-**Viktig:** `ball_detection.py` og ML-relaterte filer er legacy-kode fra Forsøk 1. De brukes IKKE i dagens løsning.
 
 ---
 
@@ -465,20 +490,24 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 | Komponent | Status | Kommentar |
 |-----------|--------|-----------|
-| Rød ball deteksjon | ✅ Utmerket | Kalibrert fra 34M piksler |
-| Blå ball deteksjon | ✅ Utmerket | Multi-range HSV |
+| Rød ball deteksjon | ✅ ~98–100 % | Kalibrert fra 34M piksler |
+| Blå ball deteksjon | ✅ ~95–100 % | Multi-range HSV |
+| Duplikater | ✅ Eliminert | Union-Find NMS + limit_per_color |
 | Adaptiv lys (300-700 lux) | ✅ Fungerer | CLAHE + dynamisk HSV |
 | Ensemble (HSV + Hough) | ✅ Aktivt | Minimale falske positiver |
-| FPS på Raspberry Pi 4 | ⚠️ 15-20 | Akseptabelt, ikke 30 |
-| Robusthet | ✅ Høy | Fungerer under varierende forhold |
+| Gjennomsnitt baller/frame | ✅ ~2.00 | Nøyaktig 1 rød + 1 blå |
+| FPS på Raspberry Pi 4 | ⚠️ 15–20 | Akseptabelt, ikke 30 |
+| Visuell overlay | ✅ Oppdatert | Hvit tekst, mørk boks, sortkontur |
 
 ### 🔑 Nøkkeluttak fra utviklingen
 
-1. **ML er overkill** for dette problemet - fargedeteksjon er enklere og mer pålitelig
-2. **Kompleksitet dreper** - EnhancedBallDetector (v1.1) var for kompleks og fragil
-3. **Kalibrering er kritisk** - Generiske HSV-verdier fungerer ikke, må kalibreres for dine baller
-4. **Ensemble reduserer falske positiver** - To metoder bedre enn én
-5. **Adaptivitet gir robusthet** - Samme kode i ulike lysforhold
+1. **ML er overkill** for dette problemet — fargedeteksjon er enklere og mer pålitelig
+2. **Kompleksitet dreper** — EnhancedBallDetector (v1.1) var for kompleks og fragil
+3. **Kalibrering er kritisk** — Generiske HSV-verdier fungerer ikke, må kalibreres for dine baller
+4. **Ensemble reduserer falske positiver** — To metoder bedre enn én
+5. **Transitiv NMS er nødvendig** — Nabopar-NMS er ikke-transitiv og gir gjenværende duplikater
+6. **Hard cap per farge** — `max_balls_per_color=1` eliminerer duplikater som NMS ikke fanger
+7. **Adaptivitet gir robusthet** — Samme kode i ulike lysforhold
 
 ### 🎓 Lærdommer
 
@@ -489,15 +518,6 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 | **Målinger over antakelser** | Kalibrer fra faktiske data, ikke internett-verdier |
 | **Debugging-verktøy** | Visuell feedback (lysnivå, confidence) spart oss mye tid |
 | **Robusthet > Accuracy** | 95% pålitelighet bedre enn 99% som feiler ved edge cases |
-
----
-
-## 📚 Dokumentasjon
-
-- **[src/vision/enhanced_detector.py](src/vision/enhanced_detector.py)** - SimpleBallDetector implementation
-- **[src/vision/ADAPTIVE_LIGHTING.md](src/vision/ADAPTIVE_LIGHTING.md)** - Guide til adaptiv lyshåndtering
-- **[src/vision/QUICKSTART.md](src/vision/QUICKSTART.md)** - Hurtigstart vision
-- **[src/vision/README.md](src/vision/README.md)** - Teknisk API-dokumentasjon
 
 ---
 
