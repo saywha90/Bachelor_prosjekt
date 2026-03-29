@@ -20,33 +20,32 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent
 sys.path.insert(0, str(src_path))
 
-from vision.privacy_utils import request_camera_consent, safe_file_path
+from vision.oak_camera import OAKCamera
 
 
 class HSVTuner:
     """Interaktivt verktøy for å tune HSV-verdier"""
     
-    def __init__(self, camera_index=0):
-        self.camera_index = camera_index
-        self.cap = None
+    def __init__(self):
+        self._oak_cam = None
         self.current_color = 'red'  # 'red' eller 'blue'
         
-        # Standard HSV-verdier
+        # Startpunkter kalibrert for OAK IMX378-sensor (verdiene er mørke og høyt mettet)
         self.hsv_ranges = {
             'red_low': {
-                'h_min': 0, 'h_max': 10,
-                's_min': 100, 's_max': 255,
-                'v_min': 100, 'v_max': 255
+                'h_min': 0,   'h_max': 11,
+                's_min': 120, 's_max': 255,
+                'v_min': 15,  'v_max': 255
             },
             'red_high': {
-                'h_min': 170, 'h_max': 179,
-                's_min': 100, 's_max': 255,
-                'v_min': 100, 'v_max': 255
+                'h_min': 168, 'h_max': 179,
+                's_min': 120, 's_max': 255,
+                'v_min': 15,  'v_max': 255
             },
             'blue': {
-                'h_min': 100, 'h_max': 130,
-                's_min': 100, 's_max': 255,
-                'v_min': 100, 'v_max': 255
+                'h_min': 90,  'h_max': 135,
+                's_min': 90,  's_max': 255,
+                'v_min': 8,   'v_max': 255
             }
         }
     
@@ -137,11 +136,6 @@ class HSVTuner:
         """Lagrer verdier til fil"""
         filename = "hsv_calibration.txt"
         
-        # Sikkerhetskontroll: Valider filnavn
-        if not safe_file_path(filename, ['.txt']):
-            print("❌ FEIL: Ugyldig filnavn")
-            return
-        
         try:
             # Bruk Path for sikker filhåndtering
             output_path = Path.cwd() / filename
@@ -171,23 +165,15 @@ class HSVTuner:
     
     def run(self):
         """Hovedløkke"""
-        # GDPR: Be om samtykke før kamerabruk
-        if not request_camera_consent():
-            print("\n❌ Kamerasamtykke ikke gitt. Avslutter.")
+        # Åpne OAK kamera
+        self._oak_cam = OAKCamera(resolution=(1280, 720))
+        self._oak_cam.open()
+
+        if not self._oak_cam.isOpened():
+            print("FEIL: Kunne ikke åpne OAK kamera")
             return
-        
-        # Åpne kamera
-        self.cap = cv2.VideoCapture(self.camera_index)
-        
-        if not self.cap.isOpened():
-            print(f"FEIL: Kunne ikke åpne kamera {self.camera_index}")
-            return
-        
-        # Sett oppløsning
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        print(f"✓ Kamera åpnet")
+
+        print("✓ OAK kamera åpnet (1280×720)")
         
         # Opprett vinduer
         window_original = 'Original'
@@ -212,7 +198,7 @@ class HSVTuner:
         
         try:
             while True:
-                ret, frame = self.cap.read()
+                ret, frame = self._oak_cam.read()
                 
                 if not ret:
                     print("Kunne ikke lese fra kamera")
@@ -274,7 +260,7 @@ class HSVTuner:
         
         finally:
             # Rydd opp
-            self.cap.release()
+            self._oak_cam.release()
             cv2.destroyAllWindows()
             
             print("\n" + "="*70)
@@ -287,16 +273,7 @@ class HSVTuner:
 
 def main():
     """Hovedfunksjon"""
-    camera_index = 0
-    
-    if len(sys.argv) > 1:
-        try:
-            camera_index = int(sys.argv[1])
-        except ValueError:
-            print(f"Ugyldig kameraindeks: {sys.argv[1]}")
-            return
-    
-    tuner = HSVTuner(camera_index=camera_index)
+    tuner = HSVTuner()
     tuner.run()
 
 

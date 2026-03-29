@@ -1,227 +1,190 @@
-"""
-Test Simple Ball Detector with Adaptive Lighting
-=================================================
+﻿"""
+Test Balldetektoren mot OAK Series 2 kamera
+============================================
 
-Tester den forenklede detektoren med:
-- Multi-range HSV (6 red, 3 blue ranges)
-- Hough Circle Transform
-- Ensemble voting
-- Adaptive lighting (300-700 lux)
-- Statistics
+Tester SimpleBallDetector (ensemble HSV + Hough) med live video fra
+Luxonis OAK Series 2 kamera via depthai v3 API.
 
-DESIGNET FOR ENKEL OG PÅLITELIG DETEKSJON AV STATISKE BALLER.
-Håndterer lysforhold fra 300-700 lux automatisk.
+Detekterer rode og bla baller med:
+- Multi-range HSV (6 red-ranger, 3 blue-ranger)
+- Hough Circle Transform (geometrisk validering)
+- Ensemble-voting (kombinerer begge metodene)
+- Adaptiv lyshandtering (300-700 lux)
 
-Bruk: python src/vision/test_enhanced_detector.py [camera_index]
+Bruk: python src/vision/test_enhanced_detector.py
 """
 
 import cv2
-import numpy as np
 import sys
 import time
 from pathlib import Path
 
-# Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vision.enhanced_detector import EnhancedBallDetector, BallColor
+from vision.oak_camera import OAKCamera
+from vision.enhanced_detector import SimpleBallDetector, BallColor
+import config
 
 
 def main():
-    """Kjør live test av enhanced detector."""
-    
-    # Camera index
-    camera_index = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    
+    """Kjor live balldeteksjon med OAK-kameraet."""
+
     print("=" * 60)
-    print("SIMPLE BALL DETECTOR - LIVE TEST (with Adaptive Lighting)")
+    print("BALL DETECTOR - OAK Series 2")
     print("=" * 60)
     print()
-    print("Initializing simple detector...")
-    
-    # Initialiser detector - FORENKLET og PÅLITELIG med adaptiv lyshåndtering
-    detector = EnhancedBallDetector(
+    print("Initialiserer detektor...")
+
+    detector = SimpleBallDetector(
         min_radius=10,
         max_radius=150,
-        confidence_threshold=0.35,  # Balansert terskel
-        enable_adaptive_lighting=True  # Håndterer 300-700 lux
+        confidence_threshold=0.35,
+        enable_adaptive_lighting=True,
     )
-    
-    print("✓ Detector initialized")
+
+    print("OK Detektor klar")
     print()
-    print("Features enabled:")
-    print("  ✓ Multi-range HSV (6 red ranges, 3 blue ranges)")
-    print("  ✓ Hough Circle Transform (geometric validation)")
-    print("  ✓ Ensemble voting (combines both methods)")
-    print("  ✓ Adaptive lighting (300-700 lux range)")
+    print("Funksjoner:")
+    print("  OK Multi-range HSV (6 red, 3 blue ranger)")
+    print("  OK Hough Circle Transform")
+    print("  OK Ensemble-voting")
+    print("  OK Adaptiv lyshandtering (300-700 lux)")
     print()
-    
-    # Åpne kamera
-    print(f"Opening camera {camera_index}...")
-    cap = cv2.VideoCapture(camera_index)
-    
-    if not cap.isOpened():
-        print(f"❌ ERROR: Could not open camera {camera_index}")
+
+    print(f"Apner OAK-kamera ({config.CAMERA_RESOLUTION[0]}x{config.CAMERA_RESOLUTION[1]})...")
+    cam = OAKCamera(resolution=config.CAMERA_RESOLUTION)
+
+    if not cam.open():
+        print("FEIL: Kunne ikke apne OAK-kameraet.")
+        print("   Kontroller at kameraet er koblet til via USB.")
         return
-    
-    # Sett oppløsning
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    
-    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    
-    print(f"✓ Camera opened: {actual_width}x{actual_height} @ {fps:.1f} FPS")
+
+    w, h = cam.get_resolution()
+    print(f"OK Kamera apnet: {w}x{h}")
     print()
     print("=" * 60)
-    print("CONTROLS:")
-    print("  'q' - Quit")
-    print("  's' - Show statistics")
-    print("  'r' - Reset statistics")
+    print("KONTROLLER:")
+    print("  'q' - Avslutt")
+    print("  's' - Vis statistikk")
+    print("  'r' - Nullstill statistikk")
     print("=" * 60)
     print()
-    
-    # Statistics
+
     frame_count = 0
     red_count = 0
     blue_count = 0
     start_time = time.time()
-    
-    # FPS calculation
+
     fps_time = time.time()
     fps_frame_count = 0
     current_fps = 0
-    
-    while True:
-        ret, frame = cap.read()
+
+    while cam.isOpened():
+        ret, frame = cam.read()
         if not ret:
-            print("❌ Failed to read frame")
+            print("FEIL: Klarte ikke lese frame")
             break
-        
+
         frame_count += 1
         fps_frame_count += 1
-        
-        # FPS-beregning
+
         if time.time() - fps_time >= 1.0:
             current_fps = fps_frame_count
             fps_frame_count = 0
             fps_time = time.time()
-        
-        # Detect balls
+
         detected_balls, _ = detector.detect_balls(frame)
-        
-        # Count colors
+
         for ball in detected_balls:
             if ball.color == BallColor.RED:
                 red_count += 1
             elif ball.color == BallColor.BLUE:
                 blue_count += 1
-        
-        # Draw detections + overlay panel
+
         red_pct  = (red_count  / frame_count * 100) if frame_count > 0 else 0
         blue_pct = (blue_count / frame_count * 100) if frame_count > 0 else 0
         overlay = {
-            f"FPS":         current_fps,
-            f"Frame":       frame_count,
-            f"Detections":  len(detected_balls),
-            f"RED":         f"{red_count} ({red_pct:.1f}%)",
-            f"BLUE":        f"{blue_count} ({blue_pct:.1f}%)",
+            "FPS":        current_fps,
+            "Frame":      frame_count,
+            "Detections": len(detected_balls),
+            "ROD":        f"{red_count} ({red_pct:.1f}%)",
+            "BLA":        f"{blue_count} ({blue_pct:.1f}%)",
         }
         output = detector.draw_detections(frame, detected_balls, show_info=True, overlay=overlay)
-        
-        # Show frame
-        cv2.imshow('Enhanced Ball Detector - TEST', output)
-        
-        # Handle key presses
+
+        cv2.imshow("Ball Detector - OAK Series 2", output)
+
         key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):
-            print("\nQuitting...")
+
+        if key == ord("q"):
+            print("\nAvslutter...")
             break
-        elif key == ord('s'):
-            # Show statistics
+        elif key == ord("s"):
             stats = detector.get_statistics()
             elapsed = time.time() - start_time
-            
             print("\n" + "=" * 60)
-            print("STATISTICS")
+            print("STATISTIKK")
             print("=" * 60)
-            print(f"Time: {elapsed:.1f}s")
-            print(f"Frames: {frame_count}")
-            print(f"Average FPS: {frame_count / elapsed:.1f}")
+            print(f"Tid: {elapsed:.1f}s  |  Frames: {frame_count}  |  Snitt FPS: {frame_count / elapsed:.1f}")
             print()
-            print("Detection Methods:")
-            print(f"  HSV detections: {stats['hsv_detections']}")
-            print(f"  Hough detections: {stats['hough_detections']}")
-            print(f"  Ensemble detections: {stats['ensemble_detections']}")
+            print("Deteksjonsmetoder:")
+            print(f"  HSV:      {stats['hsv_detections']}")
+            print(f"  Hough:    {stats['hough_detections']}")
+            print(f"  Ensemble: {stats['ensemble_detections']}")
             print()
-            print("Ball Counts:")
-            print(f"  Red: {red_count} ({red_pct:.1f}%)")
-            print(f"  Blue: {blue_count} ({blue_pct:.1f}%)")
-            print(f"  Total: {red_count + blue_count}")
-            print(f"  Average per frame: {(red_count + blue_count) / frame_count:.2f}")
+            print("Baller:")
+            print(f"  Rod:  {red_count} ({red_pct:.1f}%)")
+            print(f"  Bla:  {blue_count} ({blue_pct:.1f}%)")
+            print(f"  Totalt: {red_count + blue_count}")
             print("=" * 60)
-            print()
-        elif key == ord('r'):
-            # Reset statistics
+        elif key == ord("r"):
             frame_count = 0
             red_count = 0
             blue_count = 0
             start_time = time.time()
             detector.stats = {
-                'hsv_detections': 0,
-                'hough_detections': 0,
-                'ensemble_detections': 0
+                "hsv_detections":      0,
+                "hough_detections":    0,
+                "ensemble_detections": 0,
+                "lighting_level":      "unknown",
             }
-            print("\n✓ Statistics reset\n")
-    
-    # Cleanup
-    cap.release()
+            print("\nOK Statistikk nullstilt\n")
+
+    cam.release()
     cv2.destroyAllWindows()
-    
-    # Final report
+
     elapsed = time.time() - start_time
     stats = detector.get_statistics()
-    
+
     print("\n" + "=" * 60)
-    print("FINAL REPORT")
+    print("SLUTTRAPPORT")
     print("=" * 60)
-    print(f"Test duration: {elapsed:.1f}s")
-    print(f"Total frames: {frame_count}")
-    print(f"Average FPS: {frame_count / elapsed:.1f}")
+    print(f"Varighet: {elapsed:.1f}s  |  Frames: {frame_count}  |  Snitt FPS: {(frame_count / elapsed):.1f}" if elapsed > 0 else "Varighet: 0s")
     print()
-    print("Detection Methods:")
-    print(f"  HSV detections: {stats['hsv_detections']}")
-    print(f"  Hough detections: {stats['hough_detections']}")
-    print(f"  Ensemble detections: {stats['ensemble_detections']}")
-    print()
-    if frame_count == 0:
-        print("  No frames captured — camera may not be available.")
-        print("=" * 60)
-        return
-
-    red_pct   = (red_count  / frame_count) * 100
-    blue_pct  = (blue_count / frame_count) * 100
-
-    print("Ball Counts:")
-    print(f"  Red: {red_count} ({red_pct:.1f}% detection rate)")
-    print(f"  Blue: {blue_count} ({blue_pct:.1f}% detection rate)")
-    print(f"  Total: {red_count + blue_count}")
-    print(f"  Average per frame: {(red_count + blue_count) / frame_count:.2f}")
+    print("Deteksjonsmetoder:")
+    print(f"  HSV:      {stats['hsv_detections']}")
+    print(f"  Hough:    {stats['hough_detections']}")
+    print(f"  Ensemble: {stats['ensemble_detections']}")
     print()
 
-    # Performance assessment
-    print("PERFORMANCE ASSESSMENT:")
-    if red_pct >= 90 and blue_pct >= 90:
-        print("  ✓ EXCELLENT - Detection rates meet 90%+ target!")
-    elif red_pct >= 70 and blue_pct >= 70:
-        print("  ⚠ GOOD - Detection rates above 70% but below target")
-    elif red_pct >= 50 and blue_pct >= 50:
-        print("  ⚠ MODERATE - Detection rates above 50% but need improvement")
+    if frame_count > 0:
+        red_pct  = (red_count  / frame_count) * 100
+        blue_pct = (blue_count / frame_count) * 100
+        print("Baller:")
+        print(f"  Rod:    {red_count} ({red_pct:.1f}%)")
+        print(f"  Bla:    {blue_count} ({blue_pct:.1f}%)")
+        print(f"  Totalt: {red_count + blue_count}")
+        print()
+        print("YTELSE:")
+        if red_pct >= 90 and blue_pct >= 90:
+            print("  UTMERKET - Deteksjonsrate over 90%!")
+        elif red_pct >= 70 and blue_pct >= 70:
+            print("  BRA - Deteksjonsrate over 70%, under mal")
+        else:
+            print("  TRENGS FORBEDRING - Deteksjonsrate under 70%")
     else:
-        print("  ❌ POOR - Detection rates below 50%, further tuning needed")
-    
+        print("  Ingen frames fanget - kamera ikke tilgjengelig.")
+
     print("=" * 60)
 
 

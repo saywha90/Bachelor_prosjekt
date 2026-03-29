@@ -1,27 +1,39 @@
 """
-Simple Ball Detector - Reliable Detection System with Adaptive Lighting
-========================================================================
+Simple Ball Detector
+====================
 
-Et forenklet ensemble-system for pålitelig deteksjon av røde og blå baller.
+Ensemble-system for pålitelig deteksjon av røde og blå baller med
+Luxonis OAK Series 2 kamera.
 
-Kombinerer:
-- Multi-range HSV color detection (6 red ranges, 3 blue ranges)
-- Hough Circle Transform (geometric validation)
-- Ensemble voting (combines both methods)
-- Adaptive lighting compensation (300-700 lux)
+Deteksjonsrørledning:
+  1. Multi-range HSV color detection (6 red ranges, 3 blue ranges)
+  2. Hough Circle Transform (geometrisk validering)
+  3. Ensemble voting (slår sammen begge metoder)
+  4. Adaptiv lyskompensasjon (CLAHE ved lavt lys)
+  5. SVM-fargeverifisering (sekundær — korrigerer feil fargelabel)
 
-Designet for å være ENKEL og PÅLITELIG under varierende lysforhold.
-Detekterer kun røde og blå baller i kameraets synsfelt.
+HSV-ranges er kalibrert for OAK IMX378-sensor: ballene er nesten svarte
+(V ≈ 14–45) men maksimalt mettet (S ≈ 255), som er den primære diskriminatoren.
 
 Author: Bachelor Project 2026 - Autonomia
-Date: March 2026 (Simplified version with adaptive lighting)
 """
 
 import cv2
 import numpy as np
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
 from enum import Enum
+
+# SVM-fargebeklassifiserer (sekundær voting) — laster ved import
+try:
+    from vision.color_histogram_classifier import ColorHistogramClassifier as _CHC
+    _SVM_AVAILABLE = True
+except ImportError:
+    _SVM_AVAILABLE = False
+    _CHC = None
+
+__all__ = ["SimpleBallDetector", "BallColor", "DetectedBall"]
 
 
 class BallColor(Enum):
@@ -44,19 +56,22 @@ class DetectedBall:
 
 class SimpleBallDetector:
     """
-    Forenklet ball detector med ensemble approach og adaptiv lyshåndtering.
-    
-    Kombinerer to robuste metoder:
-    1. Multi-range HSV color detection (6 red, 3 blue ranges)
-    2. Hough Circle Transform (geometric validation)
-    3. Ensemble voting (combines results for reliability)
-    4. Adaptive lighting compensation (300-700 lux)
-    
-    Designet for å være ENKEL og PÅLITELIG for statiske baller under varierende lys.
+    Ball detector med ensemble approach og adaptiv lyshåndtering.
+
+    Rørledning per frame:
+      1. Lysanalyse — klassifiser som low / medium / high
+      2. CLAHE-kompensasjon ved lavt lys
+      3. Multi-range HSV deteksjon (6 red, 3 blue ranges)
+      4. Hough Circle Transform (geometrisk validering)
+      5. Ensemble merge + NMS
+      6. SVM fargeverifisering (sekundær)
+      7. Returner maks N baller per farge
     """
     
     # Kjent balldiameter i mm (brukes til avstandsberegning)
     BALL_DIAMETER_MM = 50.0
+
+    # ─── Initialization ──────────────────────────────────────────────────
 
     def __init__(self,
                  min_radius: int = 10,
@@ -89,43 +104,56 @@ class SimpleBallDetector:
         self.focal_length_px = focal_length_px if focal_length_px is not None else 900.0
         
         # Multi-range HSV thresholds for RED
-        # ✅ KALIBRERT basert på analyse av 18 bilder (34M piksler) av din røde ball
-        # Hue: 0-11, Saturation: 147-255, Value: 59-255
+        # ✅ KALIBRERT for OAK Series 2 (IMX378) — live-målinger
+        # Ball-piksler: H=0, S=255, V=24-45 (svært mørk rød ball)
+        # S=255 (maksimalt mettet) er den viktigste diskriminatoren vs bakgrunn.
         self.red_ranges = [
-            # Bright red (godt lys) - high saturation, high value
-            # ✅ KALIBRERT fra 107 bilder (18M piksler) - oppdatert 20. mars 2026
-            (np.array([0, 180, 149]), np.array([11, 255, 255])),
-            (np.array([170, 180, 149]), np.array([179, 255, 255])),
+            # Lys rød — mer belyste piksler på balloverflaten
+            (np.array([0,   140, 60]), np.array([11,  255, 255])),
+            (np.array([168, 140, 60]), np.array([179, 255, 255])),
 
-            # Medium red (medium lys) - medium saturation/value
-            (np.array([0, 150, 114]), np.array([11, 255, 255])),
-            (np.array([170, 150, 114]), np.array([179, 255, 255])),
+            # Medium rød
+            (np.array([0,   100, 30]), np.array([11,  255, 255])),
+            (np.array([168, 100, 30]), np.array([179, 255, 255])),
 
-            # Dark red (dårlig lys) - low value for mørke forhold
-            (np.array([0, 130, 99]), np.array([11, 255, 175])),
-            (np.array([170, 130, 99]), np.array([179, 255, 175])),
+            # Mørk rød — V ned til 15 for den svarte kjernen av ballen
+            # S>=120 hindrer mørk-brune bakgrunnsflater
+            (np.array([0,   120, 15]), np.array([11,  255, 100])),
+            (np.array([168, 120, 15]), np.array([179, 255, 100])),
         ]
-        
+
         # Multi-range HSV thresholds for BLUE
-        # Optimized for reliable blue ball detection under various lighting
+        # ✅ KALIBRERT for OAK Series 2 (IMX378) — live-målinger
+        # Ball-piksler: H=118-120, S=255, V=14-22 (nesten svart blå ball!)
+        # Uten V≥10 klypper vi bort selve kjernen av ballen.
         self.blue_ranges = [
-            # Bright blue
-            (np.array([100, 100, 100]), np.array([130, 255, 255])),
-            
-            # Medium blue
-            (np.array([95, 70, 70]), np.array([135, 255, 255])),
-            
-            # Dark blue
-            (np.array([100, 80, 40]), np.array([130, 255, 150])),
+            # Lys blå — reflekterte piksler rundt kanten
+            (np.array([100, 115, 40]), np.array([125, 255, 255])),
+
+            # Medium blå
+            (np.array([ 95,  90, 20]), np.array([130, 255, 255])),
+
+            # Mørk blå — V ned til 8 for å fange den mørkeste-kjernen
+            # S>=120 hindrer mørke blågrå bakgrunnsflater (jeans, skygger)
+            (np.array([ 90, 120,  8]), np.array([135, 255, 120])),
         ]
         
         # Morphological kernels for noise reduction
         self.morph_kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.morph_kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        
+
         # CLAHE opprettes én gang (ikke per frame) for ytelse
         self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        
+
+        # SVM-fargebeklassifiserer — lastes hvis modell finnes
+        self._svm_classifier = None
+        if _SVM_AVAILABLE:
+            _model_path = Path(__file__).parent / "models" / "ball_color_classifier.pkl"
+            try:
+                self._svm_classifier = _CHC(str(_model_path))
+            except (FileNotFoundError, Exception):
+                pass
+
         # Statistics
         self.stats = {
             'hsv_detections': 0,
@@ -134,6 +162,8 @@ class SimpleBallDetector:
             'lighting_level': 'unknown'
         }
     
+    # ─── Lighting analysis ─────────────────────────────────────────────
+
     def analyze_lighting(self, frame: np.ndarray) -> Dict[str, any]:
         """
         Analyserer lysforholdene i bildet for adaptiv justering.
@@ -152,8 +182,8 @@ class SimpleBallDetector:
         mean_brightness = np.mean(gray)
         std_brightness = np.std(gray)
         
-        # Estimer lux-nivå basert på mean brightness
-        # Antakelse: 300 lux ≈ 80 brightness, 700 lux ≈ 180 brightness (kalibrert for typisk innendørslys)
+        # Grov lux-estimering basert på mean brightness (ikke kalibrert for OAK).
+        # Brukes kun til å klassifisere lysnivået som low/medium/high.
         estimated_lux = 300 + (mean_brightness - 80) * 4.0
         estimated_lux = np.clip(estimated_lux, 300, 700)
         
@@ -261,70 +291,63 @@ class SimpleBallDetector:
         
         return red_ranges_adjusted, blue_ranges_adjusted
     
-    def detect_with_hsv_multirange(self, hsv: np.ndarray, lighting_info: Optional[Dict] = None) -> Tuple[List[DetectedBall], List[DetectedBall]]:
+    # ─── Detection pipeline ───────────────────────────────────────────
+
+    def _apply_hsv_ranges(
+        self,
+        hsv: np.ndarray,
+        ranges: List[Tuple[np.ndarray, np.ndarray]],
+        color: BallColor,
+    ) -> List[DetectedBall]:
+        """
+        Bygger kombinert HSV-maske fra alle ranges og returnerer validerte baller.
+
+        Args:
+            hsv: HSV frame
+            ranges: Liste med (lower, upper) numpy-arrays
+            color: Forventet ballfarge
+
+        Returns:
+            Liste med validerte DetectedBall
+        """
+        combined = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in ranges:
+            combined = cv2.bitwise_or(combined, cv2.inRange(hsv, lower, upper))
+
+        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  self.morph_kernel_small)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, self.morph_kernel_large)
+
+        contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        balls = []
+        for contour in contours:
+            ball = self._validate_contour(contour, color, "hsv")
+            if ball:
+                balls.append(ball)
+        return balls
+
+    def detect_with_hsv_multirange(
+        self,
+        hsv: np.ndarray,
+        lighting_info: Optional[Dict] = None,
+    ) -> Tuple[List[DetectedBall], List[DetectedBall]]:
         """
         Detekterer baller med multi-range HSV (med adaptiv justering).
-        
+
         Args:
             hsv: Frame i HSV color space
             lighting_info: Optional lysanalyse for adaptiv justering
-            
+
         Returns:
             Tuple med (red_balls, blue_balls)
         """
-        red_balls = []
-        blue_balls = []
-        
-        # Få adaptive ranges hvis tilgjengelig
         if lighting_info and self.enable_adaptive_lighting:
             red_ranges, blue_ranges = self.get_adaptive_hsv_ranges(lighting_info)
         else:
-            red_ranges = self.red_ranges
-            blue_ranges = self.blue_ranges
-        
-        # RØD: Kombiner alle ranges
-        red_masks = []
-        for lower, upper in red_ranges:
-            mask = cv2.inRange(hsv, lower, upper)
-            red_masks.append(mask)
-        
-        # Kombiner alle red masks med OR
-        red_mask_combined = red_masks[0]
-        for mask in red_masks[1:]:
-            red_mask_combined = cv2.bitwise_or(red_mask_combined, mask)
-        
-        # Morfologiske operasjoner for å fjerne støy
-        red_mask_combined = cv2.morphologyEx(red_mask_combined, cv2.MORPH_OPEN, self.morph_kernel_small)
-        red_mask_combined = cv2.morphologyEx(red_mask_combined, cv2.MORPH_CLOSE, self.morph_kernel_large)
-        
-        # Finn contours
-        red_contours, _ = cv2.findContours(red_mask_combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in red_contours:
-            ball = self._validate_contour(contour, BallColor.RED, "hsv")
-            if ball:
-                red_balls.append(ball)
-        
-        # BLÅ: Samme prosess
-        blue_masks = []
-        for lower, upper in blue_ranges:
-            mask = cv2.inRange(hsv, lower, upper)
-            blue_masks.append(mask)
-        
-        blue_mask_combined = blue_masks[0]
-        for mask in blue_masks[1:]:
-            blue_mask_combined = cv2.bitwise_or(blue_mask_combined, mask)
-        
-        blue_mask_combined = cv2.morphologyEx(blue_mask_combined, cv2.MORPH_OPEN, self.morph_kernel_small)
-        blue_mask_combined = cv2.morphologyEx(blue_mask_combined, cv2.MORPH_CLOSE, self.morph_kernel_large)
-        
-        blue_contours, _ = cv2.findContours(blue_mask_combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in blue_contours:
-            ball = self._validate_contour(contour, BallColor.BLUE, "hsv")
-            if ball:
-                blue_balls.append(ball)
-        
+            red_ranges, blue_ranges = self.red_ranges, self.blue_ranges
+
+        red_balls  = self._apply_hsv_ranges(hsv, red_ranges,  BallColor.RED)
+        blue_balls = self._apply_hsv_ranges(hsv, blue_ranges, BallColor.BLUE)
+
         self.stats['hsv_detections'] += len(red_balls) + len(blue_balls)
         return red_balls, blue_balls
     
@@ -345,9 +368,9 @@ class SimpleBallDetector:
             gray,
             cv2.HOUGH_GRADIENT,
             dp=1,
-            minDist=max(100, gray.shape[1] // 8),  # Minst 1/8 av bildebredden mellom sirkler
-            param1=60,   # Canny edge threshold (høyere = sterkere kanter kreves)
-            param2=55,   # Akkumulatortreshold (høyere = færre falske sirkler)
+            minDist=max(80, gray.shape[1] // 10),
+            param1=50,   # Canny edge threshold
+            param2=28,   # Akkumulatortreshold — lavere = lettere å finne sirkler
             minRadius=self.min_radius,
             maxRadius=self.max_radius
         )
@@ -385,6 +408,8 @@ class SimpleBallDetector:
         self.stats['hough_detections'] += len(detected_balls)
         return detected_balls
     
+    # ─── Internal helpers ─────────────────────────────────────────────
+
     def _determine_color_from_hsv(self, hsv: np.ndarray, center: Tuple[int, int], radius: int) -> BallColor:
         """
         Bestemmer ballens farge ved å sample HSV-verdier.
@@ -470,23 +495,22 @@ class SimpleBallDetector:
             return None
         circularity = (4 * np.pi * area) / (perimeter ** 2)
         
-        # Krav: minst 55% sirkulær (baller er runde, ikke firkanter/striper)
-        if circularity < 0.55:
+        # Krav: minst 45% sirkulær — HSV-maske dekker sjelden hele ballen
+        if circularity < 0.45:
             return None
-        
+
         # Aspect ratio check - bounding box bør være tilnærmet kvadratisk
         bx, by, bw, bh = cv2.boundingRect(contour)
         aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-        if aspect_ratio < 0.65:
+        if aspect_ratio < 0.60:
             return None
-        
+
         # Soliditet check - contour-areal / konveks skrog-areal
-        # En ball er konveks (~1.0), lange smale former har lav soliditet
         hull = cv2.convexHull(contour)
         hull_area = cv2.contourArea(hull)
         if hull_area > 0:
             solidity = area / hull_area
-            if solidity < 0.75:
+            if solidity < 0.60:
                 return None
         
         # Confidence basert på alle shape-mål
@@ -507,6 +531,8 @@ class SimpleBallDetector:
             distance_cm=round(distance_cm, 1)
         )
     
+    # ─── Post-processing ──────────────────────────────────────────────
+
     def ensemble_merge(self, hsv_balls: List[DetectedBall], hough_balls: List[DetectedBall]) -> List[DetectedBall]:
         """
         Merger deteksjoner fra forskjellige metoder med ensemble voting.
@@ -632,6 +658,48 @@ class SimpleBallDetector:
             result.extend(color_balls[:self.max_balls_per_color])
         return result
 
+    def _verify_with_svm(self, frame: np.ndarray, balls: List[DetectedBall]) -> List[DetectedBall]:
+        """
+        Sekundær fargeverifisering med SVM-klassifiserer.
+        Korrigerer fargelabel hvis SVM har >= 75% konfidanse og disagreer med HSV/Hough.
+
+        Args:
+            frame: Kompensert BGR-frame
+            balls: Detekterte baller fra ensemble
+
+        Returns:
+            Baller med potensielt korrigert fargelabel
+        """
+        if self._svm_classifier is None or len(balls) == 0:
+            return balls
+
+        h_fr, w_fr = frame.shape[:2]
+
+        for ball in balls:
+            cx, cy = ball.center
+            r = max(1, int(ball.radius))
+
+            x1 = max(0, cx - r)
+            y1 = max(0, cy - r)
+            x2 = min(w_fr, cx + r)
+            y2 = min(h_fr, cy + r)
+
+            roi = frame[y1:y2, x1:x2]
+            if roi.size < 64:
+                continue
+
+            svm_color, svm_conf = self._svm_classifier.predict(roi)
+
+            if svm_conf >= 0.75:
+                if svm_color == "red":
+                    ball.color = BallColor.RED
+                elif svm_color == "blue":
+                    ball.color = BallColor.BLUE
+
+        return balls
+
+    # ─── Public API ─────────────────────────────────────────────────
+
     def detect_balls(self, frame: np.ndarray) -> Tuple[List[DetectedBall], Dict]:
         """
         Hovedfunksjon for å detektere baller med ensemble pipeline og adaptiv lyshåndtering.
@@ -675,142 +743,152 @@ class SimpleBallDetector:
         
         # 8. Post-merge NMS per farge: fjern gjenværende duplikater
         merged_balls = self._post_merge_nms(merged_balls)
-        
-        # 9. Behold maks N baller per farge (sortert etter confidence)
+
+        # 9. SVM-fargeverifisering (sekundær — korrigerer feil fargelabel ved høy konfidanse)
+        merged_balls = self._verify_with_svm(compensated_frame, merged_balls)
+
+        # 10. Behold maks N baller per farge (sortert etter confidence)
         merged_balls = self._limit_per_color(merged_balls)
         
         return merged_balls, self.stats.copy()
     
-    def draw_detections(self, frame: np.ndarray, balls: List[DetectedBall], show_info: bool = True,
-                        overlay: Optional[Dict] = None) -> np.ndarray:
+    def _draw_ball(
+        self,
+        output: np.ndarray,
+        ball: DetectedBall,
+        show_label: bool,
+    ) -> None:
+        """Tegner én ball (sirkel + senterpunkt + valgfri etikett) direkte på output."""
+        if ball.color == BallColor.RED:
+            draw_color = (0, 0, 255)
+            color_name = "RED"
+        elif ball.color == BallColor.BLUE:
+            draw_color = (255, 0, 0)
+            color_name = "BLUE"
+        else:
+            draw_color = (128, 128, 128)
+            color_name = "???"
+
+        # Sirkel med sort kontur for å skille seg fra bakgrunnen
+        cv2.circle(output, ball.center, int(ball.radius), (0, 0, 0), 6)
+        cv2.circle(output, ball.center, int(ball.radius), draw_color, 3)
+        cv2.circle(output, ball.center, 6, (0, 0, 0), -1)
+        cv2.circle(output, ball.center, 4, (255, 255, 255), -1)
+
+        if not show_label:
+            return
+
+        dist_text = f"{ball.distance_cm:.0f} cm" if ball.distance_cm else ""
+        conf_pct  = int(ball.confidence * 100)
+        text      = f"{color_name}  {dist_text}  {conf_pct}%"
+
+        FONT = cv2.FONT_HERSHEY_SIMPLEX
+        f_scale, f_thick = 0.58, 1
+        (tw, th), baseline = cv2.getTextSize(text, FONT, f_scale, f_thick)
+        cx, cy = ball.center
+        r = int(ball.radius)
+
+        # Plasser tekst sentrert over sirkelen, klem til rammen
+        xt = max(6, min(cx - tw // 2, output.shape[1] - tw - 10))
+        yt = max(th + 10, cy - r - 10)
+        pad = 5
+
+        cv2.rectangle(output,
+                      (xt - pad, yt - th - pad),
+                      (xt + tw + pad, yt + baseline + pad),
+                      (20, 20, 20), -1)
+        cv2.rectangle(output,
+                      (xt - pad, yt - th - pad),
+                      (xt + tw + pad, yt + baseline + pad),
+                      draw_color, 1)
+        cv2.putText(output, text, (xt, yt), FONT, f_scale, (255, 255, 255), f_thick)
+
+    def _draw_hud_panel(
+        self,
+        output: np.ndarray,
+        lines: List[Tuple[str, Tuple[int, int, int]]],
+    ) -> None:
         """
-        Tegner detekterte baller og valgfri overlay-statistikk på frame.
-        
+        Tegner semi-transparent HUD-panel øverst til venstre med tekstlinjer.
+
         Args:
-            frame: Frame å tegne på
-            balls: Liste med baller
-            show_info: Vis info-tekst ved siden av ballene
-            overlay: Valgfri dict med ekstra nøkkel-verdi-par å vise øverst til venstre
-                     Eksempel: {"FPS": 15, "Frame": 42}
-            
-        Returns:
-            Annotated frame
+            output: Frame å tegne på (in-place)
+            lines: Liste med (tekst, BGR-farge)
         """
-        output = frame.copy()
-        
-        for ball in balls:
-            # Farge basert på ballens farge
-            if ball.color == BallColor.RED:
-                draw_color = (0, 0, 255)
-                color_name = "RED"
-            elif ball.color == BallColor.BLUE:
-                draw_color = (255, 0, 0)
-                color_name = "BLUE"
-            else:
-                draw_color = (128, 128, 128)
-                color_name = "???"
-            
-            # Sirkel med sort kontur for å skille seg fra bakgrunnen
-            cv2.circle(output, ball.center, int(ball.radius), (0, 0, 0), 6)
-            cv2.circle(output, ball.center, int(ball.radius), draw_color, 3)
-            cv2.circle(output, ball.center, 6, (0, 0, 0), -1)
-            cv2.circle(output, ball.center, 4, (255, 255, 255), -1)
-
-            if show_info:
-                # Info-tekst med avstand — hvit tekst på mørk boks med farget kant
-                dist_text = f"{ball.distance_cm:.0f} cm" if ball.distance_cm else ""
-                conf_pct = int(ball.confidence * 100)
-                text = f"{color_name}  {dist_text}  {conf_pct}%"
-
-                FONT       = cv2.FONT_HERSHEY_SIMPLEX
-                f_scale    = 0.58
-                f_thick    = 1
-                (tw, th), baseline = cv2.getTextSize(text, FONT, f_scale, f_thick)
-                cx, cy = ball.center
-                r = int(ball.radius)
-
-                # Plasser tekst sentrert over sirkelen, klem til rammen
-                xt = max(6, min(cx - tw // 2, output.shape[1] - tw - 10))
-                yt = max(th + 10, cy - r - 10)
-
-                pad = 5
-                # Mørk boks
-                cv2.rectangle(output,
-                              (xt - pad, yt - th - pad),
-                              (xt + tw + pad, yt + baseline + pad),
-                              (20, 20, 20), -1)
-                # Farget kant rundt boksen
-                cv2.rectangle(output,
-                              (xt - pad, yt - th - pad),
-                              (xt + tw + pad, yt + baseline + pad),
-                              draw_color, 1)
-                # Hvit tekst
-                cv2.putText(output, text, (xt, yt), FONT, f_scale, (255, 255, 255), f_thick)
-        
-        if not show_info:
-            return output
-        
-        # --- Overlay panel øverst til venstre ---
         FONT       = cv2.FONT_HERSHEY_SIMPLEX
         FONT_SCALE = 0.65
         THICKNESS  = 1
-        LINE_H     = 30        # piksel-avstand mellom linjer
+        LINE_H     = 30
         PAD_X      = 12
-        PAD_TOP    = 10        # avstand fra topp til første linje
-        
-        WHITE = (255, 255, 255)
-        lines = []  # (tekst, BGR-farge)
-        
-        # Lysnivå
-        if self.enable_adaptive_lighting:
-            level = self.stats.get('lighting_level', 'unknown')
-            if level == 'low':
-                lines.append(("Light: LOW (300-400 lux)",    WHITE))
-            elif level == 'medium':
-                lines.append(("Light: MEDIUM (400-550 lux)", WHITE))
-            elif level == 'high':
-                lines.append(("Light: HIGH (550-700 lux)",   WHITE))
-            else:
-                lines.append(("Light: UNKNOWN",               WHITE))
-        
-        # Ekstra overlay fra kallende kode (FPS, frame, osv.) — alltid hvit tekst
-        if overlay:
-            for key, val in overlay.items():
-                lines.append((f"{key}: {val}", WHITE))
-        
-        if not lines:
-            return output
+        PAD_TOP    = 10
 
-        # Beregn boks-størrelse
         max_w = max(cv2.getTextSize(t, FONT, FONT_SCALE, THICKNESS)[0][0] for t, _ in lines)
-        box_w = PAD_X * 2 + max_w + 8
-        box_h = PAD_TOP * 2 + LINE_H * len(lines)
-        h_fr, w_fr = output.shape[:2]
-        box_w = min(box_w, w_fr)
-        box_h = min(box_h, h_fr)
+        box_w = min(PAD_X * 2 + max_w + 8, output.shape[1])
+        box_h = min(PAD_TOP * 2 + LINE_H * len(lines), output.shape[0])
 
-        # Semi-transparent mørk bakgrunn (75% mørk, 25% original)
-        roi = output[0:box_h, 0:box_w].copy()
+        # Semi-transparent mørk bakgrunn
+        roi  = output[0:box_h, 0:box_w].copy()
         dark = np.full_like(roi, (15, 15, 15))
         cv2.addWeighted(dark, 0.78, roi, 0.22, 0, roi)
         output[0:box_h, 0:box_w] = roi
 
-        # Tynn grå kant rundt panelet
         cv2.rectangle(output, (0, 0), (box_w - 1, box_h - 1), (80, 80, 80), 1)
 
         for i, (text, color) in enumerate(lines):
             y = PAD_TOP + LINE_H // 2 + LINE_H // 4 + i * LINE_H
-            # Sort skygge bak teksten for lesbarhet
             cv2.putText(output, text, (PAD_X, y), FONT, FONT_SCALE, (0, 0, 0), THICKNESS + 2)
-            # Farget tekst øverst
-            cv2.putText(output, text, (PAD_X, y), FONT, FONT_SCALE, color, THICKNESS)
+            cv2.putText(output, text, (PAD_X, y), FONT, FONT_SCALE, color,     THICKNESS)
+
+    def draw_detections(
+        self,
+        frame: np.ndarray,
+        balls: List[DetectedBall],
+        show_info: bool = True,
+        overlay: Optional[Dict] = None,
+    ) -> np.ndarray:
+        """
+        Tegner detekterte baller og valgfri overlay-statistikk på frame.
+
+        Args:
+            frame: Frame å tegne på
+            balls: Liste med baller
+            show_info: Vis info-tekst og HUD-panel
+            overlay: Valgfri dict med ekstra nøkkel-verdi-par til HUD-panelet
+                     Eksempel: {"FPS": 15, "Frame": 42}
+
+        Returns:
+            Annotert frame (kopi — original uendret)
+        """
+        output = frame.copy()
+
+        for ball in balls:
+            self._draw_ball(output, ball, show_label=show_info)
+
+        if not show_info:
+            return output
+
+        WHITE = (255, 255, 255)
+        lines: List[Tuple[str, Tuple[int, int, int]]] = []
+
+        if self.enable_adaptive_lighting:
+            level = self.stats.get('lighting_level', 'unknown')
+            label_map = {
+                'low':    "Light: LOW  (300-400 lux)",
+                'medium': "Light: MED  (400-550 lux)",
+                'high':   "Light: HIGH (550-700 lux)",
+            }
+            lines.append((label_map.get(level, "Light: UNKNOWN"), WHITE))
+
+        if overlay:
+            for key, val in overlay.items():
+                lines.append((f"{key}: {val}", WHITE))
+
+        if lines:
+            self._draw_hud_panel(output, lines)
 
         return output
-    
+
     def get_statistics(self) -> Dict[str, int]:
-        """Returnerer detection statistics."""
+        """Returnerer gjeldende deteksjonsstatistikk."""
         return self.stats.copy()
 
-
-# Alias for backwards compatibility
-EnhancedBallDetector = SimpleBallDetector

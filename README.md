@@ -1,4 +1,236 @@
-# 🤖 Autonomia Robotarm - Ballsortering med Vision
+# Autonomia Robotarm — Ballsortering med Vision
+
+**Bachelor 2026 — Intelligent balldeteksjon for autonom robotarm**
+
+Systemet detekterer og klassifiserer røde og blå baller i sanntid for en autonom robotarm. Det kombinerer Raspberry Pi (høynivåkontroll), Arduino Mega (lavnivå servo-kontroll) og et Luxonis OAK Series 2 kamera.
+
+---
+
+## Resultater (OAK Series 2, Windows 11)
+
+| Metrikk | Resultat |
+|---|---|
+| Rød ball deteksjon | ~98–100 % |
+| Blå ball deteksjon | ~97–100 % |
+| Falskt positiv-rate | < 2 % |
+| FPS | ~20–25 |
+| Kamera | Luxonis OAK Series 2 (IMX378, 1280×720) |
+| Plattform testet | Windows 11 (depthai v3.5.0) |
+| Målplattform | Raspberry Pi 5 |
+
+---
+
+## Prosjektstruktur
+
+```
+Bachelor_prosjekt/
+├── firmware/
+│   └── motor_controller.ino       Arduino FreeRTOS-firmware (3 servo-akser)
+├── src/
+│   ├── config.py                  Felles konfigurasjon (kamera, robot, baller)
+│   ├── main_rpi.py                Inngangspunkt for Raspberry Pi
+│   ├── comms_manager.py           Seriell kommunikasjon mot Arduino
+│   ├── kinematics.py              3-DOF geometrisk invers kinematikk
+│   ├── requirements.txt           Python-avhengigheter
+│   └── vision/
+│       ├── enhanced_detector.py   Hoved-detektor (SimpleBallDetector)
+│       ├── oak_camera.py          OAK kamera-wrapper (depthai v3)
+│       ├── color_histogram_classifier.py  SVM inferens-wrapper
+│       ├── train_color_classifier.py      Tren SVM-modellen på nytt
+│       ├── capture_training_data.py       Ta treningsbilder med OAK
+│       ├── recalibrate_hsv.py     Analyser treningsbilder → nye HSV-ranges
+│       ├── hsv_tuner.py           Interaktiv HSV-tuner med trackbars (OAK)
+│       ├── diagnose_detection.py  Live diagnostikk — vis masker + klikk for HSV
+│       ├── test_enhanced_detector.py   Live deteksjonstest
+│       ├── test_record_stats.py        Kjør test og generer rapport-diagrammer
+│       └── models/
+│           └── ball_color_classifier.pkl   Trent SVM-modell (64 KB)
+├── training_data/
+│   ├── red/    120 OAK-bilder av rød ball
+│   └── blue/   120 OAK-bilder av blå ball
+├── reports/
+│   └── diagrams/   Genererte PNG-rapporter og JSON-rådata
+└── models/         (ignorert av git — gamle CNN-forsøk)
+```
+
+---
+
+## Kom i gang
+
+### Installer avhengigheter
+
+```bash
+pip install -r src/requirements.txt
+```
+
+### Kjør live deteksjon
+
+```bash
+python src/vision/test_enhanced_detector.py
+```
+
+### Kjør diagnostikk (se HSV-masker live)
+
+```bash
+python src/vision/diagnose_detection.py
+```
+Klikk i kameravinduet for å lese av H/S/V-verdier for et piksel.
+
+### Generer statistikkrapport
+
+```bash
+python src/vision/test_record_stats.py
+```
+Lagrer PNG-diagrammer og JSON-rådata i `reports/diagrams/`.
+
+---
+
+## Deteksjonssystemet
+
+### SimpleBallDetector — 10-stegs pipeline
+
+```
+ 1. Frame fra OAK               1280×720 BGR
+ 2. Lysnivåanalyse              Estimerer lux → LOW / MEDIUM / HIGH
+ 3. Lyskompensasjon             CLAHE på L-kanal (kun ved LOW)
+ 4. Fargekonvertering           BGR → HSV + Grayscale
+ 5. Gaussian blur               Støyreduksjon (5×5 kernel)
+ 6. HSV multi-range deteksjon   6 rød-ranges + 3 blå-ranges
+ 7. Hough Circle Transform      Geometrisk sirkeldeteksjon
+ 8. Ensemble merge              Union-Find clustering + confidence-boost
+ 9. SVM-fargebeklassifisering   Korrigerer fargelabel ved ≥ 75 % konfidanse
+10. NMS + per-farge grense      Maks 1 ball per farge returnert
+```
+
+### HSV-kalibrering for OAK Series 2 (IMX378)
+
+OAK-kameraet produserer svært mørke, høymetningsrike bilder av ballene.
+Verdiene er kalibrert via live måling (H/S/V-klikk i diagnose-vinduet):
+
+**Rød ball:** H=0, S=255, V=24–45  
+**Blå ball:** H=118–120, S=255, V=14–22
+
+```python
+# Rød ranges (6 stk — 3 lysnivåer × 2 hue-soner for wraparound)
+self.red_ranges = [
+    (np.array([0,   140,  60]), np.array([11,  255, 255])),  # lys
+    (np.array([168, 140,  60]), np.array([179, 255, 255])),
+    (np.array([0,   100,  30]), np.array([11,  255, 255])),  # medium
+    (np.array([168, 100,  30]), np.array([179, 255, 255])),
+    (np.array([0,   120,  15]), np.array([11,  255, 100])),  # mørk
+    (np.array([168, 120,  15]), np.array([179, 255, 100])),
+]
+
+# Blå ranges (3 stk — ballkjernen er nesten svart, V ned til 8)
+self.blue_ranges = [
+    (np.array([100, 115,  40]), np.array([125, 255, 255])),  # lys
+    (np.array([ 95,  90,  20]), np.array([130, 255, 255])),  # medium
+    (np.array([ 90, 120,   8]), np.array([135, 255, 120])),  # mørk
+]
+```
+
+### SVM-fargebeklassifiserer (sekundær)
+
+Trent på 240 bilder (120 rød + 120 blå) fra OAK-kameraet:
+- **95,8 % ± 4,8 %** kryssvalideringsnøyaktighet (5-fold)
+- 100-dim HSV-histogram (H:36, S:32, V:32 bins) + StandardScaler + SVC(RBF)
+- Lastes automatisk ved oppstart og korrigerer fargelabel ved ≥ 75 % konfidanse
+
+### Kodeeksempel
+
+```python
+from vision.oak_camera import OAKCamera
+from vision.enhanced_detector import SimpleBallDetector, BallColor
+
+detector = SimpleBallDetector(
+    min_radius=10,
+    max_radius=150,
+    confidence_threshold=0.35,
+    enable_adaptive_lighting=True,
+)
+
+with OAKCamera(resolution=(1280, 720)) as cam:
+    ret, frame = cam.read()
+    balls, stats = detector.detect_balls(frame)
+
+for ball in balls:
+    print(f"{ball.color.value}  senter={ball.center}  "
+          f"radius={ball.radius:.1f}px  conf={ball.confidence:.2f}  "
+          f"metode={ball.detection_method}  avstand={ball.distance_cm} cm")
+
+annotated = detector.draw_detections(frame, balls)
+```
+
+---
+
+## HSV-rekalibrering
+
+Hvis du bytter ball eller lysmiljø, rekalibrér slik:
+
+```bash
+# 1. Ta nye treningsbilder
+python src/vision/capture_training_data.py --color red
+python src/vision/capture_training_data.py --color blue
+
+# 2. Analyser faktiske HSV-verdier fra bildene
+python src/vision/recalibrate_hsv.py training_data
+
+# 3. Lim inn foreslåtte ranges i enhanced_detector.py
+
+# 4. Finjuster live med diagnose-verktøyet
+python src/vision/diagnose_detection.py
+
+# 5. Tren SVM-modellen på nytt (valgfritt)
+python src/vision/train_color_classifier.py --data_dir training_data
+```
+
+---
+
+## Systemarkitektur
+
+```
+OAK Series 2 ──► Raspberry Pi 5 ──► Arduino Mega ──► Servoer (3 akser)
+  (Vision)          (main_rpi.py)    (motor_controller.ino)
+                        │
+                   SimpleBallDetector
+                        │
+              HSV + Hough + SVM ensemble
+                        │
+                   (x, y, z) koordinater
+                        │
+               KinematicsSolver (IK)
+                        │
+               CommsManager (serielt)
+```
+
+### Kommunikasjonsprotokoll (Pi → Arduino)
+
+Binær pakke: `[0xFF, antall, vinkel0, …, vinkelN, CRC, 0xFE]`  
+CRC = sum av header + data, modulo 256.  
+Arduino validerer CRC og klemmer vinkler til konfigurerbare grenser.
+
+---
+
+## Tidligere forsøk (for kontekst)
+
+| Forsøk | Tilnærming | Resultat |
+|---|---|---|
+| 1 | CNN (MobileNetV2 transfer learning) | Feilet — for lite data, for treg (200–500 ms/frame) |
+| 2 | Kompleks pipeline (Kalman, hånddeteksjon, bevegelsesdeteksjon) | Feilet — fragil, falske negativer |
+| 3 (nå) | HSV + Hough + SVM ensemble, kalibrert for OAK | Fungerer — ~98–100 % nøyaktighet |
+
+---
+
+## Hardware
+
+| Komponent | Spesifikasjon |
+|---|---|
+| Kamera | Luxonis OAK Series 2 (Movidius MyriadX VPU, IMX378 RGB-sensor) |
+| Prosessor | Raspberry Pi 5 (målplatform) |
+| Mikrokontroller | Arduino Mega |
+| Oppløsning | 1280 × 720 px |
+| Balldiameter | 50 mm |
+
 
 **Bachelor 2026 - Intelligent balldeteksjon for robotarm**
 
