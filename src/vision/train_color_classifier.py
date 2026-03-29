@@ -178,8 +178,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tren HSV-histogram SVM ballklassifiserer")
     parser.add_argument("--data_dir",  default="./training_data",
                         help="Mappe med klasse-undermapper (default: ./training_data)")
-    parser.add_argument("--output",    default="models/ball_color_classifier.pkl",
-                        help="Output-sti for pkl-modell")
+    parser.add_argument("--output",    default="src/vision/models/ball_color_classifier.pkl",
+                        help="Output-sti for pkl-modell (default: src/vision/models/)")
     args = parser.parse_args()
 
     train(args.data_dir, args.output)

@@ -66,3 +66,26 @@ JOINT_LIMITS = {
     4: (0, 180),   # (Eventuelt håndledd bøy)
     5: (0, 180)    # (Eventuelt flens rotasjon)
 }
+
+# ==========================================
+# KAMERA (OAK Series 2 - Luxonis)
+# ==========================================
+
+# Opplosning for RGB-kameraet pa OAK Series 2.
+# OAK IMX378 stotter: (1280, 720), (1920, 1080), (640, 400).
+# 1280x720 gir god balanse mellom ytelse og detaljniva.
+CAMERA_RESOLUTION = (1280, 720)
+
+# ==========================================
+# BALLDETEKSJON
+# ==========================================
+
+# Kjent balldiameter i millimeter (50 mm standardball).
+BALL_DIAMETER_MM = 50.0
+
+# Minimum og maximum ballradius i piksler (for 1280x720).
+BALL_MIN_RADIUS = 10
+BALL_MAX_RADIUS = 150
+
+# Minimum confidence for a godkjenne en deteksjon (0.0-1.0).
+BALL_CONFIDENCE_THRESHOLD = 0.35

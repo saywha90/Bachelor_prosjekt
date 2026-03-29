@@ -3,6 +3,36 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# ─── Prosjektspesifikt ────────────────────────────────────────────────────────
+
+# Virtuelle Python-miljøer
+venv_train/
+.venv/
+venv/
+env/
+
+# Gamle mislykkede CNN-modeller (roots models/ mappe)
+models/*.h5
+models/*.tflite
+models/*.keras
+models/*.png
+models/*.pkl
+
+# iPhone-kildebilder (bare brukt til første kalibrering, ikke nødvendig i repo)
+raw_iphone/
+
+# Original backup av treningsdata (allerede inkludert i training_data/)
+training_data_original_backup/
+
+# Genererte rapporter og rådata (kan regenereres)
+reports/diagrams/*.json
+reports/diagrams/*.png
+
+# HSV-kalibreringsfil fra hsv_tuner
+hsv_calibration.txt
+
+# ─── Standard Python ──────────────────────────────────────────────────────────
+
 # C extensions
 *.so
 
