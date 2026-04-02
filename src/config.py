@@ -71,10 +71,24 @@ JOINT_LIMITS = {
 # KAMERA (OAK Series 2 - Luxonis)
 # ==========================================
 
+# OAK Series 2 (IMX378) horisontalt synsfelt i grader.
+# Kilde: Luxonis offisiell dokumentasjon. Brukes til å beregne
+# kalibrert brennvidde i piksler: f = (w/2) / tan(HFOV/2).
+CAMERA_HFOV_DEG = 81.0
+
+# Kjent fysisk oppsett for plukkstasjonen.
+# Kameraet er montert 50 cm over underlaget der ballene ligger.
+CAMERA_HEIGHT_CM = 50.0
+
+# Nøyaktig balldiameter i millimeter.
+BALL_DIAMETER_MM = 50.0
+
 # Opplosning for RGB-kameraet pa OAK Series 2.
 # OAK IMX378 stotter: (1280, 720), (1920, 1080), (640, 400).
 # 1280x720 gir god balanse mellom ytelse og detaljniva.
-CAMERA_RESOLUTION = (1280, 720)
+# 640x400 brukes for å holde USB 2.0-båndbredde innafor (~23 MB/s vs ~83 MB/s
+# for 1280x720). Ved USB 3.0-tilkobling kan dette økes til (1280, 720).
+CAMERA_RESOLUTION = (640, 400)
 
 # ==========================================
 # BALLDETEKSJON

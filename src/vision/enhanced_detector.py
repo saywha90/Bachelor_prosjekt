@@ -104,43 +104,31 @@ class SimpleBallDetector:
         self.focal_length_px = focal_length_px if focal_length_px is not None else 900.0
         
         # Multi-range HSV thresholds for RED
-        # ✅ KALIBRERT for OAK Series 2 (IMX378) — live-målinger
-        # Ball-piksler: H=0, S=255, V=24-45 (svært mørk rød ball)
-        # S=255 (maksimalt mettet) er den viktigste diskriminatoren vs bakgrunn.
+        # ✅ KALIBRERT live med diagnose_detection.py — egne målinger på faktiske baller
+        # Målte piksler: H=178-179, S=146-255, V=171-255
+        # Ballen er LYS og mettet — IKKE mørk som tidligere antatt.
         self.red_ranges = [
-            # Lys rød — mer belyste piksler på balloverflaten
-            (np.array([0,   140, 60]), np.array([11,  255, 255])),
-            (np.array([168, 140, 60]), np.array([179, 255, 255])),
-
-            # Medium rød
-            (np.array([0,   100, 30]), np.array([11,  255, 255])),
-            (np.array([168, 100, 30]), np.array([179, 255, 255])),
-
-            # Mørk rød — V ned til 15 for den svarte kjernen av ballen
-            # S>=120 hindrer mørk-brune bakgrunnsflater
-            (np.array([0,   120, 15]), np.array([11,  255, 100])),
-            (np.array([168, 120, 15]), np.array([179, 255, 100])),
+            # Rød høy side (H wraparound nær 180) — primær range
+            (np.array([165, 120, 130]), np.array([179, 255, 255])),
+            # Rød lav side (H wraparound fra 0) — sikrer at H=0-5 fanges
+            (np.array([0,   120, 130]), np.array([6,   255, 255])),
         ]
 
         # Multi-range HSV thresholds for BLUE
-        # ✅ KALIBRERT for OAK Series 2 (IMX378) — live-målinger
-        # Ball-piksler: H=118-120, S=255, V=14-22 (nesten svart blå ball!)
-        # Uten V≥10 klypper vi bort selve kjernen av ballen.
+        # ✅ KALIBRERT live med diagnose_detection.py — egne målinger på faktiske baller
+        # Målte piksler: H=103-110, S=174-255, V=92-200
         self.blue_ranges = [
-            # Lys blå — reflekterte piksler rundt kanten
-            (np.array([100, 115, 40]), np.array([125, 255, 255])),
-
-            # Medium blå
-            (np.array([ 95,  90, 20]), np.array([130, 255, 255])),
-
-            # Mørk blå — V ned til 8 for å fange den mørkeste-kjernen
-            # S>=120 hindrer mørke blågrå bakgrunnsflater (jeans, skygger)
-            (np.array([ 90, 120,  8]), np.array([135, 255, 120])),
+            # Blå — primær range (høy metning, kjernen av ballen)
+            (np.array([100, 200,  85]), np.array([115, 255, 255])),
+            # Litt bredere for kant-piksler (målte S ned til 174)
+            (np.array([ 98, 170,  85]), np.array([118, 255, 255])),
         ]
         
-        # Morphological kernels for noise reduction
+        # Morphological kernels for noise reduction.
+        # Closing-kernel er 11x11 for å koble fragmenter i ball-masken —
+        # ballen gir en flekkete HSV-maske pga. lys/skygge variasjon.
         self.morph_kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        self.morph_kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        self.morph_kernel_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
 
         # CLAHE opprettes én gang (ikke per frame) for ytelse
         self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
@@ -317,10 +305,19 @@ class SimpleBallDetector:
         combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  self.morph_kernel_small)
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, self.morph_kernel_large)
 
+        # Fyll innvendige hull som skyldes gjenskin/spekulær highlight:
+        # lyse flekker inne i ballen matcher ingen fargerange → hull i masken
+        # → sirkularitet synker → deteksjonen feiler.
+        # Flood fill fra hjørne → bakgrunn blir hvit → bitwise_not gir kun lukkede hull.
+        _flood = combined.copy()
+        _ff_mask = np.zeros((combined.shape[0] + 2, combined.shape[1] + 2), dtype=np.uint8)
+        cv2.floodFill(_flood, _ff_mask, (0, 0), 255)
+        combined = cv2.bitwise_or(combined, cv2.bitwise_not(_flood))
+
         contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         balls = []
         for contour in contours:
-            ball = self._validate_contour(contour, color, "hsv")
+            ball = self._validate_contour(contour, color, "hsv", hsv)
             if ball:
                 balls.append(ball)
         return balls
@@ -370,7 +367,7 @@ class SimpleBallDetector:
             dp=1,
             minDist=max(80, gray.shape[1] // 10),
             param1=50,   # Canny edge threshold
-            param2=28,   # Akkumulatortreshold — lavere = lettere å finne sirkler
+            param2=20,   # Senket fra 28 → 20 så skinnende baller med ujevne kanter fanges
             minRadius=self.min_radius,
             maxRadius=self.max_radius
         )
@@ -462,7 +459,8 @@ class SimpleBallDetector:
         
         return BallColor.UNKNOWN
     
-    def _validate_contour(self, contour: np.ndarray, color: BallColor, method: str) -> Optional[DetectedBall]:
+    def _validate_contour(self, contour: np.ndarray, color: BallColor, method: str,
+                           hsv: Optional[np.ndarray] = None) -> Optional['DetectedBall']:
         """
         Validerer en contour og returnerer DetectedBall hvis valid.
         Krever at formen er tilnærmet sirkulær (ball-form).
@@ -494,29 +492,51 @@ class SimpleBallDetector:
         if perimeter == 0:
             return None
         circularity = (4 * np.pi * area) / (perimeter ** 2)
-        
-        # Krav: minst 45% sirkulær — HSV-maske dekker sjelden hele ballen
-        if circularity < 0.45:
+
+        # Krav: ≥65% sirkulær etter morfologisk closing.
+        # En ekte ball gir en kompakt, tilnærmet sirkulær HSV-maske.
+        if circularity < 0.65:
             return None
 
-        # Aspect ratio check - bounding box bør være tilnærmet kvadratisk
+        # Aspect ratio — bounding box skal være nær kvadratisk for en sirkel
         bx, by, bw, bh = cv2.boundingRect(contour)
         aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-        if aspect_ratio < 0.60:
+        if aspect_ratio < 0.75:
             return None
 
-        # Soliditet check - contour-areal / konveks skrog-areal
+        # Soliditet — fyller det meste av sitt konvekse skrog (ball er konveks)
         hull = cv2.convexHull(contour)
         hull_area = cv2.contourArea(hull)
         if hull_area > 0:
             solidity = area / hull_area
-            if solidity < 0.60:
+            if solidity < 0.72:
                 return None
         
-        # Confidence basert på alle shape-mål
+        # Confidence basert på form + fargemetning.
+        # Metning (S-kanal) inne i konturen belønner sterkt fargete baller —
+        # dette løfter rød confidence som ellers straffes av wrapround-masken.
         ideal_area = np.pi * (radius ** 2)
         area_match = min(area / ideal_area, ideal_area / area)
-        confidence = (circularity * 0.5) + (area_match * 0.3) + (aspect_ratio * 0.2)
+
+        sat_score = 0.0
+        if hsv is not None:
+            cx_i, cy_i = int(x), int(y)
+            r_i = max(1, int(radius))
+            roi_s = hsv[max(0, cy_i - r_i):min(hsv.shape[0], cy_i + r_i),
+                        max(0, cx_i - r_i):min(hsv.shape[1], cx_i + r_i), 1]
+            roi_v = hsv[max(0, cy_i - r_i):min(hsv.shape[0], cy_i + r_i),
+                        max(0, cx_i - r_i):min(hsv.shape[1], cx_i + r_i), 2]
+            if roi_s.size > 0:
+                # Ekskluder rene gjensikinspunkter (S<30 og V>210) fra metningsberegningen
+                # slik at et skinnende lyspunkt ikke trekker ned sat_score urettmessig.
+                not_glare = ~((roi_s < 30) & (roi_v > 210))
+                if np.sum(not_glare) > 5:
+                    sat_score = float(np.mean(roi_s[not_glare])) / 255.0
+                else:
+                    sat_score = float(np.mean(roi_s)) / 255.0
+
+        # Vekter: sirkulæritet 40%, areal-match 25%, aspekt 15%, metning 20%
+        confidence = (circularity * 0.40) + (area_match * 0.25) + (aspect_ratio * 0.15) + (sat_score * 0.20)
 
         # Avstandsberegning: d = (f * D_real) / D_pixel
         # D_pixel = diameter i piksler = radius * 2
@@ -572,8 +592,10 @@ class SimpleBallDetector:
                 dx = b1.center[0] - b2.center[0]
                 dy = b1.center[1] - b2.center[1]
                 dist = np.sqrt(dx**2 + dy**2)
-                # Merge hvis senter til én sirkel er innenfor radius til den andre
-                if dist < max(b1.radius, b2.radius):
+                # Merge hvis senter er innenfor 1.5× største radius —
+                # Hough-senter (geometrisk) og HSV-senter (farge-tyngdepunkt) kan
+                # lett ligge 10-20 px fra hverandre på en 40 px radius-ball.
+                if dist < max(b1.radius, b2.radius) * 1.5:
                     union(i, j)
         
         # Grupper etter root
@@ -634,13 +656,13 @@ class SimpleBallDetector:
                 dy = candidate.center[1] - accepted.center[1]
                 dist = np.sqrt(dx**2 + dy**2)
                 # Samme ball hvis senter er innenfor den størst aksepterte radiusen
-                if dist < max(accepted.radius, candidate.radius) * 1.5:
+                if dist < max(accepted.radius, candidate.radius) * 2.0:
                     duplicate = True
                     break
             if not duplicate:
                 kept.append(candidate)
 
-        return kept
+        return kept[:self.max_balls_per_color * 2]  # hard cap før per-farge-filter
 
     def _limit_per_color(self, balls: List[DetectedBall]) -> List[DetectedBall]:
         """
@@ -715,41 +737,68 @@ class SimpleBallDetector:
             return [], self.stats.copy()
         if len(frame.shape) != 3 or frame.shape[2] != 3:
             return [], self.stats.copy()
-        
-        # 1. Analyser lysforhold (300-700 lux range)
-        lighting_info = self.analyze_lighting(frame)
-        self.stats['lighting_level'] = lighting_info['level']
-        
-        # 2. Appliser lyskompensasjon hvis nødvendig
-        compensated_frame = self.apply_lighting_compensation(frame, lighting_info)
-        
-        # 3. Color space conversions
-        hsv = cv2.cvtColor(compensated_frame, cv2.COLOR_BGR2HSV)
-        gray = cv2.cvtColor(compensated_frame, cv2.COLOR_BGR2GRAY)
-        
-        # 4. Gaussian blur for å redusere noise
-        hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        # 5. HSV multi-range detection med adaptiv justering
-        red_balls_hsv, blue_balls_hsv = self.detect_with_hsv_multirange(hsv, lighting_info)
-        hsv_balls = red_balls_hsv + blue_balls_hsv
-        
-        # 6. Hough Circle detection
-        hough_balls = self.detect_with_hough(gray, hsv)
-        
-        # 7. Ensemble merge - kombinerer begge metodene
-        merged_balls = self.ensemble_merge(hsv_balls, hough_balls)
-        
-        # 8. Post-merge NMS per farge: fjern gjenværende duplikater
-        merged_balls = self._post_merge_nms(merged_balls)
 
-        # 9. SVM-fargeverifisering (sekundær — korrigerer feil fargelabel ved høy konfidanse)
-        merged_balls = self._verify_with_svm(compensated_frame, merged_balls)
+        # Skaler ned for prosessering — ved USB 2.0 (640x400 native) skalerer vi til
+        # 480x300 for ekstra marginer på tregere hardware (Mac via Dell-adapter).
+        _SCALE = 0.75
+        proc_frame = cv2.resize(frame, (0, 0), fx=_SCALE, fy=_SCALE,
+                                interpolation=cv2.INTER_LINEAR)
 
-        # 10. Behold maks N baller per farge (sortert etter confidence)
-        merged_balls = self._limit_per_color(merged_balls)
-        
+        # Juster radius-grenser til skalert koordinatrom
+        orig_min_r, orig_max_r = self.min_radius, self.max_radius
+        self.min_radius = max(5, int(orig_min_r * _SCALE))
+        self.max_radius = int(orig_max_r * _SCALE)
+
+        try:
+            # 1. Analyser lysforhold (300-700 lux range)
+            lighting_info = self.analyze_lighting(proc_frame)
+            self.stats['lighting_level'] = lighting_info['level']
+            
+            # 2. Appliser lyskompensasjon hvis nødvendig
+            compensated_frame = self.apply_lighting_compensation(proc_frame, lighting_info)
+            
+            # 3. Color space conversions
+            hsv = cv2.cvtColor(compensated_frame, cv2.COLOR_BGR2HSV)
+            gray = cv2.cvtColor(compensated_frame, cv2.COLOR_BGR2GRAY)
+            
+            # 4. Gaussian blur for å redusere noise
+            hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            
+            # 5. HSV multi-range detection med adaptiv justering
+            red_balls_hsv, blue_balls_hsv = self.detect_with_hsv_multirange(hsv, lighting_info)
+            hsv_balls = red_balls_hsv + blue_balls_hsv
+            
+            # 6. Hough Circle detection
+            hough_balls = self.detect_with_hough(gray, hsv)
+            
+            # 7. Ensemble merge - kombinerer begge metodene
+            merged_balls = self.ensemble_merge(hsv_balls, hough_balls)
+            
+            # 8. Post-merge NMS per farge: fjern gjenværende duplikater
+            merged_balls = self._post_merge_nms(merged_balls)
+
+            # 9. SVM-fargeverifisering (sekundær — korrigerer feil fargelabel ved høy konfidanse)
+            merged_balls = self._verify_with_svm(compensated_frame, merged_balls)
+
+            # 10. Behold maks N baller per farge (sortert etter confidence)
+            merged_balls = self._limit_per_color(merged_balls)
+
+        finally:
+            # Alltid gjenopprett originale radius-grenser
+            self.min_radius, self.max_radius = orig_min_r, orig_max_r
+
+        # Skaler koordinater og radius tilbake til original oppløsning
+        inv = 1.0 / _SCALE
+        for ball in merged_balls:
+            ball.center = (int(ball.center[0] * inv), int(ball.center[1] * inv))
+            ball.radius = ball.radius * inv
+            # Omberegn avstand med korrekt (oppskalert) radius
+            if ball.radius > 0:
+                ball.distance_cm = round(
+                    (self.focal_length_px * self.BALL_DIAMETER_MM) / (ball.radius * 2 * 10.0), 1
+                )
+
         return merged_balls, self.stats.copy()
     
     def _draw_ball(
@@ -757,14 +806,21 @@ class SimpleBallDetector:
         output: np.ndarray,
         ball: DetectedBall,
         show_label: bool,
+        others: Optional[List[Tuple[int, int, int]]] = None,
     ) -> None:
-        """Tegner én ball (sirkel + senterpunkt + valgfri etikett) direkte på output."""
+        """
+        Tegner én ball med leader-linje til etikett utenfor sirkelen.
+
+        others: liste med (cx, cy, radius) for alle andre baller i samme frame.
+                Brukes til å velge en retning som unngår at etiketten
+                legger seg oppå naboballer — viktig når det er 2–6 baller i scenen.
+        """
         if ball.color == BallColor.RED:
             draw_color = (0, 0, 255)
-            color_name = "RED"
+            color_name = "ROD"
         elif ball.color == BallColor.BLUE:
             draw_color = (255, 0, 0)
-            color_name = "BLUE"
+            color_name = "BLA"
         else:
             draw_color = (128, 128, 128)
             color_name = "???"
@@ -778,29 +834,107 @@ class SimpleBallDetector:
         if not show_label:
             return
 
-        dist_text = f"{ball.distance_cm:.0f} cm" if ball.distance_cm else ""
-        conf_pct  = int(ball.confidence * 100)
-        text      = f"{color_name}  {dist_text}  {conf_pct}%"
+        dist_text    = f"{ball.distance_cm:.0f} cm" if ball.distance_cm else ""
+        conf_pct     = int(ball.confidence * 100)
+        method_short = {"hsv": "HSV", "hough": "HGH", "ensemble": "ENS"}.get(
+            ball.detection_method, ball.detection_method[:3].upper()
+        )
+        text = f"{color_name}  {dist_text}  {conf_pct}%  [{method_short}]"
 
         FONT = cv2.FONT_HERSHEY_SIMPLEX
-        f_scale, f_thick = 0.58, 1
+        f_scale, f_thick = 0.52, 1
         (tw, th), baseline = cv2.getTextSize(text, FONT, f_scale, f_thick)
+        pad = 4
+
         cx, cy = ball.center
-        r = int(ball.radius)
+        r      = int(ball.radius)
+        H, W   = output.shape[:2]
+        GAP    = 14   # mellomrom fra sirkelkant til nærmeste tekstboks-kant
 
-        # Plasser tekst sentrert over sirkelen, klem til rammen
-        xt = max(6, min(cx - tw // 2, output.shape[1] - tw - 10))
-        yt = max(th + 10, cy - r - 10)
-        pad = 5
+        # ── 8 kandidat-retninger (enhetsvektorer ved 45°-steg) ───────────────
+        D = float(np.sqrt(2) / 2)
+        candidates = [
+            ( 0.0,  -1.0),   # opp
+            (  D,    -D ),   # opp-høyre
+            ( 1.0,   0.0),   # høyre
+            (  D,     D ),   # ned-høyre
+            ( 0.0,   1.0),   # ned
+            ( -D,     D ),   # ned-venstre
+            (-1.0,   0.0),   # venstre
+            ( -D,    -D ),   # opp-venstre
+        ]
 
-        cv2.rectangle(output,
-                      (xt - pad, yt - th - pad),
-                      (xt + tw + pad, yt + baseline + pad),
-                      (20, 20, 20), -1)
-        cv2.rectangle(output,
-                      (xt - pad, yt - th - pad),
-                      (xt + tw + pad, yt + baseline + pad),
-                      draw_color, 1)
+        best_score = -1e9
+        best_state = None  # (dx, dy, bx1, by1, bx2, by2, xt, yt)
+
+        for dx, dy in candidates:
+            # Ankerpunkt der linjen treffer tekstboksen
+            ax = cx + int(dx * (r + GAP))
+            ay = cy + int(dy * (r + GAP))
+
+            # Horisontalt: tekst starter til høyre / slutter til venstre / sentrert
+            if   dx >  0.1: xt = ax
+            elif dx < -0.1: xt = ax - tw - 2 * pad
+            else:           xt = cx - tw // 2 - pad
+
+            # Vertikalt: boks over / under ankerpunktet / midtstilt
+            if   dy < -0.1: yt = ay - pad
+            elif dy >  0.1: yt = ay + th + pad
+            else:           yt = ay + th // 4
+
+            bx1 = xt - pad;       by1 = yt - th - pad
+            bx2 = xt + tw + pad;  by2 = yt + baseline + pad
+
+            # Straff hvis boksen stikker utenfor rammen
+            in_frame    = (bx1 >= 0 and by1 >= 0 and bx2 <= W and by2 <= H)
+            frame_score = 0.0 if in_frame else -40.0
+
+            # Belønn stor avstand fra andre baller
+            # (bokssenter vs. sirkelkant på naboballen)
+            dist_score = 0.0
+            if others:
+                bcx = float(bx1 + bx2) / 2
+                bcy = float(by1 + by2) / 2
+                for ocx, ocy, or_ in others:
+                    d = float(np.hypot(bcx - ocx, bcy - ocy)) - or_
+                    dist_score += max(0.0, d)
+
+            # Svak oppover-bias — etiketter over ballen er lettere å lese
+            score = frame_score + dist_score + (-dy * 4.0)
+
+            if score > best_score:
+                best_score = score
+                best_state = (dx, dy, bx1, by1, bx2, by2, xt, yt)
+
+        if best_state is None:
+            return
+
+        dx, dy, bx1, by1, bx2, by2, xt, yt = best_state
+
+        # Klem til rammen (edge case: ball svært nær kanten)
+        xt  = max(pad, min(xt,  W - tw - 2 * pad))
+        yt  = max(th + pad, min(yt, H - baseline - pad))
+        bx1 = xt - pad;       by1 = yt - th - pad
+        bx2 = xt + tw + pad;  by2 = yt + baseline + pad
+
+        # ── Leader-linje ─────────────────────────────────────────────────────
+        # Startpunkt: sirkelkantens punkt i valgt retning
+        ls = (int(cx + dx * r), int(cy + dy * r))
+
+        # Endepunkt: nærmeste kant på tekstboksen
+        if   dx >  0.1: le = (bx1, (by1 + by2) // 2)
+        elif dx < -0.1: le = (bx2, (by1 + by2) // 2)
+        elif dy < -0.1: le = ((bx1 + bx2) // 2, by2)
+        else:           le = ((bx1 + bx2) // 2, by1)
+
+        cv2.line(output, ls, le, (0, 0, 0), 3)
+        cv2.line(output, ls, le, draw_color, 1)
+        cv2.circle(output, ls, 4, (0, 0, 0), -1)
+        cv2.circle(output, ls, 3, draw_color, -1)
+
+        # ── Tekstboks ────────────────────────────────────────────────────────
+        cv2.rectangle(output, (bx1, by1), (bx2, by2), (20, 20, 20), -1)
+        cv2.rectangle(output, (bx1, by1), (bx2, by2), draw_color, 1)
         cv2.putText(output, text, (xt, yt), FONT, f_scale, (255, 255, 255), f_thick)
 
     def _draw_hud_panel(
@@ -816,11 +950,11 @@ class SimpleBallDetector:
             lines: Liste med (tekst, BGR-farge)
         """
         FONT       = cv2.FONT_HERSHEY_SIMPLEX
-        FONT_SCALE = 0.65
+        FONT_SCALE = 0.42
         THICKNESS  = 1
-        LINE_H     = 30
-        PAD_X      = 12
-        PAD_TOP    = 10
+        LINE_H     = 18
+        PAD_X      = 8
+        PAD_TOP    = 6
 
         max_w = max(cv2.getTextSize(t, FONT, FONT_SCALE, THICKNESS)[0][0] for t, _ in lines)
         box_w = min(PAD_X * 2 + max_w + 8, output.shape[1])
@@ -861,8 +995,12 @@ class SimpleBallDetector:
         """
         output = frame.copy()
 
-        for ball in balls:
-            self._draw_ball(output, ball, show_label=show_info)
+        for i, ball in enumerate(balls):
+            others = [
+                (b.center[0], b.center[1], int(b.radius))
+                for j, b in enumerate(balls) if j != i
+            ]
+            self._draw_ball(output, ball, show_label=show_info, others=others)
 
         if not show_info:
             return output

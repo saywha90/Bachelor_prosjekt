@@ -1,0 +1,27 @@
+{
+  "test_timestamp": "2026-04-02T20:07:55.465683",
+  "camera": "Luxonis OAK Series 2 (IMX378)",
+  "resolution": "640x400",
+  "usb_connection": "USB 2.0 via Dell-adapter",
+  "duration_s": 30.0,
+  "n_frames": 901,
+  "fps_mean": 30.1,
+  "fps_min": 1.0,
+  "fps_max": 31.0,
+  "fps_std": 3.17,
+  "latency_mean_ms": 8.94,
+  "latency_p95_ms": 11.04,
+  "expected_red_balls": 2,
+  "expected_blue_balls": 2,
+  "avg_detected_red": 1.972,
+  "avg_detected_blue": 2.0,
+  "detection_rate_red_pct": 100.0,
+  "detection_rate_blue_pct": 100.0,
+  "confidence_mean_red": 0.814,
+  "confidence_mean_blue": 0.917,
+  "method_counts": {
+    "ensemble": 243,
+    "hsv": 3321,
+    "hough": 15
+  }
+}
