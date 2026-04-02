@@ -33,24 +33,6 @@ def main():
     print("BALL DETECTOR - OAK Series 2")
     print("=" * 60)
     print()
-    print("Initialiserer detektor...")
-
-    detector = SimpleBallDetector(
-        min_radius=10,
-        max_radius=150,
-        confidence_threshold=0.35,
-        enable_adaptive_lighting=True,
-    )
-
-    print("OK Detektor klar")
-    print()
-    print("Funksjoner:")
-    print("  OK Multi-range HSV (6 red, 3 blue ranger)")
-    print("  OK Hough Circle Transform")
-    print("  OK Ensemble-voting")
-    print("  OK Adaptiv lyshandtering (300-700 lux)")
-    print()
-
     print(f"Apner OAK-kamera ({config.CAMERA_RESOLUTION[0]}x{config.CAMERA_RESOLUTION[1]})...")
     cam = OAKCamera(resolution=config.CAMERA_RESOLUTION)
 
@@ -59,8 +41,26 @@ def main():
         print("   Kontroller at kameraet er koblet til via USB.")
         return
 
-    w, h = cam.get_resolution()
-    print(f"OK Kamera apnet: {w}x{h}")
+    focal_px = cam.get_focal_length_px(hfov_deg=config.CAMERA_HFOV_DEG)
+    print(f"OK Kamera apnet: {cam.get_resolution()[0]}x{cam.get_resolution()[1]}")
+    print(f"OK Brennvidde: {focal_px:.1f} px  (HFOV={config.CAMERA_HFOV_DEG}°)")
+
+    print("Initialiserer detektor...")
+    detector = SimpleBallDetector(
+        min_radius=10,
+        max_radius=150,
+        confidence_threshold=0.35,
+        enable_adaptive_lighting=True,
+        max_balls_per_color=4,
+        focal_length_px=focal_px,
+    )
+    print("OK Detektor klar")
+    print()
+    print("Funksjoner:")
+    print("  OK Multi-range HSV (6 red, 3 blue ranger)")
+    print("  OK Hough Circle Transform")
+    print("  OK Ensemble-voting")
+    print("  OK Adaptiv lyshandtering (300-700 lux)")
     print()
     print("=" * 60)
     print("KONTROLLER:")
@@ -95,20 +95,17 @@ def main():
 
         detected_balls, _ = detector.detect_balls(frame)
 
-        for ball in detected_balls:
-            if ball.color == BallColor.RED:
-                red_count += 1
-            elif ball.color == BallColor.BLUE:
-                blue_count += 1
+        # Per-frame tellung (for sluttrapport)
+        red_now  = sum(1 for b in detected_balls if b.color == BallColor.RED)
+        blue_now = sum(1 for b in detected_balls if b.color == BallColor.BLUE)
+        red_count  += red_now
+        blue_count += blue_now
 
-        red_pct  = (red_count  / frame_count * 100) if frame_count > 0 else 0
-        blue_pct = (blue_count / frame_count * 100) if frame_count > 0 else 0
+        # Overlay: vis kun hva SOM DETEKTERES AKKURAT NÅ
         overlay = {
-            "FPS":        current_fps,
-            "Frame":      frame_count,
-            "Detections": len(detected_balls),
-            "ROD":        f"{red_count} ({red_pct:.1f}%)",
-            "BLA":        f"{blue_count} ({blue_pct:.1f}%)",
+            "FPS":  current_fps,
+            "Rod":  red_now,
+            "Bla":  blue_now,
         }
         output = detector.draw_detections(frame, detected_balls, show_info=True, overlay=overlay)
 
@@ -168,20 +165,11 @@ def main():
     print()
 
     if frame_count > 0:
-        red_pct  = (red_count  / frame_count) * 100
-        blue_pct = (blue_count / frame_count) * 100
-        print("Baller:")
-        print(f"  Rod:    {red_count} ({red_pct:.1f}%)")
-        print(f"  Bla:    {blue_count} ({blue_pct:.1f}%)")
-        print(f"  Totalt: {red_count + blue_count}")
-        print()
-        print("YTELSE:")
-        if red_pct >= 90 and blue_pct >= 90:
-            print("  UTMERKET - Deteksjonsrate over 90%!")
-        elif red_pct >= 70 and blue_pct >= 70:
-            print("  BRA - Deteksjonsrate over 70%, under mal")
-        else:
-            print("  TRENGS FORBEDRING - Deteksjonsrate under 70%")
+        red_avg  = red_count  / frame_count
+        blue_avg = blue_count / frame_count
+        print("Gjennomsnittlige deteksjoner per frame:")
+        print(f"  Rød:  {red_avg:.2f}")
+        print(f"  Blå:  {blue_avg:.2f}")
     else:
         print("  Ingen frames fanget - kamera ikke tilgjengelig.")
 

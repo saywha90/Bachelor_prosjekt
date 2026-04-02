@@ -20,6 +20,8 @@ depthai versjon: 3.x (Pipeline-basert API)
 Author: Bachelor Project 2026 - Autonomia
 """
 
+import math
+import time
 import numpy as np
 import depthai as dai
 from typing import Optional, Tuple
@@ -48,9 +50,19 @@ class OAKCamera:
     # Offentlig grensesnitt (tilsvarende cv2.VideoCapture)
     # ------------------------------------------------------------------
 
+    # Antall frames å forkaste etter oppstart for å la AE konvergere.
+    # Uten dette er bildet nesten svart (mean brightness ~32/255) pga
+    # at auto-eksponering ikke er ferdig ved første frame.
+    _AE_WARMUP_FRAMES = 30
+
     def open(self) -> bool:
         """
         Åpner kameraet og starter pipeline.
+
+        Venter til auto-eksponering (AE) har konvergert før kameraet
+        regnes som klart. Dette er nødvendig ved USB 2.0-tilkobling
+        (f.eks. via Dell USB-adapter) der kameraet trenger lenger tid
+        på å stabilisere eksponering.
 
         Returns:
             True hvis kameraet ble åpnet, False ved feil.
@@ -62,6 +74,13 @@ class OAKCamera:
             cam = self._pipeline.create(dai.node.Camera).build()
             self._queue = cam.requestOutput(self._resolution).createOutputQueue()
             self._pipeline.start()
+
+            # Kast de første N framene slik at AE/AWB rekker å konvergere.
+            # Uten dette er bildet nesten svart ved USB 2.0-tilkobling.
+            print(f"  Venter på AE ({self._AE_WARMUP_FRAMES} frames)...", end="", flush=True)
+            for _ in range(self._AE_WARMUP_FRAMES):
+                self._queue.get()
+            print(" OK")
 
             self._opened = True
             return True
@@ -99,6 +118,42 @@ class OAKCamera:
     def get_resolution(self) -> Tuple[int, int]:
         """Returnerer konfigurert oppløsning (bredde, høyde)."""
         return self._resolution
+
+    def get_focal_length_px(self, hfov_deg: float = 81.0) -> float:
+        """
+        Returnerer kalibrert brennvidde i piksler for konfigurert oppløsning.
+
+        Forsøker først å lese kalibrerte intrinsics fra kameraets EEPROM via
+        depthai. Hvis det feiler (kamera ikke tilkoblet, kalibreringsdata mangler)
+        beregnes brennvidden teoretisk fra oppgitt HFOV:
+            f = (width / 2) / tan(HFOV_rad / 2)
+
+        For OAK Series 2 / IMX378 ved 640×400 gir dette ~375 px.
+        Sammenlignet med standard-gjettet 900 px gir dette korrekte
+        avstandsestimater for baller ca. 50 cm fra kameraet.
+
+        Args:
+            hfov_deg: Horisontal synsfelt som fallback (standard: 81° for IMX378)
+
+        Returns:
+            Brennvidde i piksler (fx)
+        """
+        # Forsøk kalibrert verdi fra enhetens EEPROM
+        try:
+            calib = self._pipeline.defaultDevice.readCalibration()
+            w, h = self._resolution
+            M, _, _ = calib.getCameraIntrinsics(
+                dai.CameraBoardSocket.CAM_A, w, h
+            )
+            fx = float(M[0][0])
+            if fx > 50:  # sanity-sjekk
+                return fx
+        except Exception:
+            pass
+
+        # Teoretisk beregning fra HFOV
+        w = self._resolution[0]
+        return (w / 2.0) / math.tan(math.radians(hfov_deg / 2.0))
 
     # ------------------------------------------------------------------
     # Context manager
