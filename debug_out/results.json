@@ -1,0 +1,704 @@
+[
+  {
+    "frame": 1,
+    "t_s": 0.029,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 232,
+        "center_y": 222,
+        "radius_px": 16.4,
+        "confidence": 0.9705,
+        "shape_conf": 0.7393,
+        "color_conf": 0.7393,
+        "distance_cm": 57.3,
+        "track_id": 1,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 2,
+    "t_s": 0.044,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9741,
+        "shape_conf": 0.7801,
+        "color_conf": 0.7506,
+        "distance_cm": 56.4,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 3,
+    "t_s": 0.059,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9748,
+        "shape_conf": 0.7886,
+        "color_conf": 0.7499,
+        "distance_cm": 56.4,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.3,
+        "confidence": 0.9695,
+        "shape_conf": 0.709,
+        "color_conf": 0.7832,
+        "distance_cm": 51.1,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 4,
+    "t_s": 0.074,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9748,
+        "shape_conf": 0.7886,
+        "color_conf": 0.7511,
+        "distance_cm": 56.4,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.3,
+        "confidence": 0.9695,
+        "shape_conf": 0.709,
+        "color_conf": 0.7832,
+        "distance_cm": 51.1,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 5,
+    "t_s": 0.089,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9748,
+        "shape_conf": 0.7886,
+        "color_conf": 0.7502,
+        "distance_cm": 56.4,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.3,
+        "confidence": 0.9695,
+        "shape_conf": 0.709,
+        "color_conf": 0.7832,
+        "distance_cm": 51.1,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 6,
+    "t_s": 0.104,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9748,
+        "shape_conf": 0.7886,
+        "color_conf": 0.7508,
+        "distance_cm": 56.4,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.3,
+        "confidence": 0.9689,
+        "shape_conf": 0.7018,
+        "color_conf": 0.7822,
+        "distance_cm": 51.1,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 7,
+    "t_s": 0.119,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9749,
+        "shape_conf": 0.7886,
+        "color_conf": 0.753,
+        "distance_cm": 56.4,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 8,
+    "t_s": 0.134,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9761,
+        "shape_conf": 0.803,
+        "color_conf": 0.7548,
+        "distance_cm": 55.9,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 9,
+    "t_s": 0.148,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9761,
+        "shape_conf": 0.803,
+        "color_conf": 0.7548,
+        "distance_cm": 55.9,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 10,
+    "t_s": 0.163,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9761,
+        "shape_conf": 0.803,
+        "color_conf": 0.7548,
+        "distance_cm": 55.9,
+        "track_id": 2,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 11,
+    "t_s": 0.178,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 230,
+        "center_y": 225,
+        "radius_px": 16.6,
+        "confidence": 0.9741,
+        "shape_conf": 0.7665,
+        "color_conf": 0.7836,
+        "distance_cm": 56.1,
+        "track_id": 4,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 12,
+    "t_s": 0.193,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 230,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9741,
+        "shape_conf": 0.7665,
+        "color_conf": 0.7836,
+        "distance_cm": 56.1,
+        "track_id": 4,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 13,
+    "t_s": 0.208,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 230,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9741,
+        "shape_conf": 0.7665,
+        "color_conf": 0.7836,
+        "distance_cm": 56.1,
+        "track_id": 4,
+        "method": "hsv"
+      },
+      {
+        "color": "blue",
+        "center_x": 386,
+        "center_y": 320,
+        "radius_px": 18.4,
+        "confidence": 0.9706,
+        "shape_conf": 0.7233,
+        "color_conf": 0.7808,
+        "distance_cm": 50.7,
+        "track_id": 3,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 14,
+    "t_s": 0.222,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.7514,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 15,
+    "t_s": 0.236,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.753,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 16,
+    "t_s": 0.25,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.7515,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 17,
+    "t_s": 0.265,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 225,
+        "radius_px": 16.6,
+        "confidence": 0.9743,
+        "shape_conf": 0.783,
+        "color_conf": 0.7501,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 18,
+    "t_s": 0.279,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9743,
+        "shape_conf": 0.783,
+        "color_conf": 0.7501,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 19,
+    "t_s": 0.293,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9743,
+        "shape_conf": 0.783,
+        "color_conf": 0.7501,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 20,
+    "t_s": 0.307,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9743,
+        "shape_conf": 0.783,
+        "color_conf": 0.7501,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 21,
+    "t_s": 0.321,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.751,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 22,
+    "t_s": 0.336,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9738,
+        "shape_conf": 0.7769,
+        "color_conf": 0.75,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 23,
+    "t_s": 0.35,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 225,
+        "radius_px": 16.6,
+        "confidence": 0.9745,
+        "shape_conf": 0.7856,
+        "color_conf": 0.7493,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 24,
+    "t_s": 0.364,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 225,
+        "radius_px": 16.6,
+        "confidence": 0.9745,
+        "shape_conf": 0.7856,
+        "color_conf": 0.7493,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 25,
+    "t_s": 0.378,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.7512,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 26,
+    "t_s": 0.393,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.7512,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 27,
+    "t_s": 0.407,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9745,
+        "shape_conf": 0.7856,
+        "color_conf": 0.7491,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 28,
+    "t_s": 0.421,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 226,
+        "radius_px": 16.6,
+        "confidence": 0.9745,
+        "shape_conf": 0.7856,
+        "color_conf": 0.7491,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 29,
+    "t_s": 0.445,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9739,
+        "shape_conf": 0.7769,
+        "color_conf": 0.7509,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  },
+  {
+    "frame": 30,
+    "t_s": 0.478,
+    "lighting": "medium",
+    "balls": [
+      {
+        "color": "red",
+        "center_x": 366,
+        "center_y": 224,
+        "radius_px": 16.6,
+        "confidence": 0.9738,
+        "shape_conf": 0.7769,
+        "color_conf": 0.7507,
+        "distance_cm": 56.5,
+        "track_id": 2,
+        "method": "hsv"
+      }
+    ]
+  }
+]

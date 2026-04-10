@@ -1,4 +1,4 @@
-﻿"""
+"""
 Test Balldetektoren mot OAK Series 2 kamera
 ============================================
 
@@ -47,20 +47,14 @@ def main():
 
     print("Initialiserer detektor...")
     detector = SimpleBallDetector(
-        min_radius=10,
-        max_radius=150,
-        confidence_threshold=0.35,
+        min_radius=config.BALL_MIN_RADIUS,
+        max_radius=config.BALL_MAX_RADIUS,
+        confidence_threshold=config.BALL_CONFIDENCE_THRESHOLD,
         enable_adaptive_lighting=True,
         max_balls_per_color=4,
         focal_length_px=focal_px,
     )
     print("OK Detektor klar")
-    print()
-    print("Funksjoner:")
-    print("  OK Multi-range HSV (6 red, 3 blue ranger)")
-    print("  OK Hough Circle Transform")
-    print("  OK Ensemble-voting")
-    print("  OK Adaptiv lyshandtering (300-700 lux)")
     print()
     print("=" * 60)
     print("KONTROLLER:")
@@ -78,6 +72,13 @@ def main():
     fps_time = time.time()
     fps_frame_count = 0
     current_fps = 0
+
+    conf_history: list = []      # konfidens-samples for rullende snitt
+    CONF_SMOOTH  = 30            # antall samples i rullende snitt
+
+    WINDOW_NAME = "Ball Detector - OAK Series 2"
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_NAME, 1280, 800)
 
     while cam.isOpened():
         ret, frame = cam.read()
@@ -101,15 +102,24 @@ def main():
         red_count  += red_now
         blue_count += blue_now
 
-        # Overlay: vis kun hva SOM DETEKTERES AKKURAT NÅ
+        # Rullende konfidens-snitt (stiger mot stabilt nivå jo flere baller detekteres)
+        for b in detected_balls:
+            conf_history.append(b.confidence)
+        if len(conf_history) > 500:
+            conf_history = conf_history[-500:]
+        recent       = conf_history[-CONF_SMOOTH:] if conf_history else []
+        avg_conf_pct = int(sum(recent) / len(recent) * 100) if recent else 0
+
         overlay = {
-            "FPS":  current_fps,
-            "Rod":  red_now,
-            "Bla":  blue_now,
+            "FPS":        current_fps,
+            "Frames":     frame_count,
+            "Snitt konf": f"{avg_conf_pct}%",
         }
         output = detector.draw_detections(frame, detected_balls, show_info=True, overlay=overlay)
 
-        cv2.imshow("Ball Detector - OAK Series 2", output)
+        # Skaler opp kun for visning – prosessering skjer fortsatt på 640x400
+        display = cv2.resize(output, (1280, 800), interpolation=cv2.INTER_LINEAR)
+        cv2.imshow(WINDOW_NAME, display)
 
         key = cv2.waitKey(1) & 0xFF
 
@@ -129,23 +139,24 @@ def main():
             print(f"  Hough:    {stats['hough_detections']}")
             print(f"  Ensemble: {stats['ensemble_detections']}")
             print()
+            total_balls = red_count + blue_count
+            red_pct  = (red_count  / total_balls * 100) if total_balls > 0 else 0.0
+            blue_pct = (blue_count / total_balls * 100) if total_balls > 0 else 0.0
             print("Baller:")
             print(f"  Rod:  {red_count} ({red_pct:.1f}%)")
             print(f"  Bla:  {blue_count} ({blue_pct:.1f}%)")
-            print(f"  Totalt: {red_count + blue_count}")
+            print(f"  Totalt: {total_balls}")
             print("=" * 60)
         elif key == ord("r"):
-            frame_count = 0
-            red_count = 0
-            blue_count = 0
-            start_time = time.time()
-            detector.stats = {
-                "hsv_detections":      0,
-                "hough_detections":    0,
-                "ensemble_detections": 0,
-                "lighting_level":      "unknown",
-            }
-            print("\nOK Statistikk nullstilt\n")
+            frame_count      = 0
+            red_count        = 0
+            blue_count       = 0
+            conf_history     = []
+            fps_frame_count  = 0
+            fps_time         = time.time()
+            start_time       = time.time()
+            detector.reset()
+            print("\nOK Statistikk og tracker nullstilt\n")
 
     cam.release()
     cv2.destroyAllWindows()
