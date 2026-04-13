@@ -76,18 +76,10 @@ JOINT_LIMITS = {
 # kalibrert brennvidde i piksler: f = (w/2) / tan(HFOV/2).
 CAMERA_HFOV_DEG = 81.0
 
-# Kjent fysisk oppsett for plukkstasjonen.
-# Kameraet er montert 50 cm over underlaget der ballene ligger.
-CAMERA_HEIGHT_CM = 50.0
-
-# Nøyaktig balldiameter i millimeter.
-BALL_DIAMETER_MM = 50.0
-
-# Opplosning for RGB-kameraet pa OAK Series 2.
-# OAK IMX378 stotter: (1280, 720), (1920, 1080), (640, 400).
-# 1280x720 gir god balanse mellom ytelse og detaljniva.
-# 640x400 brukes for å holde USB 2.0-båndbredde innafor (~23 MB/s vs ~83 MB/s
-# for 1280x720). Ved USB 3.0-tilkobling kan dette økes til (1280, 720).
+# Oppløsning for RGB-kameraet på OAK Series 2.
+# OAK IMX378 støtter: (1280, 720), (1920, 1080), (640, 400).
+# 640x400 brukes for å holde USB 2.0-båndbredde innenfor (~23 MB/s).
+# Ved USB 3.0-tilkobling kan dette økes til (1280, 720).
 CAMERA_RESOLUTION = (640, 400)
 
 # ==========================================
@@ -97,9 +89,9 @@ CAMERA_RESOLUTION = (640, 400)
 # Kjent balldiameter i millimeter (50 mm standardball).
 BALL_DIAMETER_MM = 50.0
 
-# Minimum og maximum ballradius i piksler (for 1280x720).
+# Minimum og maximum ballradius i piksler.
 BALL_MIN_RADIUS = 10
 BALL_MAX_RADIUS = 150
 
-# Minimum confidence for a godkjenne en deteksjon (0.0-1.0).
+# Minimum confidence for å godkjenne en deteksjon (0.0-1.0).
 BALL_CONFIDENCE_THRESHOLD = 0.35

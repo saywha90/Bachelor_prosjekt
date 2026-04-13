@@ -21,6 +21,7 @@ src_path = Path(__file__).parent.parent
 sys.path.insert(0, str(src_path))
 
 from vision.oak_camera import OAKCamera
+import config
 
 
 class HSVTuner:
@@ -166,14 +167,14 @@ class HSVTuner:
     def run(self):
         """Hovedløkke"""
         # Åpne OAK kamera
-        self._oak_cam = OAKCamera(resolution=(1280, 720))
+        self._oak_cam = OAKCamera(resolution=config.CAMERA_RESOLUTION)
         self._oak_cam.open()
 
         if not self._oak_cam.isOpened():
             print("FEIL: Kunne ikke åpne OAK kamera")
             return
 
-        print("✓ OAK kamera åpnet (1280×720)")
+        print(f"✓ OAK kamera åpnet ({config.CAMERA_RESOLUTION[0]}×{config.CAMERA_RESOLUTION[1]})")
         
         # Opprett vinduer
         window_original = 'Original'

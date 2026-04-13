@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vision.oak_camera import OAKCamera
 from vision.enhanced_detector import SimpleBallDetector
+import config
 
 # ─── Globals for mouse callback ──────────────────────────────────────────────
 _last_hsv = None
@@ -109,7 +110,7 @@ def main():
 
     detector = SimpleBallDetector(min_radius=10, max_radius=150)
 
-    cam = OAKCamera(resolution=(1280, 720))
+    cam = OAKCamera(resolution=config.CAMERA_RESOLUTION)
     cam.open()
     if not cam.isOpened():
         print("FEIL: Klarte ikke åpne OAK kamera")

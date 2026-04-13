@@ -21,7 +21,6 @@ Author: Bachelor Project 2026 - Autonomia
 """
 
 import math
-import time
 import numpy as np
 import depthai as dai
 from typing import Optional, Tuple

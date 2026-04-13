@@ -364,9 +364,6 @@ class SimpleBallDetector:
             'ensemble_detections': 0,
             'lighting_level': 'unknown'
         }
-        self._frame_counter  = 0
-        self._hough_interval = 9999      # effektivt deaktivert
-        self._hough_cache: List[DetectedBall] = []
         self._tracker = BallTracker(
             max_disappeared=6, max_distance=100.0
         )
@@ -742,8 +739,7 @@ class SimpleBallDetector:
         else:
             cx, cy = enc_x, enc_y
         center = (int(round(cx)), int(round(cy)))
-        x, y = cx, cy  # For SAT-ROI-utregning nedenfor
-        
+
         # Radius check
         if radius < self.min_radius or radius > self.max_radius:
             return None
@@ -1051,14 +1047,8 @@ class SimpleBallDetector:
             red_balls_hsv, blue_balls_hsv = self.detect_with_hsv_multirange(hsv, lighting_info)
             hsv_balls = red_balls_hsv + blue_balls_hsv
 
-            # 6. Hough Circle Transform — kjøres hvert N-te frame for ytelse.
-            # Når Hough ikke kjøres brukes tom liste: stale cache ville ellers skape
-            # spøkelsesballer fra forrige Hough-kjøring (ball har beveget seg).
-            self._frame_counter += 1
-            if (self._frame_counter - 1) % self._hough_interval == 0:
-                hough_balls = self.detect_with_hough(gray, hsv)
-            else:
-                hough_balls = []
+            # 6. Hough Circle Transform — deaktivert (HSV alene gir 100% deteksjon).
+            hough_balls = []
             
             # 7. Ensemble merge - kombinerer begge metodene
             merged_balls = self.ensemble_merge(hsv_balls, hough_balls)
@@ -1378,14 +1368,12 @@ class SimpleBallDetector:
         return self.stats.copy()
 
     def reset(self) -> None:
-        """Nullstill statistikk, Hough-cache og ball-tracker."""
+        """Nullstill statistikk og ball-tracker."""
         self.stats = {
             'hsv_detections':      0,
             'hough_detections':    0,
             'ensemble_detections': 0,
             'lighting_level':      'unknown',
         }
-        self._frame_counter = 0
-        self._hough_cache   = []
         self._tracker.reset()
 
