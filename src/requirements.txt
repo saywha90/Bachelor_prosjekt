@@ -1,0 +1,9 @@
+numpy>=1.20.0
+pyserial>=3.5
+opencv-python>=4.5.0
+depthai>=3.0.0        # OAK Series 2 kamera (Luxonis) - depthai v3 API
+scikit-learn>=1.0.0   # SVM-fargebeklassifiserer
+matplotlib>=3.5.0     # Rapportgenerering (test_record_stats.py)
+
+# For 6-akset IK senere:
+# ikpy>=3.3
