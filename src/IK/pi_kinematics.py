@@ -4,10 +4,11 @@ pi_kinematics.py
 Geometric Inverse Kinematics solver for a 4-DOF robotic arm.
 
 Hardware:
-    Motor 1 (ID 1) – Base Pan
-    Motor 2 (ID 2) – Shoulder Tilt
-    Motor 3 (ID 3) – Elbow Tilt
-    Motor 4 (ID 4) – Wrist Tilt
+    Motor 1 (ID 1) – Base Pan      – XM430
+    Motor 2 (ID 2) – Shoulder Tilt – XM540
+    Motor 3 (ID 3) – Elbow Tilt    – XM430
+    Motor 4 (ID 4) – Wrist Tilt    – XL430
+    Motor 5 (ID 5) – Claw          – XL430
 
 All Dynamixel motors: 0-4095 steps → 0°-360°.
 Centre (straight ahead / straight up) = 2048 = 180°.
@@ -23,7 +24,10 @@ import numpy as np
 
 
 class ArmIK:
-    """Geometric IK for a 4-DOF pick-and-place arm."""
+    """Geometric IK for a 4-DOF pick-and-place arm (+ claw motor)."""
+
+    # ── Claw default position ──────────────────────────────────────────
+    CLAW_OPEN: int = 2048   # centre / open position for the gripper
 
     # ── Link lengths (cm) ──────────────────────────────────────────────
     L1: float = 22.5   # Shoulder → Elbow
@@ -102,7 +106,7 @@ class ArmIK:
         Returns
         -------
         dict
-            ``{"m1": int, "m2": int, "m3": int, "m4": int}``
+            ``{"m1": int, "m2": int, "m3": int, "m4": int, "m5": int}``
             Dynamixel step values (0-4095) for each motor.
 
         Raises
@@ -186,7 +190,7 @@ class ArmIK:
         m3 = self._rad_to_steps(-theta_elbow)  # negative: folding direction
         m4 = self._rad_to_steps(theta_wrist)
 
-        return {"m1": m1, "m2": m2, "m3": m3, "m4": m4}
+        return {"m1": m1, "m2": m2, "m3": m3, "m4": m4, "m5": self.CLAW_OPEN}
 
     # ──────────────────────────────────────────────────────────────────
     #  Two-step servoing

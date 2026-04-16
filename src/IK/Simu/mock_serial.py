@@ -52,7 +52,7 @@ class MockSerial:
         self.anim_frames = anim_frames   # frames per movement
 
         # Current simulated motor positions (start at centre = 2048)
-        self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048}
+        self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
 
         print(f"[MOCK SERIAL] ✅  Opened fake port {self.port} @ {self.baudrate} baud")
 
@@ -95,8 +95,8 @@ class MockSerial:
         print(f"  {pretty}")
 
         # ── Animate or sleep ──────────────────────────────────────────
-        if parsed and self.visualizer and all(k in parsed for k in ("m1", "m2", "m3", "m4")):
-            target_steps = {k: parsed[k] for k in ("m1", "m2", "m3", "m4")}
+        if parsed and self.visualizer and all(k in parsed for k in ("m1", "m2", "m3", "m4", "m5")):
+            target_steps = {k: parsed[k] for k in ("m1", "m2", "m3", "m4", "m5")}
             self._animate_move(target_steps)
         else:
             print(f"[MOCK SERIAL] ⏳  Simulating motor movement ({self.move_delay}s)...")
@@ -119,7 +119,7 @@ class MockSerial:
             t_smooth = (1 - __import__("math").cos(t * __import__("math").pi)) / 2.0
 
             frame = {}
-            for key in ("m1", "m2", "m3", "m4"):
+            for key in ("m1", "m2", "m3", "m4", "m5"):
                 frame[key] = int(round(start[key] + (target_steps[key] - start[key]) * t_smooth))
 
             self.visualizer.update_plot(frame)

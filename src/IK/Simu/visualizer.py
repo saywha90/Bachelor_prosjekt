@@ -40,7 +40,7 @@ def steps_to_rad(steps: int) -> float:
     return (steps - STEP_CENTRE) * RAD_PER_STEP
 
 
-def forward_kinematics(m1: int, m2: int, m3: int, m4: int):
+def forward_kinematics(m1: int, m2: int, m3: int, m4: int, m5: int = 2048):
     """Return the 3-D positions of each joint given motor step values.
 
     Returns
@@ -241,7 +241,7 @@ class ArmVisualizer:
         steps : dict
             ``{\"m1\": int, \"m2\": int, \"m3\": int, \"m4\": int}``
         """
-        joints = forward_kinematics(steps["m1"], steps["m2"], steps["m3"], steps["m4"])
+        joints = forward_kinematics(steps["m1"], steps["m2"], steps["m3"], steps["m4"], steps["m5"])
 
         xs = [j[0] for j in joints]
         ys = [j[1] for j in joints]

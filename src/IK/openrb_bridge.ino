@@ -2,14 +2,14 @@
  * openrb_bridge.ino
  * =================
  * OpenRB-150 firmware that acts as a USB bridge between a Raspberry Pi
- * and 4 daisy-chained Dynamixel motors.
+ * and 5 daisy-chained Dynamixel motors.
  *
  * Protocol
  * --------
  *   Pi  ──USB-C──►  OpenRB-150  ──TTL/RS485──►  Dynamixel chain
  *
  *   The Pi sends a JSON string terminated by '\n':
- *       {"m1":2048,"m2":1024,"m3":3000,"m4":2048}\n
+ *       {"m1":2048,"m2":1024,"m3":3000,"m4":2048,"m5":2048}\n
  *
  *   The bridge parses it and commands each motor to the goal position.
  *   It replies with "OK\n" on success or "ERR:<message>\n" on failure.
@@ -21,11 +21,11 @@
  *
  * Hardware
  * --------
- *   Motor 1 (XM540)  – Base Pan      – ID 1
- *   Motor 2 (XM430)  – Shoulder Tilt – ID 2
- *   Motor 3 (XL430)  – Elbow Tilt    – ID 3
+ *   Motor 1 (XM430)  – Base Pan      – ID 1
+ *   Motor 2 (XM540)  – Shoulder Tilt – ID 2
+ *   Motor 3 (XM430)  – Elbow Tilt    – ID 3
  *   Motor 4 (XL430)  – Wrist Tilt    – ID 4
- *   Motor 5 (XL430)  – Claw          – ID 5.
+ *   Motor 5 (XL430)  – Claw          – ID 5
  */
 
 #include <Dynamixel2Arduino.h>
@@ -44,8 +44,8 @@ const uint32_t DXL_BAUDRATE = 57600;
 const uint32_t PI_BAUDRATE = 115200;
 
 // ── Motor IDs ────────────────────────────────────────────────────────
-const uint8_t MOTOR_IDS[]  = {1, 2, 3, 4};
-const uint8_t NUM_MOTORS   = 4;
+const uint8_t MOTOR_IDS[]  = {1, 2, 3, 4, 5};
+const uint8_t NUM_MOTORS   = 5;
 
 // ── Motion profile (tune these for smooth, safe movement) ────────────
 //    Profile Velocity:      units = 0.229 rev/min  (0 = max speed)
@@ -148,9 +148,10 @@ void processCommand(const char* json) {
         return;
     }
 
-    // Validate that all four keys are present
+    // Validate that all five keys are present
     if (!doc.containsKey("m1") || !doc.containsKey("m2") ||
-        !doc.containsKey("m3") || !doc.containsKey("m4")) {
+        !doc.containsKey("m3") || !doc.containsKey("m4") ||
+        !doc.containsKey("m5")) {
         PI_SERIAL.println("ERR:Missing motor key(s)");
         return;
     }
@@ -160,6 +161,7 @@ void processCommand(const char* json) {
     positions[1] = doc["m2"].as<int32_t>();
     positions[2] = doc["m3"].as<int32_t>();
     positions[3] = doc["m4"].as<int32_t>();
+    positions[4] = doc["m5"].as<int32_t>();
 
     // Range-check each position (0 – 4095)
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
