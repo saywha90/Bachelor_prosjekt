@@ -13,7 +13,7 @@ Hardware:
 All Dynamixel motors: 0-4095 steps → 0°-360°.
 Centre (straight ahead / straight up) = 2048 = 180°.
 
-Dependencies: numpy
+Dependencies: numpyy
 """
 
 import json
