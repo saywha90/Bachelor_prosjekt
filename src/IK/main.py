@@ -16,7 +16,8 @@ centimetres via a calibrated homography.
 When ``USE_REAL_CAMERA = False``, the bridge returns canned fake detections
 so the state machine and 3-D visualiser can be tested without hardware.
 
-Uses ``mock_serial.MockSerial`` while hardware is unavailable.
+Uses 5 daisy-chained Dynamixel motors via ``mock_serial.MockSerial``
+while hardware is unavailable.
 Swap to ``serial.Serial`` once the OpenRB-150 is connected.
 """
 

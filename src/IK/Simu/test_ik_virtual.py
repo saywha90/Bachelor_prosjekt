@@ -48,8 +48,8 @@ def run_single_targets(arm: ArmIK):
 
     header = (
         f"{'Target (x,y,z)':>20s}  │  "
-        f"{'m1':>5s}  {'m2':>5s}  {'m3':>5s}  {'m4':>5s}  │  "
-        f"{'m1°':>6s} {'m2°':>6s} {'m3°':>6s} {'m4°':>6s}  │  Status"
+        f"{'m1':>5s}  {'m2':>5s}  {'m3':>5s}  {'m4':>5s}  {'m5':>5s}  │  "
+        f"{'m1°':>6s} {'m2°':>6s} {'m3°':>6s} {'m4°':>6s} {'m5°':>6s}  │  Status"
     )
     print(header)
     print_divider()
@@ -58,7 +58,7 @@ def run_single_targets(arm: ArmIK):
         label = f"({t[0]:>3}, {t[1]:>3}, {t[2]:>3})"
         try:
             result = arm.solve(*t)
-            m = [result["m1"], result["m2"], result["m3"], result["m4"]]
+            m = [result["m1"], result["m2"], result["m3"], result["m4"], result["m5"]]
             degs = [step_to_deg(s) for s in m]
 
             # Basic sanity: all steps in [0, 4095]
@@ -67,11 +67,11 @@ def run_single_targets(arm: ArmIK):
 
             print(
                 f"{label:>20s}  │  "
-                f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  │  "
-                f"{degs[0]:6.1f} {degs[1]:6.1f} {degs[2]:6.1f} {degs[3]:6.1f}  │  {status}"
+                f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  {m[4]:5d}  │  "
+                f"{degs[0]:6.1f} {degs[1]:6.1f} {degs[2]:6.1f} {degs[3]:6.1f} {degs[4]:6.1f}  │  {status}"
             )
         except ValueError as e:
-            print(f"{label:>20s}  │  {'---':>5s}  {'---':>5s}  {'---':>5s}  {'---':>5s}  │  ❌ {e}")
+            print(f"{label:>20s}  │  {'---':>5s}  {'---':>5s}  {'---':>5s}  {'---':>5s}  {'---':>5s}  │  ❌ {e}")
 
 
 def run_incremental_sweep(arm: ArmIK):
@@ -86,8 +86,8 @@ def run_incremental_sweep(arm: ArmIK):
 
     header = (
         f"{'x':>4s}  │  "
-        f"{'m1':>5s}  {'m2':>5s}  {'m3':>5s}  {'m4':>5s}  │  "
-        f"{'Δm1':>4s} {'Δm2':>4s} {'Δm3':>4s} {'Δm4':>4s}  │  Status"
+        f"{'m1':>5s}  {'m2':>5s}  {'m3':>5s}  {'m4':>5s}  {'m5':>5s}  │  "
+        f"{'Δm1':>4s} {'Δm2':>4s} {'Δm3':>4s} {'Δm4':>4s} {'Δm5':>4s}  │  Status"
     )
     print(header)
     print_divider()
@@ -98,24 +98,24 @@ def run_incremental_sweep(arm: ArmIK):
     for x in range(10, 36):
         try:
             result = arm.solve(float(x), 0.0, 0.0)
-            m = [result["m1"], result["m2"], result["m3"], result["m4"]]
+            m = [result["m1"], result["m2"], result["m3"], result["m4"], result["m5"]]
 
             if prev is not None:
-                deltas = [abs(m[i] - prev[i]) for i in range(4)]
+                deltas = [abs(m[i] - prev[i]) for i in range(5)]
                 flags = ["⚠️" if d > jump_threshold else "  " for d in deltas]
                 any_flag = any(d > jump_threshold for d in deltas)
                 status = "⚠️  BIG JUMP" if any_flag else "✅"
 
                 print(
                     f"{x:4d}  │  "
-                    f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  │  "
-                    f"{deltas[0]:4d} {deltas[1]:4d} {deltas[2]:4d} {deltas[3]:4d}  │  {status}"
+                    f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  {m[4]:5d}  │  "
+                    f"{deltas[0]:4d} {deltas[1]:4d} {deltas[2]:4d} {deltas[3]:4d} {deltas[4]:4d}  │  {status}"
                 )
             else:
                 print(
                     f"{x:4d}  │  "
-                    f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  │  "
-                    f"{'—':>4s} {'—':>4s} {'—':>4s} {'—':>4s}  │  (start)"
+                    f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  {m[4]:5d}  │  "
+                    f"{'—':>4s} {'—':>4s} {'—':>4s} {'—':>4s} {'—':>4s}  │  (start)"
                 )
 
             prev = m
@@ -137,7 +137,7 @@ def run_partial_move_test(arm: ArmIK):
 
     header = (
         f"{'%':>5s}  │  "
-        f"{'m1':>5s}  {'m2':>5s}  {'m3':>5s}  {'m4':>5s}  │  JSON"
+        f"{'m1':>5s}  {'m2':>5s}  {'m3':>5s}  {'m4':>5s}  {'m5':>5s}  │  JSON"
     )
     print(header)
     print_divider()
@@ -151,12 +151,12 @@ def run_partial_move_test(arm: ArmIK):
                 continue
 
             result = arm.calculate_partial_move(*target, percentage=pct)
-            m = [result["m1"], result["m2"], result["m3"], result["m4"]]
+            m = [result["m1"], result["m2"], result["m3"], result["m4"], result["m5"]]
             j = json.dumps(result)
 
             print(
                 f"{int(pct*100):5d}  │  "
-                f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  │  {j}"
+                f"{m[0]:5d}  {m[1]:5d}  {m[2]:5d}  {m[3]:5d}  {m[4]:5d}  │  {j}"
             )
         except ValueError as e:
             print(f"{int(pct*100):5d}  │  ❌ {e}")
@@ -173,7 +173,7 @@ def run_symmetry_test(arm: ArmIK):
 
     print("\n╔══════════════════════════════════════════════════════════════════╗")
     print("║           SYMMETRY TEST  (mirror across Y=0)                   ║")
-    print("║           m2, m3, m4 should match; m1 should mirror            ║")
+    print("║           m2, m3, m4, m5 should match; m1 should mirror         ║")
     print("╚══════════════════════════════════════════════════════════════════╝\n")
 
     for (a, b) in pairs:
@@ -184,15 +184,16 @@ def run_symmetry_test(arm: ArmIK):
             m2_match = ra["m2"] == rb["m2"]
             m3_match = ra["m3"] == rb["m3"]
             m4_match = ra["m4"] == rb["m4"]
+            m5_match = ra["m5"] == rb["m5"]
             # m1 should be symmetric around 2048
             m1_sum = ra["m1"] + rb["m1"]
             m1_sym = abs(m1_sum - 4096) <= 2  # allow ±1 rounding
 
-            ok = m2_match and m3_match and m4_match and m1_sym
+            ok = m2_match and m3_match and m4_match and m5_match and m1_sym
             status = "✅ symmetric" if ok else "⚠️  asymmetric"
 
-            print(f"  {str(a):>18s}  →  m1={ra['m1']:4d}  m2={ra['m2']:4d}  m3={ra['m3']:4d}  m4={ra['m4']:4d}")
-            print(f"  {str(b):>18s}  →  m1={rb['m1']:4d}  m2={rb['m2']:4d}  m3={rb['m3']:4d}  m4={rb['m4']:4d}")
+            print(f"  {str(a):>18s}  →  m1={ra['m1']:4d}  m2={ra['m2']:4d}  m3={ra['m3']:4d}  m4={ra['m4']:4d}  m5={ra['m5']:4d}")
+            print(f"  {str(b):>18s}  →  m1={rb['m1']:4d}  m2={rb['m2']:4d}  m3={rb['m3']:4d}  m4={rb['m4']:4d}  m5={rb['m5']:4d}")
             print(f"  {'':>18s}     m1 sum={m1_sum} (expect ≈4096)   {status}")
             print()
 
