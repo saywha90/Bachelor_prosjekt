@@ -25,6 +25,7 @@
  *   Motor 2 (XM430)  – Shoulder Tilt – ID 2
  *   Motor 3 (XL430)  – Elbow Tilt    – ID 3
  *   Motor 4 (XL430)  – Wrist Tilt    – ID 4
+ *   Motor 5 (XL430)  – Claw          – ID 5.
  */
 
 #include <Dynamixel2Arduino.h>
