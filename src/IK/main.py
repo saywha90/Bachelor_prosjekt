@@ -26,6 +26,8 @@ import time
 from collections import deque
 from enum import Enum, auto
 
+import cv2
+
 from pi_kinematics import ArmIK
 from config import (
     BINS,
@@ -45,7 +47,7 @@ USE_REAL_SERIAL = False
 SERIAL_PORT     = "/dev/ttyACM0"
 SERIAL_BAUD     = 115200
 
-USE_REAL_CAMERA = False          # True → OAK-D camera, False → fake data
+USE_REAL_CAMERA = True          # True → OAK-D camera, False → fake data
 
 
 # ── State machine ─────────────────────────────────────────────────────
@@ -155,7 +157,9 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge):
         obj_y = correction["y"]
         print(f"  📸  Corrected target → ({obj_x}, {obj_y})")
     else:
-        print("  📸  No correction — using original coordinates")
+        print(f"  📸  {colour.upper()} object lost! Cancelling pickup.")
+        send_command(ser, arm, *HOME_POSITION, label="Return HOME (Aborted)")
+        return
 
     log_state(State.APPROACHING, "Phase 2 — moving to final grab position")
 
@@ -239,61 +243,85 @@ def main():
     print("\n[INIT] Moving to HOME position on startup...")
     send_command(ser, arm, *HOME_POSITION, label="Startup HOME")
 
-    # ── Scan → Queue → Process → Rescan loop ─────────────────────────
-    MAX_SCAN_ROUNDS = 3     # safety limit to avoid infinite loop
+    # ── Continuous scan → sort → rescan loop ──────────────────────────
+    IDLE_RESCAN_DELAY = 3       # seconds to wait between idle rescans
     scan_round = 0
 
-    while scan_round < MAX_SCAN_ROUNDS:
-        scan_round += 1
+    try:
+        while True:
+            scan_round += 1
 
-        # ── SCANNING ─────────────────────────────────────────────────
-        log_state(State.SCANNING, f"Scan round {scan_round}/{MAX_SCAN_ROUNDS}")
-        detections = vision.scan_for_balls()
+            # ── SCANNING ──────────────────────────────────────────────
+            log_state(State.SCANNING, f"Scan round {scan_round}")
+            detections = vision.scan_for_balls()
 
-        if not detections:
-            print("\n  📷  No objects found — workspace is clear!")
-            break
+            if not detections:
+                # No balls found — stay at HOME and wait before rescanning.
+                # Reset round counter so it never "runs out".
+                scan_round = 0
+                print(f"\n  📷  No objects found — workspace is clear")
+                print(f"  ⏳ Waiting for balls... (rescanning in {IDLE_RESCAN_DELAY}s)")
 
-        # Build a processing queue
-        queue = deque(detections)
-        total = len(queue)
+                # Idle loop: keep camera feed + visualiser responsive
+                wait_end = time.time() + IDLE_RESCAN_DELAY
+                while time.time() < wait_end:
+                    # Update the OpenCV window so the user sees a live feed
+                    cv2.waitKey(100)   # ~10 fps refresh, also pumps GUI events
+                continue
 
-        print(f"\n[QUEUE] {total} object(s) queued for sorting")
-        for i, det in enumerate(queue, 1):
-            print(f"  {i}. {det['colour'].upper():5s}  "
-                  f"at ({det['x']:6.1f}, {det['y']:6.1f}, {det['z']:4.1f}) cm")
+            # Reset round counter on a new batch of detections
+            scan_round = 0
 
-        # ── Process the queue ────────────────────────────────────────
-        cycle_num = 0
-        while queue:
-            cycle_num += 1
-            detection = queue.popleft()
+            # Build a processing queue
+            queue = deque(detections)
+            total = len(queue)
 
-            print(f"\n{'▓' * 60}")
-            print(f"  CYCLE {cycle_num}/{total}  "
-                  f"(round {scan_round}, {len(queue)} remaining)")
-            print(f"{'▓' * 60}")
+            print(f"\n[QUEUE] {total} object(s) queued for sorting")
+            for i, det in enumerate(queue, 1):
+                print(f"  {i}. {det['colour'].upper():5s}  "
+                      f"at ({det['x']:6.1f}, {det['y']:6.1f}, {det['z']:4.1f}) cm")
 
-            run_sorting_cycle(ser, arm, detection, vision)
+            # ── Process the queue ─────────────────────────────────────
+            cycle_num = 0
+            while queue:
+                cycle_num += 1
+                detection = queue.popleft()
 
-        print(f"\n[QUEUE] Round {scan_round} complete — all objects processed")
+                print(f"\n{'▓' * 60}")
+                print(f"  CYCLE {cycle_num}/{total}  "
+                      f"({len(queue)} remaining)")
+                print(f"{'▓' * 60}")
 
-        # In simulation mode, don't rescan (fake data doesn't change)
-        if not USE_REAL_CAMERA:
-            print("[QUEUE] Simulation mode — skipping rescan")
-            break
+                run_sorting_cycle(ser, arm, detection, vision)
 
-        # Otherwise, rescan for any missed objects
-        print("[QUEUE] Rescanning workspace for remaining objects...")
+            print(f"\n[QUEUE] All objects processed — rescanning workspace...")
+
+            # In simulation mode, one pass is enough (fake data won't change)
+            if not USE_REAL_CAMERA:
+                print("[QUEUE] Simulation mode — exiting after one pass")
+                break
+
+    except KeyboardInterrupt:
+        print(f"\n\n{'━' * 60}")
+        print("  ⛔  KeyboardInterrupt received — shutting down gracefully...")
+        print(f"{'━' * 60}")
+
+        # Return arm to HOME before powering off
+        try:
+            log_state(State.IDLE, "Returning to HOME before shutdown")
+            send_command(ser, arm, *HOME_POSITION, label="Shutdown HOME")
+        except Exception as e:
+            print(f"  ⚠️  Could not return to HOME: {e}")
 
     # ── Shutdown ──────────────────────────────────────────────────────
     print(f"\n{'━' * 60}")
-    print("  🏁  All objects sorted.  Arm is at HOME.  Shutting down.")
+    print("  🏁  Arm is at HOME.  Shutting down.")
     print(f"{'━' * 60}\n")
 
-    vision.close()
+    vision.close()                # releases camera + destroys OpenCV windows
+    cv2.destroyAllWindows()       # safety fallback
     ser.close()
-    viz.close()   # blocks until user closes the plot window
+    viz.close()                   # blocks until user closes the plot window
 
 
 if __name__ == "__main__":

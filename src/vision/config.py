@@ -22,4 +22,4 @@ CAMERA_HFOV_DEG = 81.0
 # ── Ball detection thresholds ────────────────────────────────────────
 BALL_MIN_RADIUS = 10            # Minimum ball radius in pixels (at native res)
 BALL_MAX_RADIUS = 150           # Maximum ball radius in pixels (at native res)
-BALL_CONFIDENCE_THRESHOLD = 0.35  # Minimum ensemble confidence to accept
+BALL_CONFIDENCE_THRESHOLD = 0.50  # Minimum ensemble confidence to accept (was 0.35)

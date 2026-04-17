@@ -29,8 +29,11 @@ from vision.oak_camera import OAKCamera
 import vision.config as config
 
 # ── State ─────────────────────────────────────────────────────────────
-points: list = []          # list of (x, y) tuples
+points: list = []          # list of (x, y) tuples in native camera coords
 frame_display = None       # mutable reference for the callback
+
+# Display window size — must match cv2.resizeWindow and cv2.resize calls
+DISPLAY_W, DISPLAY_H = 1280, 800
 
 COLORS = [
     (0, 255, 0),       # green   — point 1 (top-left)
@@ -43,7 +46,13 @@ LABELS = ["TL (top-left)", "TR (top-right)", "BR (bottom-right)", "BL (bottom-le
 
 
 def mouse_callback(event, x, y, flags, param):
-    """Handle left-click to record a calibration point."""
+    """Handle left-click to record a calibration point.
+
+    Mouse coordinates arrive in display-window space (DISPLAY_W × DISPLAY_H).
+    We scale them back to the native camera resolution so that the stored
+    points are usable for homography computation in vision_bridge.py and the
+    overlay dots line up correctly on the camera frame.
+    """
     global points, frame_display
 
     if event != cv2.EVENT_LBUTTONDOWN:
@@ -53,12 +62,18 @@ def mouse_callback(event, x, y, flags, param):
         print("\n  ⚠️  Already have 4 points. Press 'c' to clear and retry.")
         return
 
+    # --- Scale from display coords → native camera coords ---------------
+    native_w, native_h = config.CAMERA_RESOLUTION
+    nx = int(x * native_w / DISPLAY_W)
+    ny = int(y * native_h / DISPLAY_H)
+
     idx = len(points)
-    points.append((x, y))
+    points.append((nx, ny))
     color = COLORS[idx]
     label = LABELS[idx]
 
-    print(f"  📌 Point {idx + 1}/4  {label}:  ({x}, {y})")
+    print(f"  📌 Point {idx + 1}/4  {label}:  ({nx}, {ny})  "
+          f"[display ({x}, {y}) → native ({nx}, {ny})]")
 
     if len(points) == 4:
         _print_result()
@@ -149,7 +164,7 @@ def main():
 
     WINDOW = "Workspace Calibration"
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, 1280, 800)
+    cv2.resizeWindow(WINDOW, DISPLAY_W, DISPLAY_H)
     cv2.setMouseCallback(WINDOW, mouse_callback)
 
     global points
@@ -161,7 +176,8 @@ def main():
             break
 
         display = _draw_overlay(frame)
-        display = cv2.resize(display, (1280, 800), interpolation=cv2.INTER_LINEAR)
+        display = cv2.resize(display, (DISPLAY_W, DISPLAY_H),
+                             interpolation=cv2.INTER_LINEAR)
         cv2.imshow(WINDOW, display)
 
         key = cv2.waitKey(1) & 0xFF
