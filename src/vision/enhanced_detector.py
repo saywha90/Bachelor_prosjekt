@@ -288,7 +288,7 @@ class SimpleBallDetector:
     def __init__(self,
                  min_radius: int = 10,
                  max_radius: int = 150,
-                 confidence_threshold: float = 0.35,
+                 confidence_threshold: float = 0.50,
                  enable_adaptive_lighting: bool = True,
                  focal_length_px: Optional[float] = None,
                  max_balls_per_color: int = 1):
@@ -365,10 +365,10 @@ class SimpleBallDetector:
             'lighting_level': 'unknown'
         }
         self._frame_counter  = 0
-        self._hough_interval = 9999      # effektivt deaktivert
+        self._hough_interval = 1         # Kjør hver frame for robusthet når masker overlapper
         self._hough_cache: List[DetectedBall] = []
         self._tracker = BallTracker(
-            max_disappeared=6, max_distance=100.0
+            max_disappeared=2, max_distance=100.0
         )
     
     # ─── Lighting analysis ─────────────────────────────────────────────
@@ -595,7 +595,7 @@ class SimpleBallDetector:
             # samme ball, men permissivt nok for to baller side om side.
             minDist=max(self.min_radius * 3, 20),
             param1=50,
-            param2=35,   # 35 stemmer krevd → kun klare, godt-definerte sirkler (var 25)
+            param2=42,   # 42: krever tydelig bue, men tillater okklusjon (fargesjekken avviser støy)
             minRadius=self.min_radius,
             maxRadius=self.max_radius
         )
@@ -632,6 +632,47 @@ class SimpleBallDetector:
                                           float(np.mean(roi_s)) / 255.0)
                         else:
                             color_conf = 0.0
+
+                        # ---- Lokal form-verifisering ----
+                        # Hindrer Hough i å godkjenne firkanter/kuber ("se objekt, er det firkantet -> ignorer")
+                        vr = int(radius * 1.5)
+                        local_hsv = hsv[max(0, y-vr):min(hsv.shape[0], y+vr),
+                                        max(0, x-vr):min(hsv.shape[1], x+vr)]
+                        if local_hsv.size > 0:
+                            local_mask = np.zeros(local_hsv.shape[:2], dtype=np.uint8)
+                            ranges = self.red_ranges if color == BallColor.RED else self.blue_ranges
+                            for lower, upper in ranges:
+                                local_mask = cv2.bitwise_or(local_mask, cv2.inRange(local_hsv, lower, upper))
+                            
+                            local_contours, _ = cv2.findContours(local_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            if local_contours:
+                                largest = max(local_contours, key=cv2.contourArea)
+                                perimeter = cv2.arcLength(largest, True)
+                                if perimeter > 0:
+                                    epsilon = 0.02 * perimeter
+                                    approx = cv2.approxPolyDP(largest, epsilon, True)
+                                    # En ren kube, hjørne, eller melkekartong vil ha <= 6 hjørner.
+                                    # En sirkel (ball) har typisk 8-16 hjørner etter poly-approx.
+                                    if len(approx) <= 6:
+                                        continue  # Avvis den direkte
+
+                            # 2. IoU sjekk mot ideell sirkel for å avvise tekstur/svære objekter
+                            ideal_circle = np.zeros_like(local_mask)
+                            cy_loc = y - max(0, y-vr)
+                            cx_loc = x - max(0, x-vr)
+                            cv2.circle(ideal_circle, (cx_loc, cy_loc), int(radius), 255, -1)
+                            
+                            intersection = cv2.bitwise_and(local_mask, ideal_circle)
+                            union = cv2.bitwise_or(local_mask, ideal_circle)
+                            
+                            area_i = np.count_nonzero(intersection)
+                            area_u = np.count_nonzero(union)
+                            
+                            iou = area_i / area_u if area_u > 0 else 0
+                            # Krev at fargen ligner en sirkel. IoU=1 for perfekt ball, ~0.6 for okkludert ball.
+                            # Melkekartongtak eller kuører spenner vilt og gir IoU < 0.4.
+                            if iou < 0.45:
+                                continue  # Avvis tekstur
 
                         # Konsistent formel med _validate_contour: 80% form + 20% farge + sqrt
                         raw        = (shape_conf * 0.80) + (color_conf * 0.20)
@@ -682,14 +723,14 @@ class SimpleBallDetector:
         sat_ch = roi[:, :, 1]
         val_ch = roi[:, :, 2]
         
-        # Bare tell piksler med tilstrekkelig farge og lysstyrke.
-        # sat >= 90 ekskluderer grå/brunlige overflater som ellers trigger rød-range.
-        valid_mask = (sat_ch >= 90) & (val_ch >= 50)
+        # Strammere sat/val-sjekk for å avvise feil fra Hough (f.eks. rød kube eller bobleplast).
+        # Må matche minst de faktiske HSV-maskenes minimumskrav (sat >= 120 for rød).
+        valid_mask = (sat_ch >= 120) & (val_ch >= 70)
         valid_pixels = int(np.sum(valid_mask))
 
-        # Krev minst 25% av ROI-pikslene å ha gyldig farge (var 10%).
-        # Kabelbøyninger er typisk < 25% farget i et 60%-radius-sample.
-        if valid_pixels < roi.shape[0] * roi.shape[1] * 0.25:
+        # Krev at minst 50% av ROI-pikslene er klare farger (var 25%).
+        # Dette kutter drastisk ned på uregelmessige gjenstander
+        if valid_pixels < roi.shape[0] * roi.shape[1] * 0.50:
             return BallColor.UNKNOWN
         
         # Rød: Hue 0-20 ELLER 160-179 (wraparound)
@@ -754,16 +795,28 @@ class SimpleBallDetector:
             return None
         circularity = (4 * np.pi * area) / (perimeter ** 2)
 
-        # Sirkulæritet: ≥0.60.
-        # En ekte ball med spekulær highlight og 13×13 closing oppnår typisk
-        # 0.65-0.95 ved halvskala. Kabler/kluter ender på 0.20-0.55.
-        if circularity < 0.60:
+        # Sirkulæritet: ≥0.82.
+        # En perfekt sirkel har 1.0, en perfekt firkant har π/4 ≈ 0.785.
+        # Terskel 0.82 avviser kuber/firkanter (typisk 0.75-0.80) mens ekte
+        # baller sett fra litt ovenfor fortsatt har sirkulæritet >0.85.
+        if circularity < 0.82:
             return None
 
-        # Aspect ratio — bounding box nær kvadratisk for en sirkel
+        # Corner detection — reject polygons with few vertices (squares/cubes).
+        # cv2.approxPolyDP approximates the contour to a polygon. A square
+        # approximates to 4 vertices, a rectangle/pentagon to 4-6.
+        # A real circle approximates to 8+ vertices with epsilon = 2% of arc length.
+        epsilon = 0.02 * perimeter
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        n_vertices = len(approx)
+        if n_vertices <= 6:
+            return None
+
+        # Aspect ratio — bounding box nær kvadratisk for en sirkel.
+        # Terskel 0.80 avviser elongerte objekter som penner (typisk 0.2-0.5).
         bx, by, bw, bh = cv2.boundingRect(contour)
         aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-        if aspect_ratio < 0.70:
+        if aspect_ratio < 0.80:
             return None
 
         # Soliditet — fyller det meste av sitt konvekse skrog
@@ -793,9 +846,9 @@ class SimpleBallDetector:
 
         # Confidence: 90 % gulv for alle baller som passerer gate-filtrene,
         # + opptil 10 % bonus for eksepsjonell form/farge-kvalitet.
-        # Normalisert: 0.0 ved terskelverdi, 1.0 ved perfekt verdi.
-        cir_bonus = float(np.clip((circularity  - 0.60) / 0.40, 0.0, 1.0))
-        asp_bonus = float(np.clip((aspect_ratio - 0.70) / 0.30, 0.0, 1.0))
+        # Normalisert: 0.0 ved ny terskelverdi, 1.0 ved perfekt verdi.
+        cir_bonus = float(np.clip((circularity  - 0.82) / 0.18, 0.0, 1.0))
+        asp_bonus = float(np.clip((aspect_ratio - 0.80) / 0.20, 0.0, 1.0))
         sol_bonus = float(np.clip((solidity     - 0.75) / 0.25, 0.0, 1.0))
         col_bonus = float(np.clip((sat_score    - 0.40) / 0.60, 0.0, 1.0))
         quality   = cir_bonus * 0.40 + asp_bonus * 0.20 + sol_bonus * 0.20 + col_bonus * 0.20
@@ -1387,5 +1440,14 @@ class SimpleBallDetector:
         }
         self._frame_counter = 0
         self._hough_cache   = []
+        self._tracker.reset()
+
+    def reset_tracker(self) -> None:
+        """Clear all active tracks without resetting statistics.
+
+        Call this between scan rounds (e.g. after the arm has picked up a
+        ball and moved away) so that stale Kalman predictions from the
+        previous scan do not produce phantom detections in the next scan.
+        """
         self._tracker.reset()
 
