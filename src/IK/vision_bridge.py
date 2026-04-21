@@ -33,6 +33,7 @@ Usage
 Author: Bachelor Project 2026 – Autonomia
 """
 
+import json
 import sys
 import math
 import time
@@ -43,59 +44,96 @@ import cv2
 import numpy as np
 
 # ── Make the vision package importable from src/IK/ ──────────────────
-_VISION_DIR = str(Path(__file__).resolve().parent.parent / "vision")
-if _VISION_DIR not in sys.path:
-    sys.path.insert(0, _VISION_DIR)
 _SRC_DIR = str(Path(__file__).resolve().parent.parent)
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
+# Insert the IK directory LAST at position 0 so that bare `import config`
+# resolves to src/IK/config.py, NOT src/vision/config.py.
+_IK_DIR = str(Path(__file__).resolve().parent)
+if _IK_DIR not in sys.path:
+    sys.path.insert(0, _IK_DIR)
 
 from vision.oak_camera import OAKCamera
 from vision.enhanced_detector import SimpleBallDetector, BallColor
 import vision.config as vcfg
+
+from config import CAMERA_OFFSET_X, CAMERA_OFFSET_Y, CAMERA_HEIGHT
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  Homography Calibration Points
 # ══════════════════════════════════════════════════════════════════════
 #
-#  HOW TO CALIBRATE (one-time setup):
+#  ⚠️  CRITICAL: WORKSPACE_CM must be measured from the SHOULDER JOINT
+#     (motor 2 pivot), NOT from the camera pillar or arm base!
+#     CAMERA_OFFSET_X/Y are now 0 — the homography maps directly to
+#     the shoulder-origin frame that the IK solver expects.
+#
+#  HOW TO CALIBRATE (run once after any physical repositioning):
 #
 #  1. Place 4 markers at known positions on your workspace (e.g. the
-#     corners of an A3 sheet).  Measure their (x, y) in cm from the
-#     arm's shoulder origin.
+#     corners of an A3 sheet, or tape marks).
 #
-#  2. Run  python src/vision/test_enhanced_detector.py  and hover your
-#     mouse over each marker.  OpenCV shows pixel coords in the window
-#     title or via cv2.setMouseCallback.
+#  2. Measure each marker's (x, y) in cm FROM THE SHOULDER JOINT:
+#       x = forward (away from arm base)
+#       y = left(+) / right(−)
 #
-#  3. Fill in the two arrays below so that each row in WORKSPACE_PX
-#     corresponds to the same physical corner in WORKSPACE_CM.
+#  3. Run  python3 calibrate_homography.py  — it shows the camera feed
+#     and lets you click each marker to capture pixel coordinates.
+#     Alternatively, hover over each marker to read pixel coords.
+#
+#  4. Fill in the two arrays below so that WORKSPACE_PX[i] corresponds
+#     to the same physical corner as WORKSPACE_CM[i].
 #
 #  Order: top-left, top-right, bottom-right, bottom-left
 #  (when looking at the camera image).
 #
 # ──────────────────────────────────────────────────────────────────────
 
-# Pixel coordinates of the 4 workspace corners in the camera frame
-# TODO: Replace with your actual measured pixel positions
-WORKSPACE_PX = np.float32([
+# ── Default (hardcoded) calibration values ────────────────────────────
+# These are used as fallback when no calibration file exists.
+# Run  python3 calibrate_homography.py  to generate an updated file.
+_DEFAULT_WORKSPACE_PX = np.float32([
     [   9,   17],      # TL (top-left)
     [ 619,   16],      # TR (top-right)
     [ 618,  381],      # BR (bottom-right)
     [  23,  378]       # BL (bottom-left)
 ])
 
-# Corresponding real-world positions in cm (arm shoulder = origin)
-#   x = forward (away from arm base)
-#   y = left(+) / right(−)
-# TODO: Replace with your actual measured workspace corners
-WORKSPACE_CM = np.float32([
-    [35.0,  15.0],   # top-left      → far-left of workspace
-    [35.0, -15.0],   # top-right     → far-right of workspace
-    [10.0, -15.0],   # bottom-right  → near-right of workspace
-    [10.0,  15.0],   # bottom-left   → near-left of workspace
+_DEFAULT_WORKSPACE_CM = np.float32([
+    [28.0,  22.0],   # top-left      → 28cm far, 22cm left
+    [28.0, -22.0],   # top-right     → 28cm far, 22cm right
+    [10.0, -22.0],   # bottom-right  → 10cm near, 22cm right
+    [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
 ])
+
+# ── Load calibration from JSON (auto-saved by calibrate_homography.py) ─
+_CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.json"
+
+
+def _load_calibration():
+    """Load WORKSPACE_PX and WORKSPACE_CM from the calibration JSON file.
+
+    Returns the saved arrays if the file exists and is valid, otherwise
+    falls back to the hardcoded defaults above.
+    """
+    if _CALIBRATION_FILE.is_file():
+        try:
+            with open(_CALIBRATION_FILE, "r") as f:
+                data = json.load(f)
+            px = np.float32(data["workspace_px"])
+            cm = np.float32(data["workspace_cm"])
+            if px.shape == (4, 2) and cm.shape == (4, 2):
+                print(f"[VISION] ✅ Loaded calibration from {_CALIBRATION_FILE.name}")
+                return px, cm
+            else:
+                print(f"[VISION] ⚠️  Calibration file has unexpected shape — using defaults")
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            print(f"[VISION] ⚠️  Could not parse {_CALIBRATION_FILE.name}: {exc} — using defaults")
+    return _DEFAULT_WORKSPACE_PX, _DEFAULT_WORKSPACE_CM
+
+
+WORKSPACE_PX, WORKSPACE_CM = _load_calibration()
 
 
 # Colour → BGR mapping for OpenCV drawing
@@ -217,6 +255,12 @@ class VisionBridge:
         transformed = cv2.perspectiveTransform(point, self._homography)
         x_cm = float(transformed[0, 0, 0])
         y_cm = float(transformed[0, 0, 1])
+
+        # Apply camera mounting offset
+        # The homography maps to camera-frame coordinates; shift to shoulder-frame
+        x_cm += CAMERA_OFFSET_X
+        y_cm += CAMERA_OFFSET_Y
+
         return round(x_cm, 1), round(y_cm, 1)
 
     # ── Live camera display ───────────────────────────────────────────
@@ -511,7 +555,7 @@ class VisionBridge:
                 "colour": colour,
                 "x": x_cm,
                 "y": y_cm,
-                "z": 0.0,       # balls are on the table surface
+                "z": 0.0,  # Ball is on table surface; camera height (CAMERA_HEIGHT) used only for calibration reference
             })
 
         colour_summary = ", ".join(
@@ -541,8 +585,14 @@ class VisionBridge:
             is no longer visible (arm may be occluding it).
         """
         if not self.use_camera:
-            # In simulation mode, pretend the ball hasn't moved
-            print("  📸 [VISION] Correction image — no change (simulation)")
+            # In simulation mode, return the fake detection for this colour
+            # so the pick-and-place cycle can proceed normally.
+            for det in self._FAKE_DETECTIONS:
+                if det["colour"] == approximate_colour:
+                    print(f"  📸 [VISION] Correction image — returning fake "
+                          f"({det['x']}, {det['y']}) (simulation)")
+                    return dict(det)
+            print("  📸 [VISION] Correction image — no match (simulation)")
             return None
 
         detections = self.scan_for_balls(num_frames=3)

@@ -108,6 +108,107 @@ All coordinates are in **centimetres relative to the shoulder joint origin** (x 
 
 ---
 
+## 🔧 Calibration Guide (First-Time Setup)
+
+Calibration must be completed before running the full system. Follow these phases in order — each step depends on the ones before it. Total time: ~45–70 minutes.
+
+### Phase A — Arm Hardware (no camera needed)
+
+| Step | Script | What It Does | Time |
+|:---:|---|---|---|
+| **1** | Upload [`openrb_bridge.ino`](src/IK/openrb_bridge.ino) | Flash firmware to OpenRB-150 via Arduino IDE | ~2 min |
+| **2** | [`calibrate_joints.py`](src/IK/calibrate_joints.py) | Verify motor signs, zeros, and directions | ~10–15 min |
+| **3** | [`calibrate_sag.py`](src/IK/calibrate_sag.py) | Measure gravity droop at 5 reaches, fit compensation model | ~10–20 min |
+
+#### Step 1 — Flash Firmware
+```bash
+# Open src/IK/openrb_bridge.ino in Arduino IDE
+# Select board: OpenRB-150, port: /dev/cu.usbmodem101
+# Upload
+```
+
+#### Step 2 — Joint Calibration
+Drives each motor one at a time so you can verify directions and zero positions.
+```bash
+cd src/IK && python3 calibrate_joints.py
+```
+Follow the on-screen prompts. If any motor moves the wrong way, update the sign/offset in `pi_kinematics.py`.
+
+#### Step 3 — Sag (Droop) Calibration
+The arm droops under gravity — further reaches = more droop. This script measures the droop and computes the correction automatically.
+```bash
+cd src/IK && python3 calibrate_sag.py       # default test height = 5 cm
+cd src/IK && python3 calibrate_sag.py 8     # custom test height = 8 cm
+```
+**What happens:**
+1. Moves the claw to 5 different reach distances (12–36 cm) with sag compensation OFF
+2. You measure the actual claw height at each position with a ruler
+3. Fits linear and quadratic models to the error
+4. Saves results to `sag_calibration.json` — **automatically loaded** by `ArmIK` on next startup
+
+> **Tip:** If the claw touches the desk at far reaches, use a higher test height (e.g., `python3 calibrate_sag.py 8`).
+
+### Phase B — Vision Setup (camera needed, arm optional)
+
+| Step | Script | What It Does | Time |
+|:---:|---|---|---|
+| **4** | [`hsv_tuner.py`](src/vision/hsv_tuner.py) | Interactively tune HSV colour ranges with live preview | ~5–15 min |
+| **5** | [`recalibrate_hsv.py`](src/vision/recalibrate_hsv.py) | Statistically refine HSV ranges from training images | ~5 min |
+| **6** | [`calibrate_homography.py`](src/IK/calibrate_homography.py) | Click 4 workspace corners → compute pixel-to-cm transform | ~5–10 min |
+
+#### Step 4 — HSV Colour Tuning
+Place red and blue balls in the workspace under your actual lighting conditions.
+```bash
+cd src && python3 vision/hsv_tuner.py
+```
+Adjust the trackbars until only the target colour is visible in the mask. Press `s` to save. Update the ranges in `enhanced_detector.py`.
+
+#### Step 5 — HSV Refinement (Optional)
+If you have training images captured via `capture_training_data.py`:
+```bash
+cd src && python3 vision/recalibrate_hsv.py training_data
+```
+Uses statistical analysis to suggest optimal HSV bounds.
+
+#### Step 6 — Homography Calibration
+Maps camera pixels to physical centimetres on the workspace.
+```bash
+cd src/IK && python3 calibrate_homography.py
+```
+**What happens:**
+1. Shows the camera feed — click the 4 corners of your workspace
+2. Enter the physical measurements (cm) of each corner from the arm's shoulder joint
+3. Computes the perspective transform and saves to `homography_calibration.json`
+4. Optionally verifies by detecting a ball and showing its cm coordinates
+
+### Phase C — Integration Tuning (arm + camera together)
+
+| Step | Script | What It Does | Time |
+|:---:|---|---|---|
+| **7** | [`calibrate_vision_offset.py`](src/IK/calibrate_vision_offset.py) | Fine-tune camera-to-shoulder offset | ~5 min |
+
+#### Step 7 — Vision Offset
+The camera isn't at the same position as the arm's shoulder joint. This step measures the offset.
+```bash
+cd src/IK && python3 calibrate_vision_offset.py
+```
+Place a ball at 2–3 known physical positions, compare the detected coordinates with the actual ones, and update `CAMERA_OFFSET_X` / `CAMERA_OFFSET_Y` in `config.py`.
+
+### ✅ Calibration Complete
+
+After all 7 steps, start the full system:
+```bash
+cd src/IK && python3 main.py
+```
+
+> **Re-calibration:** You only need to redo specific steps when something changes:
+> - Moved the camera → redo steps 6 + 7
+> - Changed lighting → redo steps 4 + 5
+> - Rebuilt/tightened the arm → redo steps 2 + 3
+> - Everything → redo all 7 steps
+
+---
+
 ## Running the Full System
 
 ### Toggle hardware in `src/IK/main.py`
@@ -130,52 +231,9 @@ After each scan round, if the camera is live it rescans the workspace for any re
 
 ---
 
-## Homography Calibration (one-time setup)
+## Homography Calibration
 
-The camera is mounted on a side pillar looking at a downward angle. Simple distance estimation fails because of the perspective. We use a **4-point perspective transform** to map pixels → cm accurately.
-
-### Step 1 — Capture calibration points
-
-```bash
-cd src
-python3 vision/calibrate_camera.py
-```
-
-- Left-click the **4 corners of your physical workspace** in the camera feed
-- Order: **top-left → top-right → bottom-right → bottom-left**
-- Press `c` to clear and retry, `q` to quit
-
-The tool prints a ready-to-paste array:
-
-```python
-WORKSPACE_PX = np.float32([
-    [ 102,  58],   # top-left
-    [ 538,  62],   # top-right
-    [ 576, 358],   # bottom-right
-    [  64, 362],   # bottom-left
-])
-```
-
-### Step 2 — Set real-world corners
-
-Measure the 4 corners of your workspace in cm from the arm's shoulder:
-
-```python
-# In src/IK/vision_bridge.py
-WORKSPACE_CM = np.float32([
-    [35.0,  15.0],   # top-left      (far-left)
-    [35.0, -15.0],   # top-right     (far-right)
-    [10.0, -15.0],   # bottom-right  (near-right)
-    [10.0,  15.0],   # bottom-left   (near-left)
-])
-```
-
-### Step 3 — Enable the camera
-
-```python
-# In src/IK/main.py
-USE_REAL_CAMERA = True
-```
+> **See [Calibration Guide — Step 6](#step-6--homography-calibration) above for the full procedure.**
 
 ---
 
@@ -217,25 +275,7 @@ SimpleBallDetector.BALL_DIAMETER_MM = 50.0   # 50 mm physical diameter
 
 ## HSV Recalibration
 
-If you change balls or the lighting environment:
-
-```bash
-# 1. Capture new training images
-python3 src/vision/capture_training_data.py --color red
-python3 src/vision/capture_training_data.py --color blue
-
-# 2. Analyse images → get suggested HSV ranges
-python3 src/vision/recalibrate_hsv.py training_data
-
-# 3. Paste the suggested ranges into enhanced_detector.py
-
-# 4. Fine-tune live
-python3 src/vision/diagnose_detection.py     # click to read H/S/V per pixel
-python3 src/vision/hsv_tuner.py              # trackbar-based live tuner
-
-# 5. Retrain the SVM (optional but recommended)
-python3 src/vision/train_color_classifier.py --data_dir training_data
-```
+> **See [Calibration Guide — Steps 4 & 5](#step-4--hsv-colour-tuning) above for the full procedure.**
 
 ---
 

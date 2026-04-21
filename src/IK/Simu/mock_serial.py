@@ -54,6 +54,9 @@ class MockSerial:
         # Current simulated motor positions (start at centre = 2048)
         self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
 
+        # Pending response for special commands (read_pos, set_profile, etc.)
+        self._pending_response = None
+
         print(f"[MOCK SERIAL] ✅  Opened fake port {self.port} @ {self.baudrate} baud")
 
     # ── Attach a visualiser after construction ────────────────────────
@@ -91,6 +94,20 @@ class MockSerial:
             parsed = None
             pretty = text
 
+        # ── Handle special commands without animating ──────────────────
+        if parsed and isinstance(parsed, dict) and "cmd" in parsed:
+            cmd = parsed["cmd"]
+            if cmd == "read_pos":
+                # Store response for next readline()
+                self._pending_response = json.dumps(self._current_steps) + "\n"
+                return len(data)
+            elif cmd == "set_profile":
+                self._pending_response = '{"status":"profile_set"}\n'
+                return len(data)
+            else:
+                self._pending_response = f"ERR:Unknown cmd: {cmd}\n"
+                return len(data)
+
         print(f"\n[MOCK SERIAL TX] ──────────────────────────────")
         print(f"  {pretty}")
 
@@ -103,6 +120,7 @@ class MockSerial:
             time.sleep(self.move_delay)
 
         print(f"[MOCK SERIAL] ✅  Motors reached target position")
+        self._pending_response = None  # clear; readline will return "OK\n"
         return len(data)
 
     def _animate_move(self, target_steps: dict):
@@ -130,7 +148,15 @@ class MockSerial:
         self.visualizer.update_plot(self._current_steps)
 
     def readline(self) -> bytes:
-        """Return a fake ``OK\\n`` response, mimicking the OpenRB-150."""
+        """Return a fake response, mimicking the OpenRB-150.
+
+        If a special command (read_pos, set_profile) was received, return
+        the appropriate JSON.  Otherwise return ``OK\\n``.
+        """
+        if self._pending_response is not None:
+            resp = self._pending_response.encode()
+            self._pending_response = None
+            return resp
         return b"OK\n"
 
     def read(self, size: int = 1) -> bytes:
