@@ -37,7 +37,7 @@
 #define DXL_SERIAL   Serial1
 #define DXL_DIR_PIN  -1          // OpenRB-150 handles direction automatically
 
-const uint32_t DXL_BAUDRATE = 57600;
+const uint32_t DXL_BAUDRATE = 115200;
 
 // ── USB serial to the Raspberry Pi ───────────────────────────────────
 #define PI_SERIAL    Serial
@@ -52,13 +52,18 @@ const uint8_t NUM_MOTORS   = 5;
 //    Profile Acceleration:  units = 214.577 rev/min²
 //
 //    Conservative defaults below ≈ gentle, non-jerky motion.
-const uint32_t PROFILE_VELOCITY     = 80;   // ~18 RPM – slow & safe
-const uint32_t PROFILE_ACCELERATION = 20;   // gentle ramp
+const uint32_t PROF_VEL_VALUE  = 80;   // ~18 RPM – slow & safe
+const uint32_t PROF_ACC_VALUE  = 20;   // gentle ramp
+
+// ── Startup-specific slower profile ──────────────────────────────────
+const uint32_t STARTUP_PROF_VEL  = 30;   // slower for startup
+const uint32_t STARTUP_PROF_ACC  = 10;   // gentler acceleration for startup
 
 // ── Dynamixel control-table addresses (Protocol 2.0) ─────────────────
 //    These are identical across XM540, XM430, and XL430.
 const uint16_t ADDR_PROFILE_ACCELERATION = 108;
 const uint16_t ADDR_PROFILE_VELOCITY     = 112;
+const uint16_t ADDR_HARDWARE_ERROR       = 70;   // Hardware Error Status
 
 Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
 
@@ -94,16 +99,41 @@ void setup() {
             continue;
         }
 
+        // ── Clear any latched hardware errors by rebooting the motor ──
+        //    Dynamixel motors latch errors (overload, position limit, etc.)
+        //    in the Hardware Error Status register (addr 70).  Once set,
+        //    the LED blinks red and the motor refuses to move until the
+        //    error is cleared.  The ONLY way to clear it via Protocol 2.0
+        //    is to send a Reboot instruction.
+        uint8_t hw_err = dxl.readControlTableItem(HARDWARE_ERROR_STATUS, id);
+        if (hw_err != 0) {
+            PI_SERIAL.print("WARN:Motor ");
+            PI_SERIAL.print(id);
+            PI_SERIAL.print(" has hardware error 0x");
+            PI_SERIAL.print(hw_err, HEX);
+            PI_SERIAL.println(" — rebooting to clear");
+            dxl.reboot(id);
+            delay(500);  // wait for motor to finish rebooting
+            // Re-ping after reboot
+            if (!dxl.ping(id)) {
+                PI_SERIAL.print("ERR:Motor ");
+                PI_SERIAL.print(id);
+                PI_SERIAL.println(" not responding after reboot");
+                continue;
+            }
+        }
+
         // Ensure we're in Position Control mode (mode 3)
         dxl.torqueOff(id);
         dxl.setOperatingMode(id, OP_POSITION);
 
         // Set smooth motion profile
-        dxl.writeControlTableItem(PROFILE_ACCELERATION, id, PROFILE_ACCELERATION);
-        dxl.writeControlTableItem(PROFILE_VELOCITY, id, PROFILE_VELOCITY);
+        dxl.writeControlTableItem(PROFILE_ACCELERATION, id, PROF_ACC_VALUE);
+        dxl.writeControlTableItem(PROFILE_VELOCITY, id, PROF_VEL_VALUE);
 
         // Enable torque
         dxl.torqueOn(id);
+        delay(50);  // let the motor PID settle
     }
 
     PI_SERIAL.println("OK:READY");
@@ -148,6 +178,146 @@ void processCommand(const char* json) {
         return;
     }
 
+    // ── Handle "read_pos" command ────────────────────────────────────
+    if (doc.containsKey("cmd")) {
+        const char* cmd = doc["cmd"].as<const char*>();
+
+        if (strcmp(cmd, "read_pos") == 0) {
+            // Read current positions of all 5 motors and send back as JSON
+            JsonDocument resp;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                char key[4];
+                snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
+                resp[key] = (int32_t)dxl.getPresentPosition(MOTOR_IDS[i]);
+            }
+            serializeJson(resp, PI_SERIAL);
+            PI_SERIAL.println();
+            return;
+        }
+
+        if (strcmp(cmd, "read_errors") == 0) {
+            // Read Hardware Error Status of all 5 motors and send back as JSON
+            JsonDocument resp;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                char key[4];
+                snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
+                resp[key] = (uint8_t)dxl.readControlTableItem(HARDWARE_ERROR_STATUS, MOTOR_IDS[i]);
+            }
+            serializeJson(resp, PI_SERIAL);
+            PI_SERIAL.println();
+            return;
+        }
+
+        if (strcmp(cmd, "set_profile") == 0) {
+            // Set motion profile on all motors
+            uint32_t vel = doc["vel"].as<uint32_t>();
+            uint32_t acc = doc["acc"].as<uint32_t>();
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                uint8_t id = MOTOR_IDS[i];
+                dxl.writeControlTableItem(PROFILE_ACCELERATION, id, acc);
+                dxl.writeControlTableItem(PROFILE_VELOCITY, id, vel);
+            }
+            PI_SERIAL.println("{\"status\":\"profile_set\"}");
+            return;
+        }
+
+        if (strcmp(cmd, "enable_torque") == 0) {
+            // Enable torque on all motors (useful if power cycled)
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                dxl.torqueOn(MOTOR_IDS[i]);
+            }
+            PI_SERIAL.println("OK:TORQUE_ON");
+            return;
+        }
+
+        if (strcmp(cmd, "clear_errors") == 0) {
+            // Reboot any motor that has a latched hardware error, then
+            // re-configure it (position mode, profile, torque on).
+            // This clears the red-blinking LED and allows the motor to move again.
+            uint8_t cleared = 0;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                uint8_t id = MOTOR_IDS[i];
+                uint8_t hw_err = dxl.readControlTableItem(HARDWARE_ERROR_STATUS, id);
+                if (hw_err != 0) {
+                    dxl.reboot(id);
+                    delay(500);
+                    if (dxl.ping(id)) {
+                        dxl.torqueOff(id);
+                        dxl.setOperatingMode(id, OP_POSITION);
+                        dxl.writeControlTableItem(PROFILE_ACCELERATION, id, PROF_ACC_VALUE);
+                        dxl.writeControlTableItem(PROFILE_VELOCITY, id, PROF_VEL_VALUE);
+                        dxl.torqueOn(id);
+                        cleared++;
+                    }
+                }
+            }
+            PI_SERIAL.print("{\"cleared\":");
+            PI_SERIAL.print(cleared);
+            PI_SERIAL.println("}");
+            return;
+        }
+
+        if (strcmp(cmd, "diagnose") == 0) {
+            // Comprehensive motor diagnostics across multiple baud rates
+            const uint32_t baudRates[] = {57600, 115200, 1000000};
+            const uint8_t numBauds = 3;
+
+            PI_SERIAL.print("{\"diagnostics\":[");
+
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                uint8_t id = MOTOR_IDS[i];
+                if (i > 0) PI_SERIAL.print(",");
+                PI_SERIAL.print("{\"id\":");
+                PI_SERIAL.print(id);
+
+                bool found = false;
+                uint32_t foundBaud = 0;
+                int32_t pos = 0;
+                uint16_t model = 0;
+
+                // Try each baud rate
+                for (uint8_t b = 0; b < numBauds; b++) {
+                    dxl.begin(baudRates[b]);
+                    dxl.setPortProtocolVersion(2.0);
+                    delay(50);
+
+                    if (dxl.ping(id)) {
+                        found = true;
+                        foundBaud = baudRates[b];
+                        pos = (int32_t)dxl.getPresentPosition(id);
+                        model = dxl.getModelNumber(id);
+                        break;
+                    }
+                }
+
+                PI_SERIAL.print(",\"found\":");
+                PI_SERIAL.print(found ? "true" : "false");
+                if (found) {
+                    PI_SERIAL.print(",\"baud\":");
+                    PI_SERIAL.print(foundBaud);
+                    PI_SERIAL.print(",\"position\":");
+                    PI_SERIAL.print(pos);
+                    PI_SERIAL.print(",\"model\":");
+                    PI_SERIAL.print(model);
+                }
+                PI_SERIAL.print("}");
+            }
+
+            PI_SERIAL.println("]}");
+
+            // Restore original baud rate
+            dxl.begin(DXL_BAUDRATE);
+            dxl.setPortProtocolVersion(2.0);
+            return;
+        }
+
+        // Unknown command
+        PI_SERIAL.print("ERR:Unknown cmd: ");
+        PI_SERIAL.println(cmd);
+        return;
+    }
+
+    // ── Handle motor goal positions ──────────────────────────────────
     // Validate that all five keys are present
     if (!doc.containsKey("m1") || !doc.containsKey("m2") ||
         !doc.containsKey("m3") || !doc.containsKey("m4") ||

@@ -17,6 +17,7 @@ Dependencies: numpy
 """
 
 import json
+import logging
 import math
 from typing import Optional
 
@@ -30,9 +31,10 @@ class ArmIK:
     CLAW_OPEN: int = 2048   # centre / open position for the gripper
 
     # ── Link lengths (cm) ──────────────────────────────────────────────
-    L1: float = 22.5   # Shoulder → Elbow
-    L2: float = 20.5   # Elbow   → Wrist pivot
-    L3: float = 11.0   # Wrist pivot → Claw tip (end-effector offset)
+    # Measured from the real robot on 2026-04-21
+    L1: float = 25.5   # Shoulder → Elbow
+    L2: float = 23.0   # Elbow   → Wrist pivot
+    L3: float = 16.5   # Wrist pivot → Claw tip (end-effector offset)
 
     # ── Dynamixel constants ────────────────────────────────────────────
     STEPS_PER_REV: int = 4096
@@ -48,14 +50,36 @@ class ArmIK:
     #   z_correction = horizontal_reach * z_offset_multiplier
     #
     #   Tune this value empirically on your physical arm.
-    z_offset_multiplier: float = 0.08   # conservative starting value
+    z_offset_multiplier: float = 0.04   # Reduced from 0.08; tune empirically if arm still hovers
+    z_offset_quadratic: float = 0.0     # quadratic sag coefficient (reach^2 term)
+    sag_model: str = "linear"           # "linear" or "quadratic"
 
     # ── Shoulder height above the workspace plane (cm) ─────────────────
     #   If the shoulder joint is elevated above the surface the claw
     #   picks from, set this so the Z math references the shoulder as
     #   origin.  Set to 0 if your coordinate frame already accounts for
     #   this.
-    shoulder_height: float = 0.0
+    shoulder_height: float = 33.0
+
+    # ── Floor / hover constraint (cm) ─────────────────────────────────
+    #   Minimum allowed Z for the claw tip.  Set to 12.0 so the arm
+    #   can reach down to grab objects near the desk surface.
+    Z_MIN: float = 6.0
+
+    # ── Joint limits (Dynamixel steps) ────────────────────────────────
+    #   Safe operating ranges for each motor to prevent overload errors.
+    #   If the IK solution falls outside these limits, the motor would
+    #   hit a physical stop or overload trying to reach the position,
+    #   causing a latched hardware error (red blinking LED).
+    #
+    #   Tune these based on your physical arm's actual range of motion.
+    JOINT_LIMITS = {
+        "m1": (0, 4095),       # Base pan: full range
+        "m2": (600, 3500),     # Shoulder: avoid extreme up/down
+        "m3": (600, 3500),     # Elbow: avoid extreme fold-back
+        "m4": (600, 3500),     # Wrist: avoid extreme tilt
+        "m5": (0, 4095),       # Claw: full range
+    }
 
     def __init__(
         self,
@@ -63,6 +87,8 @@ class ArmIK:
         l2: Optional[float] = None,
         l3: Optional[float] = None,
         z_offset_multiplier: Optional[float] = None,
+        z_offset_quadratic: Optional[float] = None,
+        sag_model: Optional[str] = None,
         shoulder_height: Optional[float] = None,
     ):
         if l1 is not None:
@@ -73,8 +99,39 @@ class ArmIK:
             self.L3 = l3
         if z_offset_multiplier is not None:
             self.z_offset_multiplier = z_offset_multiplier
+        if z_offset_quadratic is not None:
+            self.z_offset_quadratic = z_offset_quadratic
+        if sag_model is not None:
+            self.sag_model = sag_model
         if shoulder_height is not None:
             self.shoulder_height = shoulder_height
+
+        # Auto-load sag calibration if file exists and no explicit overrides given
+        if z_offset_multiplier is None and z_offset_quadratic is None:
+            self._load_sag_calibration()
+
+    def _load_sag_calibration(self):
+        """Load sag compensation coefficients from calibration JSON if available."""
+        import os
+        cal_path = os.path.join(os.path.dirname(__file__), "sag_calibration.json")
+        if not os.path.exists(cal_path):
+            return  # no calibration file, keep defaults
+        try:
+            with open(cal_path, "r") as f:
+                cal = json.load(f)
+            model = cal.get("recommended_model", "linear")
+            if model == "quadratic" and "quadratic" in cal:
+                self.sag_model = "quadratic"
+                self.z_offset_quadratic = cal["quadratic"]["a"]
+                self.z_offset_multiplier = cal["quadratic"]["b"]
+            elif "linear" in cal:
+                self.sag_model = "linear"
+                self.z_offset_multiplier = cal["linear"]["z_offset_multiplier"]
+            print(f"[ArmIK] Loaded sag calibration: model={self.sag_model}, "
+                  f"multiplier={self.z_offset_multiplier:.4f}, "
+                  f"quadratic={self.z_offset_quadratic:.6f}")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"[ArmIK] Warning: failed to load sag calibration: {e}")
 
     # ──────────────────────────────────────────────────────────────────
     #  Utility helpers
@@ -115,14 +172,23 @@ class ArmIK:
             If the target is unreachable.
         """
 
+        # ── 0. Hover / floor-collision prevention ──────────────────────
+        #   The claw tip must stay at least Z_MIN (2 cm) above the desk.
+        #   Silently clamp the target z upward so the arm hovers safely.
+        if z < self.Z_MIN:
+            z = self.Z_MIN
+
         # ── 1. End-effector offset ────────────────────────────────────
         #   Add L3 to Z so the wrist hovers above the object and the
         #   claw (pointing straight down) reaches the target.
         z_ik = z + self.L3
 
-        # ── 2. Sag / droop compensation ───────────────────────────────
+        # ── 2. Sag / droop compensation (linear or quadratic model) ──
         horiz_reach = math.sqrt(x ** 2 + y ** 2)
-        z_ik += horiz_reach * self.z_offset_multiplier
+        if self.sag_model == "quadratic" and self.z_offset_quadratic != 0.0:
+            z_ik += (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier
+        else:
+            z_ik += horiz_reach * self.z_offset_multiplier
 
         # ── 3. Account for shoulder height ────────────────────────────
         z_ik -= self.shoulder_height
@@ -135,17 +201,33 @@ class ArmIK:
         d = math.sqrt(r ** 2 + z_ik ** 2)  # straight-line distance
 
         # Reachability check
-        if d > (self.L1 + self.L2):
-            raise ValueError(
-                f"Target ({x}, {y}, {z}) is unreachable.  "
-                f"Planar distance {d:.2f} cm exceeds max reach "
-                f"{self.L1 + self.L2:.2f} cm."
-            )
-        if d < abs(self.L1 - self.L2):
+        max_reach = self.L1 + self.L2
+        min_reach = abs(self.L1 - self.L2)
+
+        if d > max_reach:
+            # Target is slightly too far — scale the horizontal reach
+            # inward so the arm extends to its physical limit instead
+            # of crashing.  The base angle is preserved, so the arm
+            # still points at the correct target direction.
+            overshoot = d - max_reach
+            print(f"[IK WARNING] ⚠️  Target ({x:.1f}, {y:.1f}, {z:.1f}) is "
+                  f"{overshoot:.1f} cm beyond max reach ({max_reach:.1f} cm) "
+                  f"— clamping to max reach")
+            scale = (max_reach * 0.99) / d   # 0.99 to stay just inside
+            r *= scale
+            z_ik *= scale
+            d = math.sqrt(r ** 2 + z_ik ** 2)
+            # Update x, y to match the clamped reach (keep angle)
+            if horiz_reach > 0:
+                x = x * (r / horiz_reach)
+                y = y * (r / horiz_reach)
+                horiz_reach = r
+
+        if d < min_reach:
             raise ValueError(
                 f"Target ({x}, {y}, {z}) is too close.  "
                 f"Planar distance {d:.2f} cm is less than min reach "
-                f"{abs(self.L1 - self.L2):.2f} cm."
+                f"{min_reach:.2f} cm."
             )
 
         # ── 6. Law of Cosines – elbow angle ──────────────────────────
@@ -180,17 +262,52 @@ class ArmIK:
         #   horizontal.
         #
         #   Arm tilt from horizontal = theta_shoulder - theta_elbow
-        #   Desired total = π/2 (pointing down from horizontal)
-        #   wrist = π/2 - (theta_shoulder - theta_elbow)
-        theta_wrist = (math.pi / 2.0) - (theta_shoulder - theta_elbow)
+        #   Desired total = -π/2 (pointing down from horizontal)
+        #   wrist = -π/2 - (theta_shoulder - theta_elbow)
+        theta_wrist = (-math.pi / 2.0) - (theta_shoulder - theta_elbow)
 
         # ── 9. Convert to Dynamixel steps ────────────────────────────
         m1 = self._rad_to_steps(theta_base)
-        m2 = self._rad_to_steps(theta_shoulder)
-        m3 = self._rad_to_steps(-theta_elbow)  # negative: folding direction
-        m4 = self._rad_to_steps(theta_wrist)
+        # m2=2048 is upper arm VERTICAL (straight up), not horizontal.
+        # Subtract pi/2 to convert from "elevation above horizontal" (IK convention)
+        # to "rotation from vertical" (motor convention).
+        m2 = self._rad_to_steps(theta_shoulder - math.pi / 2)
+        m3 = self._rad_to_steps(-theta_elbow)  # Elbow requires negation for correct direction
+        m4 = self._rad_to_steps(theta_wrist)   # NOT negated — real hardware wrist tilts opposite to simulator
 
-        return {"m1": m1, "m2": m2, "m3": m3, "m4": m4, "m5": self.CLAW_OPEN}
+        # ── Comprehensive debug output ──
+        print(f"\n{'─'*60}")
+        print(f"[IK DEBUG] Input target: x={x:.1f}, y={y:.1f}, z={z:.1f} cm")
+        print(f"[IK DEBUG] z_ik (wrist target, shoulder-relative): {z_ik:.2f} cm")
+        print(f"[IK DEBUG] Horizontal reach: {math.sqrt(x**2 + y**2):.1f} cm")
+        print(f"[IK DEBUG] Angles (rad): shoulder={theta_shoulder:.3f}, elbow={theta_elbow:.3f}, wrist={theta_wrist:.3f}")
+        print(f"[IK DEBUG] Angles (deg): shoulder={math.degrees(theta_shoulder):.1f}°, elbow={math.degrees(theta_elbow):.1f}°, wrist={math.degrees(theta_wrist):.1f}°")
+        print(f"[IK DEBUG] Motor steps: m1={m1}, m2={m2}, m3={m3}, m4={m4}")
+        print(f"[IK DEBUG] Expected wrist height above table: {z + self.L3:.1f} cm")
+        print(f"[IK DEBUG] Expected claw tip height: {z:.1f} cm")
+        print(f"[IK DEBUG] Joint limits: {self.JOINT_LIMITS}")
+        # Check if any motor is hitting joint limits
+        for name, val in [('m1', m1), ('m2', m2), ('m3', m3), ('m4', m4)]:
+            low, high = self.JOINT_LIMITS.get(name, (0, 4095))
+            if val <= low or val >= high:
+                print(f"[IK WARNING] ⚠️  {name}={val} is AT JOINT LIMIT ({low}, {high})!")
+        print(f"{'─'*60}\n")
+
+        # ── 10. Enforce joint limits to prevent overload errors ────────
+        #    If a computed position exceeds the safe range, clamp it and
+        #    warn.  This prevents the motor from hitting physical stops
+        #    which causes hardware errors (red blinking LED).
+        result = {"m1": m1, "m2": m2, "m3": m3, "m4": m4, "m5": self.CLAW_OPEN}
+        for key, val in result.items():
+            lo, hi = self.JOINT_LIMITS[key]
+            if val < lo or val > hi:
+                clamped = max(lo, min(hi, val))
+                print(f"[IK WARNING] {key} = {val} is outside safe limits "
+                      f"[{lo}, {hi}] — clamping to {clamped} "
+                      f"(target was ({x:.1f}, {y:.1f}, {z:.1f}))")
+                result[key] = clamped
+
+        return result
 
     # ──────────────────────────────────────────────────────────────────
     #  Two-step servoing

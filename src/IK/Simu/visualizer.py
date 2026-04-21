@@ -24,14 +24,14 @@ from config import BINS, HOME_POSITION
 
 
 # ─── Constants (must match pi_kinematics.py) ──────────────────────────
-L1 = 22.5   # shoulder → elbow  (cm)
-L2 = 20.5   # elbow   → wrist   (cm)
-L3 = 11.0   # wrist   → claw tip (cm)
+L1 = 25.5   # shoulder → elbow  (cm)  (must match pi_kinematics.py)
+L2 = 23.0   # elbow   → wrist   (cm)  (must match pi_kinematics.py)
+L3 = 16.5   # wrist   → claw tip (cm)  (must match pi_kinematics.py)
 
 STEP_CENTRE   = 2048
 RAD_PER_STEP  = (2.0 * math.pi) / 4096.0
 
-SHOULDER_HEIGHT = 0.0   # matches ArmIK default
+SHOULDER_HEIGHT = 33.0   # matches ArmIK default — base to shoulder (cm)
 
 
 # ─── Forward Kinematics ──────────────────────────────────────────────
@@ -75,10 +75,9 @@ def forward_kinematics(m1: int, m2: int, m3: int, m4: int, m5: int = 2048):
     wrist_z = elbow_z + L2 * math.sin(wrist_angle_abs)
 
     # Wrist → Claw tip
-    # The wrist tilts the end-effector. Inverse Kinematics assumes the motor's neutral 
-    # position points UP, but physically the claw is mounted 180 degrees (π radians) 
-    # offset to point DOWN towards the workspace.
-    tip_angle_abs = wrist_angle_abs + theta_wrist - math.pi
+    # theta_wrist from the IK solver already accounts for the claw pointing
+    # downward, so no additional offset is needed here.
+    tip_angle_abs = wrist_angle_abs + theta_wrist
     tip_r = wrist_r + L3 * math.cos(tip_angle_abs)
     tip_z = wrist_z + L3 * math.sin(tip_angle_abs)
 
@@ -172,9 +171,9 @@ class ArmVisualizer:
         ax = self.ax
         ax.set_facecolor("#16213e")
 
-        ax.set_xlim(-10, 45)
-        ax.set_ylim(-35, 35)
-        ax.set_zlim(-5, 50)
+        ax.set_xlim(-10, 60)
+        ax.set_ylim(-50, 50)
+        ax.set_zlim(0, 70)
 
         ax.set_xlabel("X  (forward) cm", color="#aaa", fontsize=9, labelpad=8)
         ax.set_ylabel("Y  (left/right) cm", color="#aaa", fontsize=9, labelpad=8)
