@@ -10,7 +10,7 @@ A complete autonomous sorting system that uses an OAK-D camera to detect coloure
 
 ```
 OAK-D Camera ──► VisionBridge ──► State Machine ──► IK Solver ──► OpenRB-150 ──► Dynamixel Motors
-  (RGB stream)    (homography)      (main.py)      (pi_kinematics)   (serial)       (4 axes)
+  (RGB stream)    (homography)      (main.py)      (pi_kinematics)   (serial)       (5 axes)
 ```
 
 | Component | Hardware | Software |
@@ -18,7 +18,7 @@ OAK-D Camera ──► VisionBridge ──► State Machine ──► IK Solver 
 | Camera | Luxonis OAK Series 2 (IMX378) | `oak_camera.py` + `enhanced_detector.py` |
 | Controller | Raspberry Pi 5 | `main.py` (Python 3) |
 | Motor Controller | OpenRB-150 | `openrb_bridge.ino` (Arduino) |
-| Motors | Dynamixel (4×) | Steps 0–4095, centre = 2048 |
+| Motors | Dynamixel (5×) — XM430, XM540, XL430 | Steps 0–4095, centre = 2048 |
 
 ---
 
@@ -89,22 +89,23 @@ src/
 
 ### Arm Dimensions (configure in `pi_kinematics.py`)
 
-| Link | Length | Description |
-|---|---|---|
-| L1 | 22.5 cm | Shoulder → Elbow |
-| L2 | 20.5 cm | Elbow → Wrist pivot |
-| L3 | 11.0 cm | Wrist → Claw tip |
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| L1 | 25.5 cm | Shoulder → Elbow |
+| L2 | 23.0 cm | Elbow → Wrist pivot |
+| L3 | 16.5 cm | Wrist pivot → Claw tip |
+| Shoulder Height | 33.0 cm | Shoulder joint above workspace |
 
 ### Bin Positions (configure in `src/IK/config.py`)
 
 All coordinates are in **centimetres relative to the shoulder joint origin** (x = forward, y = left/right, z = up).
 
-| Bin | x | y | z |
-|---|---|---|---|
-| RED_BIN | 20.0 | 15.0 | 10.0 |
-| BLUE_BIN | 20.0 | −15.0 | 10.0 |
-| REJECT_BIN | 10.0 | 15.0 | 10.0 |
-| HOME | 10.0 | 0.0 | 15.0 |
+| Position | X (cm) | Y (cm) | Z (cm) |
+|----------|--------|--------|--------|
+| HOME | 20.0 | 0.0 | 30.0 |
+| RED_BIN | 20.0 | 8.0 | 10.0 |
+| BLUE_BIN | 20.0 | -8.0 | 10.0 |
+| REJECT_BIN | 25.0 | 0.0 | 12.0 |
 
 ---
 
@@ -114,11 +115,36 @@ Calibration must be completed before running the full system. Follow these phase
 
 ### Phase A — Arm Hardware (no camera needed)
 
-| Step | Script | What It Does | Time |
+| Step | Script / Tool | What It Does | Time |
 |:---:|---|---|---|
+| **0** | Dynamixel Wizard 2.0 | Set motor IDs, baudrate, and operating mode | ~10 min |
 | **1** | Upload [`openrb_bridge.ino`](src/IK/openrb_bridge.ino) | Flash firmware to OpenRB-150 via Arduino IDE | ~2 min |
 | **2** | [`calibrate_joints.py`](src/IK/calibrate_joints.py) | Verify motor signs, zeros, and directions | ~10–15 min |
 | **3** | [`calibrate_sag.py`](src/IK/calibrate_sag.py) | Measure gravity droop at 5 reaches, fit compensation model | ~10–20 min |
+
+#### Step 0 — Dynamixel Motor Setup (USB2Dynamixel / U2D2)
+
+Before assembling the arm, configure each motor individually using [Dynamixel Wizard 2.0](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/) and a **U2D2** (or USB2Dynamixel) adapter.
+
+Connect one motor at a time and set:
+
+| Motor | Dynamixel ID | Joint | Model | Baudrate |
+|:---:|:---:|---|---|:---:|
+| m1 | **1** | Base Pan | XM430 | 115200 |
+| m2 | **2** | Shoulder Tilt | XM540 | 115200 |
+| m3 | **3** | Elbow Tilt | XM430 | 115200 |
+| m4 | **4** | Wrist Tilt | XL430 | 115200 |
+| m5 | **5** | Claw / Gripper | XL430 | 115200 |
+
+**In Dynamixel Wizard 2.0:**
+1. **Scan** for the motor (it ships with ID=1, baud=57600 by default)
+2. Set **ID** to the value in the table above
+3. Set **Baud Rate** to **115200** (index 1)
+4. Confirm **Protocol Version** is **2.0**
+5. Set **Operating Mode** to **Position Control (value: 3)**
+6. Test by writing a **Goal Position** (range: 0–4095, center=2048) — the motor should move
+
+> ⚠️ **Do this before assembly!** It's much easier to configure motors when they're loose on the bench. Once assembled, they share the same bus and you'd need to disconnect all but one to change IDs.
 
 #### Step 1 — Flash Firmware
 ```bash
@@ -216,7 +242,7 @@ cd src/IK && python3 main.py
 ```python
 USE_REAL_SERIAL = False     # True → real OpenRB-150 on SERIAL_PORT
 USE_REAL_CAMERA = False     # True → real OAK-D camera + homography
-SERIAL_PORT     = "/dev/ttyACM0"
+SERIAL_PORT     = "/dev/cu.usbmodem101"
 ```
 
 ### State Machine Flow
@@ -285,7 +311,7 @@ SimpleBallDetector.BALL_DIAMETER_MM = 50.0   # 50 mm physical diameter
 
 Geometric 4-DOF inverse kinematics with:
 - End-effector offset compensation (L3 wrist extension)
-- Sag/droop compensation (`z_offset_multiplier = 0.08`, tune empirically)
+- Sag/droop compensation (`z_offset_multiplier = 0.04`, tune empirically)
 - Two-step visual servoing: `calculate_partial_move(target, percentage=0.80)`
 
 ```python
@@ -299,7 +325,7 @@ json_cmd = arm.solve_to_json(20.0, 5.0, 0.0)
 # → '{"m1": 2048, "m2": 1820, "m3": 2201, "m4": 2075}'
 ```
 
-Motor convention: all Dynamixel XL/MX series, 0–4095 steps, centre = 2048 = 180°.
+Motor convention: Dynamixel XM430, XM540, XL430 — 0–4095 steps, centre = 2048 = 180°.
 
 ---
 
@@ -311,7 +337,7 @@ Upload to **OpenRB-150** via Arduino IDE (select board: OpenRB-150).
 
 The firmware:
 - Reads newline-terminated JSON from serial: `{"m1":2048,"m2":1820,"m3":2201,"m4":2075}`
-- Moves all 4 Dynamixel motors to target positions with velocity control
+- Moves all 5 Dynamixel motors to target positions with velocity control
 - Replies `OK\n` when movement is complete
 - Replies `ERR\n` on malformed input
 
@@ -324,7 +350,7 @@ Serial settings: **115200 baud, 8N1**.
 1. Install the **Dynamixel2Arduino** library via Arduino IDE Library Manager
 2. Open `src/IK/openrb_bridge.ino`
 3. Board: **OpenRB-150** (install via Boards Manager → `ROBOTIS`)
-4. Port: `/dev/ttyACM0` (Linux/Mac) or `COMx` (Windows)
+4. Port: `/dev/cu.usbmodem101` (macOS) or `/dev/ttyACM0` (Linux) or `COMx` (Windows)
 5. Upload → open Serial Monitor @ 115200 to verify boot message
 
 ---
