@@ -507,3 +507,76 @@ python src/diagnostics/diagnose_detection.py
 
 This opens the camera and shows live HSV masks without requiring any arm
 connection. Click on any pixel to read its H/S/V values.
+
+---
+
+## Raspberry Pi 5 — Common Issues
+
+### "Permission denied" on `/dev/ttyACM0`
+
+**Symptom:** `PermissionError: [Errno 13] Permission denied: '/dev/ttyACM0'` when running `main.py`.
+
+**Cause:** Your user is not in the `dialout` group.
+
+**Fix:**
+
+```bash
+sudo usermod -aG dialout $USER
+sudo reboot
+```
+
+After reboot, verify with `groups` — it should list `dialout`.
+
+---
+
+### OAK-D S2 Not Detected on Pi
+
+**Symptom:** `RuntimeError: No DepthAI device found!` or `depthai.Device.getAllAvailableDevices()` returns an empty list.
+
+**Checklist:**
+
+1. **Udev rules installed?**
+   ```bash
+   cat /etc/udev/rules.d/80-movidius.rules
+   ```
+   Should contain: `SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"`
+
+   If missing, install them:
+   ```bash
+   echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ```
+
+2. **USB power sufficient?** The Pi 5 limits USB current unless powered by the official 27 W USB-C PSU (or equivalent 5 V / 5 A supply). If the OAK-D resets or disconnects under load, ensure you're using a sufficiently rated 5 V supply.
+
+3. **Try a different USB port** — use a USB 3.0 (blue) port for best bandwidth.
+
+4. **Unplug and re-plug** the OAK-D after installing udev rules.
+
+---
+
+### Pi Runs Out of Memory During Detection
+
+**Symptom:** `Killed` or `MemoryError` during the vision pipeline, especially with large frames or the ML classifier.
+
+**Fixes:**
+
+1. **Increase swap size:**
+   ```bash
+   sudo dphys-swapfile swapoff
+   sudo sed -i 's/CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
+   sudo dphys-swapfile setup
+   sudo dphys-swapfile swapon
+   ```
+
+2. **Disable the desktop environment** if running headless:
+   ```bash
+   sudo raspi-config   # → System Options → Boot → Console
+   sudo reboot
+   ```
+
+3. **Close other applications** — the vision + IK pipeline can use 2–3 GB on the 8 GB Pi 5.
+
+---
+
+> **Full setup guide:** [docs/pi-setup.md](pi-setup.md)

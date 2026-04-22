@@ -6,10 +6,17 @@ A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using
 
 ### Prerequisites
 
-- Python 3.9+
-- Luxonis OAK-D Lite camera
-- OpenRB-150 controller + Dynamixel XL430/XM430/XM540 servos
-- See [Architecture — Hardware](docs/architecture.md) for the full hardware list
+| Component | Details |
+|-----------|---------|
+| **Host computer** | Raspberry Pi 5 (8 GB recommended) running Raspberry Pi OS Bookworm (64-bit) |
+| **Python** | 3.11+ (ships with Bookworm) |
+| **Camera** | Luxonis OAK-D S2 (USB-C) |
+| **Motor controller** | OpenRB-150 + Dynamixel XL430 / XM430 / XM540 servos |
+| **Power supply** | Dual-output PSU — 12 V for motors, 5 V for Pi and camera |
+| **Serial access** | User must be in the `dialout` group (`sudo usermod -aG dialout $USER`, then reboot) to access `/dev/ttyACM0` |
+
+> **First-time Pi setup?** See [docs/pi-setup.md](docs/pi-setup.md) for a step-by-step guide.
+> Full bill of materials and wiring details are in [docs/hardware.md](docs/hardware.md).
 
 ### Installation
 
@@ -73,7 +80,7 @@ autonomia/
 │       ├── 002-4dof-geometry.md       📐 Why geometric IK over numerical
 │       └── 003-two-step-servoing.md   🎯 Why two-step visual servoing
 │
-├── firmware/                          🎛️  Arduino / embedded code
+├── firmware/                          🎛️  OpenRB-150 firmware (flashed via Arduino IDE)
 │   └── openrb_bridge/
 │       └── openrb_bridge.ino          🎛️  OpenRB-150 Dynamixel bridge firmware
 │

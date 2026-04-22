@@ -14,9 +14,11 @@ The following diagram shows the data flow from camera frame to servo command.
 ```mermaid
 flowchart TD
     subgraph Hardware
-        CAM["OAK-D Lite\n(20–25 FPS)"]
-        MCU["OpenRB-150\n(Arduino bridge)"]
+        PI["Raspberry Pi 5\n(Host – Python 3.11)"]
+        CAM["OAK-D S2\n(USB-C, 20–25 FPS)"]
+        MCU["OpenRB-150\n(Dynamixel controller)"]
         SERVO["Dynamixel Servos\nJoints 1–4 + Claw"]
+        PSU["Dual-output PSU\n12 V + 5 V"]
     end
 
     subgraph Vision ["Vision Pipeline (src/vision/)"]
@@ -40,14 +42,20 @@ flowchart TD
         VIZ["visualizer.py\n2-D arm view"]
     end
 
-    CAM -->|"raw frame"| DET
+    CAM -->|"USB-C"| PI
+    PI -->|"USB-C serial"| MCU
+    MCU -->|"TTL bus"| SERVO
+    PSU -->|"12 V"| MCU
+    PSU -->|"5 V"| PI
+    PSU -->|"5 V"| CAM
+
+    PI -->|"raw frame"| DET
     DET -->|"pixel (u,v)"| CLS
     DET -->|"pixel (u,v)"| HOM
     CLS -->|"ball label"| SERVO_LOOP
     HOM -->|"workspace (x,y) cm"| SOLVER
     SOLVER -->|"θ1–θ4 (°)"| SERVO_LOOP
     SERVO_LOOP -->|"Dynamixel positions"| MCU
-    MCU -->|"PWM / protocol"| SERVO
 
     ARMCFG -.->|"link lengths\nservo limits"| SOLVER
     VISCFG -.->|"HSV thresholds\nhomography matrix"| DET
@@ -80,10 +88,10 @@ flowchart TD
                                                                │ USB-C
                                                                │ 115200 baud
                                                         ┌──────▼───────┐
-                                                        │  OpenRB-150  │
-                                                        │  (Arduino)   │
-                                                        │  firmware    │
-                                                        └──────┬───────┘
+                                                        │  OpenRB-150        │
+                                                        │  (Dynamixel        │
+                                                        │   controller)      │
+                                                        └──────┬─────────────┘
                                                                │ TTL bus
                                           ┌────────────────────┼────────────────────┐
                                           │         │          │          │          │
@@ -92,6 +100,12 @@ flowchart TD
                                        │Base │  │Shldr│  │Elbow │  │Wrist│  │Claw │
                                        │XM430│  │XM540│  │XM430 │  │XL430│  │XL430│
                                        └─────┘  └─────┘  └──────┘  └─────┘  └─────┘
+
+   Dual-output PSU
+   ├── 12 V ──► OpenRB-150 (power jack)
+   └──  5 V ──► Raspberry Pi 5 (USB-C power)
+                OAK-D S2 (USB-C power)
+   Felles minus (common GND) between all components
 ```
 
 ### 1.2 Data Flow Summary
@@ -188,7 +202,7 @@ Key features:
 
 ### 2.6 Serial / Firmware Bridge
 
-The OpenRB-150 microcontroller runs Arduino firmware (`openrb_bridge.ino`) that acts as a USB bridge between the Raspberry Pi and the five daisy-chained Dynamixel motors. Communication uses newline-terminated JSON over USB-C at 115200 baud.
+The OpenRB-150 microcontroller runs firmware written in the Arduino framework (`openrb_bridge.ino`), flashed via the Arduino IDE, that acts as a USB bridge between the Raspberry Pi and the five daisy-chained Dynamixel motors. Communication uses newline-terminated JSON over USB-C at 115200 baud.
 
 **Supported commands:**
 
