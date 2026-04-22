@@ -1,20 +1,19 @@
+#!/usr/bin/env python3
 """
 calibrate_sag.py
 ================
-Sag / droop calibration for the robotic arm.
+Sag (droop) calibration for the robotic arm — Step 3.
 
-Measures how much the claw tip droops at different horizontal reaches,
-fits a linear and quadratic compensation model, and saves the results
-to ``sag_calibration.json``.
-
-The arm has gravity-induced sag that increases with horizontal reach.
-This script helps you measure the actual droop and compute the correct
-``z_offset_multiplier`` (or polynomial coefficients) for
-``pi_kinematics.py``.
+Measures gravity-induced droop at multiple horizontal reach distances
+with sag compensation disabled.  Fits both linear and quadratic
+compensation models to the measured errors and saves the coefficients
+to sag_calibration.json (auto-loaded by ArmIK on startup).
 
 Usage:
-    python calibrate_sag.py              # default test Z = 5 cm
-    python calibrate_sag.py 8            # test Z = 8 cm
+    python calibrate_sag.py          # default test height = 5 cm
+    python calibrate_sag.py 8        # custom test height = 8 cm
+
+Author: Bachelor Project 2026 – Autonomia
 """
 
 import json

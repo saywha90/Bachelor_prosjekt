@@ -7,6 +7,8 @@ All coordinates are in centimetres, relative to the shoulder joint origin.
     x = forward (away from the arm base)
     y = left / right
     z = up / down (0 = table surface)
+
+Author: Bachelor Project 2026 – Autonomia
 """
 
 # ── Bin positions ─────────────────────────────────────────────────────

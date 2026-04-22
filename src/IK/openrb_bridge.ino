@@ -26,6 +26,8 @@
  *   Motor 3 (XM430)  – Elbow Tilt    – ID 3
  *   Motor 4 (XL430)  – Wrist Tilt    – ID 4
  *   Motor 5 (XL430)  – Claw          – ID 5
+ * 
+ * Author: Bachelor Project 2026 – Autonomia
  */
 
 #include <Dynamixel2Arduino.h>

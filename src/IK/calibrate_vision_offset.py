@@ -14,6 +14,8 @@ The script continuously scans and prints coordinates so you can
 move the ball around and verify multiple positions.
 
 Press Ctrl+C to quit.
+
+Author: Bachelor Project 2026 – Autonomia
 """
 
 import sys

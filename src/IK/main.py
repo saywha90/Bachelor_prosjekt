@@ -19,6 +19,8 @@ so the state machine and 3-D visualiser can be tested without hardware.
 Uses 5 daisy-chained Dynamixel motors via ``mock_serial.MockSerial``
 while hardware is unavailable.
 Swap to ``serial.Serial`` once the OpenRB-150 is connected.
+
+Author: Bachelor Project 2026 – Autonomia
 """
 
 import json

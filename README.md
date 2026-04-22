@@ -120,6 +120,7 @@ Calibration must be completed before running the full system. Follow these phase
 | **0** | Dynamixel Wizard 2.0 | Set motor IDs, baudrate, and operating mode | ~10 min |
 | **1** | Upload [`openrb_bridge.ino`](src/IK/openrb_bridge.ino) | Flash firmware to OpenRB-150 via Arduino IDE | ~2 min |
 | **2** | [`calibrate_joints.py`](src/IK/calibrate_joints.py) | Verify motor signs, zeros, and directions | ~10–15 min |
+| **2b** | [`calibrate_claw.py`](src/IK/calibrate_claw.py) | Tune claw open/close positions (m5) | ~2 min |
 | **3** | [`calibrate_sag.py`](src/IK/calibrate_sag.py) | Measure gravity droop at 5 reaches, fit compensation model | ~10–20 min |
 
 #### Step 0 — Dynamixel Motor Setup (USB2Dynamixel / U2D2)
@@ -160,6 +161,24 @@ cd src/IK && python3 calibrate_joints.py
 ```
 Follow the on-screen prompts. If any motor moves the wrong way, update the sign/offset in `pi_kinematics.py`.
 
+#### Step 2b — Claw Open/Close Calibration
+
+Every claw is built slightly differently. This script helps you find the correct m5 positions that fully open and firmly grip a 50 mm ball without straining the motor.
+
+```bash
+cd src/IK && python3 calibrate_claw.py
+```
+
+**What happens:**
+1. Moves the arm to a visible position
+2. Lets you interactively adjust m5 (type values, `+`/`-` for ±50, `++`/`--` for ±200)
+3. Tests jaw symmetry and runs 3 open/close cycles
+4. Saves results to `claw_calibration.json` and prints config update instructions
+
+Update these constants in [`config.py`](src/IK/config.py) if the defaults don't match:
+- `CLAW_OPEN_POS` — fully open without motor strain (default: `2048`)
+- `CLAW_CLOSED_POS` — grips a 50 mm ball without crushing (default: `1600`)
+
 #### Step 3 — Sag (Droop) Calibration
 The arm droops under gravity — further reaches = more droop. This script measures the droop and computes the correction automatically.
 ```bash
@@ -181,6 +200,7 @@ cd src/IK && python3 calibrate_sag.py 8     # custom test height = 8 cm
 | **4** | [`hsv_tuner.py`](src/vision/hsv_tuner.py) | Interactively tune HSV colour ranges with live preview | ~5–15 min |
 | **5** | [`recalibrate_hsv.py`](src/vision/recalibrate_hsv.py) | Statistically refine HSV ranges from training images | ~5 min |
 | **6** | [`calibrate_homography.py`](src/IK/calibrate_homography.py) | Click 4 workspace corners → compute pixel-to-cm transform | ~5–10 min |
+| **6b** | [`verify_workspace.py`](src/IK/verify_workspace.py) | Verify camera height and scan region coverage | ~3 min |
 
 #### Step 4 — HSV Colour Tuning
 Place red and blue balls in the workspace under your actual lighting conditions.
@@ -207,31 +227,82 @@ cd src/IK && python3 calibrate_homography.py
 3. Computes the perspective transform and saves to `homography_calibration.json`
 4. Optionally verifies by detecting a ball and showing its cm coordinates
 
+#### Step 6b — Camera Height & Scan Region Verify
+
+Verifies camera height (for parallax accuracy) and checks that the camera can see balls across the entire arm workspace.
+
+```bash
+cd src/IK && python3 verify_workspace.py
+```
+
+**What happens:**
+1. Prompts you to measure camera height — compares with `CAMERA_HEIGHT` in [`config.py`](src/IK/config.py)
+2. Calculates worst-case parallax error for 50 mm balls
+3. Tests 5 positions (centre + 4 workspace corners) — uses camera auto-detection if available, falls back to manual confirmation
+4. Checks IK reachability for all test positions
+5. Prints a pass/fail summary
+
+> **Tip:** A 5 cm error in camera height causes ~3 mm parallax at workspace edges.
+
 ### Phase C — Integration Tuning (arm + camera together)
 
 | Step | Script | What It Does | Time |
 |:---:|---|---|---|
-| **7** | [`calibrate_vision_offset.py`](src/IK/calibrate_vision_offset.py) | Fine-tune camera-to-shoulder offset | ~5 min |
+| **7** | [`calibrate_vision_offset.py`](src/IK/calibrate_vision_offset.py) | Fine-tune residual camera-to-shoulder offset (if needed) | ~5 min |
+| **8** | [`test_pick.py`](src/IK/test_pick.py) | End-to-end pick-and-place verification | ~10 min |
 
-#### Step 7 — Vision Offset
-The camera isn't at the same position as the arm's shoulder joint. This step measures the offset.
+#### Step 7 — Vision Offset Fine-Tune (Optional)
+
+Since the homography already maps directly to the shoulder frame, `CAMERA_OFFSET_X` and `CAMERA_OFFSET_Y` in [`config.py`](src/IK/config.py) should both be `0.0`. Only run this step if the end-to-end test (Step 8) shows a consistent offset in one direction.
+
 ```bash
 cd src/IK && python3 calibrate_vision_offset.py
 ```
-Place a ball at 2–3 known physical positions, compare the detected coordinates with the actual ones, and update `CAMERA_OFFSET_X` / `CAMERA_OFFSET_Y` in `config.py`.
+Place a ball at 2–3 known physical positions, compare the detected coordinates with actual ones. If consistently off by more than 3 mm, update the offset values.
+
+#### Step 8 — End-to-End Pick Test
+
+The final verification — runs the full detect → move → grab → bin pipeline at 5 positions across the workspace.
+
+```bash
+cd src/IK && python3 test_pick.py
+```
+
+**What happens:**
+1. Connects to both the arm (serial) and camera (if available)
+2. For each of 5 test positions: detects ball → approaches → lowers → grabs → lifts → places in correct bin
+3. After each pick, asks if it worked (pass/partial/fail)
+4. Prints a scored summary with diagnostic hints
+5. Saves detailed results to `pick_test_results.json`
+
+Works without a camera too — enter ball coordinates manually when prompted.
+
+**Diagnostic table:**
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| Consistent X/Y offset | Residual camera offset | Adjust `CAMERA_OFFSET_X/Y` in [`config.py`](src/IK/config.py) or redo Step 7 |
+| Off in different directions | Bad homography | Redo Step 6 |
+| Claw too high / too low | Sag calibration off | Redo Step 3, or nudge `z_offset_multiplier` ±0.01 |
+| Ball squirts out when grabbed | Claw positions wrong | Redo Step 2b |
+| Arm can't reach detected balls | Scan region mismatch | Check Step 6b |
+| Wrong bin | Colour detection error | Redo Steps 4–5 |
+
+> **Target:** ≥ 80% clean picks across 5 positions = calibration complete.
 
 ### ✅ Calibration Complete
 
-After all 7 steps, start the full system:
+After all steps (0 through 8), the system is ready for autonomous operation:
 ```bash
 cd src/IK && python3 main.py
 ```
 
 > **Re-calibration:** You only need to redo specific steps when something changes:
-> - Moved the camera → redo steps 6 + 7
-> - Changed lighting → redo steps 4 + 5
-> - Rebuilt/tightened the arm → redo steps 2 + 3
-> - Everything → redo all 7 steps
+> - Moved the camera → redo Steps 6, 6b, 7
+> - Changed lighting → redo Steps 4, 5
+> - Rebuilt/tightened the arm → redo Steps 2, 2b, 3
+> - New claw or gripper → redo Step 2b
+> - Everything → redo all steps 0–8
 
 ---
 
@@ -383,6 +454,127 @@ Runs detection on the live OAK-D feed with annotated overlay. No arm connection 
 
 ---
 
+## 🐛 Debugging & Diagnostics
+
+When something goes wrong, use these diagnostic tools to identify the issue before re-calibrating.
+
+### Quick Reference — Which Tool to Use
+
+| Symptom | Tool | Command |
+|---|---|---|
+| No motors respond / some missing | [`diagnose_motors.py`](src/IK/diagnose_motors.py) | `cd src/IK && python3 diagnose_motors.py` |
+| Motor LED blinking red / motor stuck | [`check_errors.py`](src/IK/check_errors.py) | `cd src/IK && python3 check_errors.py` |
+| Balls not detected / wrong colour | [`diagnose_detection.py`](src/vision/diagnose_detection.py) | `cd src && python3 vision/diagnose_detection.py` |
+| Need per-contour rejection details | [`stream_debug.py`](src/vision/stream_debug.py) | `cd src && python3 vision/stream_debug.py` |
+
+### Motor Diagnostics
+
+#### [`diagnose_motors.py`](src/IK/diagnose_motors.py)
+
+Pings all 5 Dynamixel motors (IDs 1–5) at three baud rates (57600, 115200, 1000000) and prints a colour-coded connectivity report.
+
+```bash
+cd src/IK && python3 diagnose_motors.py
+```
+
+**What it reports per motor:**
+- ✔ Found / ✘ Not found
+- Model name (e.g., XM430-W350)
+- Current position (0–4095)
+- Baud rate detected at
+- ⚠ Warning if motor baud differs from firmware's expected 115200
+
+**Use when:**
+- Motors don't move at all after power-on
+- Only some motors respond (daisy-chain wiring issue)
+- After initial Dynamixel setup (Step 0) to verify connectivity
+- After reassembling the arm
+
+#### [`check_errors.py`](src/IK/check_errors.py)
+
+Reads the hardware error status register from all motors and decodes the error bit flags.
+
+```bash
+cd src/IK && python3 check_errors.py
+```
+
+**Error flags decoded:**
+
+| Bit | Error | Common Cause |
+|:---:|---|---|
+| 0 | Input Voltage Error | Power supply issue (check 12V) |
+| 2 | Overheating Error | Motor running too long under load |
+| 3 | Motor Encoder Error | Internal motor fault |
+| 4 | Electrical Shock Error | Wiring short / bad connection |
+| 5 | Overload Error | Mechanical jam, arm collision, or excessive load |
+
+> ⚠️ **Hardware errors require a 12V power cycle to clear.** Software commands alone won't reset them.
+
+**Use when:**
+- Motor LED is blinking red
+- Motor suddenly stopped working after a collision or jam
+- Motor feels limp (torque lost) but comms still work
+
+### Vision Diagnostics
+
+#### [`diagnose_detection.py`](src/vision/diagnose_detection.py)
+
+Live 4-window HSV diagnostic viewer showing red/blue masks in real-time.
+
+```bash
+cd src && python3 vision/diagnose_detection.py
+```
+
+**Windows shown:**
+1. **Original** — raw camera feed (click any pixel to print its H/S/V values)
+2. **Red Mask** — red HSV threshold result
+3. **Blue Mask** — blue HSV threshold result
+4. **Overlay** — both masks on the original image
+
+**Console output (every 30 frames):**
+- Mask coverage percentage per colour
+- Valid contour count
+- Contour rejection breakdown: how many failed at each gate (area, radius, circularity, aspect ratio, solidity)
+
+**Controls:** `c` = print current HSV ranges, `q` = quit
+
+**Use when:**
+- Balls not detected or detection is intermittent
+- Need to check if HSV ranges cover actual ball colours under current lighting
+- Before/after HSV recalibration to verify improvement
+
+#### [`stream_debug.py`](src/vision/stream_debug.py)
+
+Advanced 4-panel debug viewer with per-contour rejection reasons and confidence scores.
+
+```bash
+cd src && python3 vision/stream_debug.py
+```
+
+**Panels shown:**
+1. **Top-Left:** Camera + accepted detections (●) + rejected contours (×)
+2. **Top-Right:** Red HSV mask with contour outlines
+3. **Bottom-Left:** Blue HSV mask with contour outlines
+4. **Bottom-Right:** Stats — detection count, per-ball confidence bars, FPS
+
+**Per-contour validation gates (with thresholds):**
+
+| Gate | Threshold | Weight in Confidence |
+|---|---|---|
+| Area | ≥ π × min_radius² | — |
+| Radius | [min_radius, max_radius] | — |
+| Circularity | ≥ 0.60 | 40% |
+| Aspect Ratio | ≥ 0.70 | 20% |
+| Solidity | ≥ 0.75 | 20% |
+| Colour Saturation | scored (glare-aware) | 20% |
+
+**Use when:**
+- Need to see *exactly* why specific contours are being rejected
+- Tuning detection thresholds with live visual feedback
+- More detailed than `diagnose_detection.py` — shows per-contour rejection reasons
+
+---
+
 ## Troubleshooting
 
 ### `zsh: command not found: python`
@@ -416,6 +608,36 @@ python3 -c "import depthai as dai; print(dai.Device.getAllAvailableDevices())"
 - Confirm baud rate is 115200 on both sides
 - Check `SERIAL_PORT` in `main.py` matches your device (use `ls /dev/tty*` on Mac/Linux)
 - Confirm OpenRB-150 firmware is uploaded and boots correctly
+
+### Motor won't move / LED blinking red
+
+```bash
+cd src/IK && python3 check_errors.py      # decode hardware error flags
+cd src/IK && python3 diagnose_motors.py    # check connectivity
+```
+
+1. If `check_errors.py` shows **Overload Error** — the motor hit a mechanical limit or the arm collided. Power-cycle 12V, check for jams.
+2. If `diagnose_motors.py` shows **0/5 motors found** — check USB cable, OpenRB-150 power, and that firmware is uploaded.
+3. If some motors found but not all — check the daisy-chain cable between the last responding motor and the first missing one.
+
+### Some motors respond, others don't
+
+This usually means a **daisy-chain break**:
+1. Run `python3 diagnose_motors.py` to see which motors respond
+2. The break is between the **last responding motor** and the **first missing motor** in the chain
+3. Check the cable between those two motors
+4. Also check that all motors are set to **baud 115200** (run Dynamixel Wizard 2.0 per Step 0)
+
+### Detection sees phantom balls / false positives
+
+```bash
+cd src && python3 vision/stream_debug.py
+```
+
+Look at the rejected contours (× markers). If many are passing validation:
+1. Tighten HSV ranges (redo Step 4 — `hsv_tuner.py`)
+2. Increase `min_radius` if small noise is passing the area gate
+3. Check for reflective surfaces in the workspace that create colour patches
 
 ---
 
