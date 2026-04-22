@@ -11,6 +11,8 @@ user exactly which motors respond, at what baud rate, and what to fix.
 
 Usage:
     python diagnose_motors.py [--port /dev/cu.usbmodem101]
+
+Author: Bachelor Project 2026 – Autonomia
 """
 
 import argparse

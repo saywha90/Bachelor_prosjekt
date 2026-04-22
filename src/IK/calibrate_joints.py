@@ -12,6 +12,8 @@ drives one servo at a time and pauses for you to measure.
 
 Usage:
     python calibrate_joints.py
+
+Author: Bachelor Project 2026 – Autonomia 
 """
 
 import json

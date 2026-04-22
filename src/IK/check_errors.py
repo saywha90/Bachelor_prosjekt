@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+"""
+check_errors.py
+===============
+Hardware error flag reader for Dynamixel motors.
+
+Connects to the OpenRB-150 and reads the hardware error status register
+from all 5 motors (IDs 1-5).  Decodes the error bit flags (input voltage,
+overheating, encoder, electrical shock, overload) and prints a per-motor
+status report.
+
+Note: Hardware errors require a 12V power cycle to clear.
+
+Usage:
+    python check_errors.py
+
+Author: Bachelor Project 2026 – Autonomia
+"""
 import json
 import sys
 import time
