@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 vision_bridge.py
 ================
@@ -34,30 +36,27 @@ Author: Bachelor Project 2026 – Autonomia
 """
 
 import json
+import logging
 import sys
-import math
 import time
 from pathlib import Path
+from types import TracebackType
 from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 
-# ── Make the vision package importable from src/IK/ ──────────────────
-_SRC_DIR = str(Path(__file__).resolve().parent.parent)
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
-# Insert the IK directory LAST at position 0 so that bare `import config`
-# resolves to src/IK/config.py, NOT src/vision/config.py.
-_IK_DIR = str(Path(__file__).resolve().parent)
-if _IK_DIR not in sys.path:
-    sys.path.insert(0, _IK_DIR)
+# ── Unified import path ───────────────────────────────────────────────
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".."))
 
-from vision.oak_camera import OAKCamera
-from vision.enhanced_detector import SimpleBallDetector, BallColor
-import vision.config as vcfg
+from vision.camera import OAKCamera
+from vision.detector import SimpleBallDetector, BallColor, DetectedBall
+from config import vision as vcfg
 
-from config import CAMERA_OFFSET_X, CAMERA_OFFSET_Y, CAMERA_HEIGHT
+from config.arm import CAMERA_OFFSET_X, CAMERA_OFFSET_Y
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -78,7 +77,7 @@ from config import CAMERA_OFFSET_X, CAMERA_OFFSET_Y, CAMERA_HEIGHT
 #       x = forward (away from arm base)
 #       y = left(+) / right(−)
 #
-#  3. Run  python3 calibrate_homography.py  — it shows the camera feed
+#  3. Run  python src/calibration/06_homography.py  — it shows the camera feed
 #     and lets you click each marker to capture pixel coordinates.
 #     Alternatively, hover over each marker to read pixel coords.
 #
@@ -92,7 +91,7 @@ from config import CAMERA_OFFSET_X, CAMERA_OFFSET_Y, CAMERA_HEIGHT
 
 # ── Default (hardcoded) calibration values ────────────────────────────
 # These are used as fallback when no calibration file exists.
-# Run  python3 calibrate_homography.py  to generate an updated file.
+# Run  python src/calibration/06_homography.py  to generate an updated file.
 _DEFAULT_WORKSPACE_PX = np.float32([
     [   9,   17],      # TL (top-left)
     [ 619,   16],      # TR (top-right)
@@ -107,11 +106,15 @@ _DEFAULT_WORKSPACE_CM = np.float32([
     [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
 ])
 
-# ── Load calibration from JSON (auto-saved by calibrate_homography.py) ─
-_CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.json"
+# ── Load calibration from JSON (auto-saved by 06_homography.py) ─
+_CALIBRATION_FILE = (
+    Path(__file__).resolve().parent.parent
+    / "calibration"
+    / "homography_calibration.json"
+)
 
 
-def _load_calibration():
+def _load_calibration() -> Tuple[np.ndarray, np.ndarray]:
     """Load WORKSPACE_PX and WORKSPACE_CM from the calibration JSON file.
 
     Returns the saved arrays if the file exists and is valid, otherwise
@@ -124,12 +127,15 @@ def _load_calibration():
             px = np.float32(data["workspace_px"])
             cm = np.float32(data["workspace_cm"])
             if px.shape == (4, 2) and cm.shape == (4, 2):
-                print(f"[VISION] ✅ Loaded calibration from {_CALIBRATION_FILE.name}")
+                logger.info(f"[VISION] ✅ Loaded calibration from {_CALIBRATION_FILE.name}")
                 return px, cm
             else:
-                print(f"[VISION] ⚠️  Calibration file has unexpected shape — using defaults")
+                logger.warning("[VISION] ⚠️  Calibration file has unexpected shape — using defaults")
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            print(f"[VISION] ⚠️  Could not parse {_CALIBRATION_FILE.name}: {exc} — using defaults")
+            logger.warning(
+                f"[VISION] ⚠️  Could not parse {_CALIBRATION_FILE.name}: {exc} — using defaults",
+                exc_info=True,
+            )
     return _DEFAULT_WORKSPACE_PX, _DEFAULT_WORKSPACE_CM
 
 
@@ -173,7 +179,7 @@ class VisionBridge:
         use_camera: bool = False,
         workspace_px: Optional[np.ndarray] = None,
         workspace_cm: Optional[np.ndarray] = None,
-    ):
+    ) -> None:
         self.use_camera = use_camera
         self._cam: Optional[OAKCamera] = None
         self._detector: Optional[SimpleBallDetector] = None
@@ -203,18 +209,20 @@ class VisionBridge:
             ``True`` if ready (always ``True`` in simulation mode).
         """
         if not self.use_camera:
-            print("[VISION] Simulation mode — no camera needed")
+            logger.info("[VISION] Simulation mode — no camera needed")
             return True
 
-        print("[VISION] Opening OAK-D camera...")
+        logger.info("[VISION] Opening OAK-D camera...")
         self._cam = OAKCamera(resolution=vcfg.CAMERA_RESOLUTION)
         if not self._cam.open():
-            print("[VISION] ❌ Could not open camera")
+            logger.error("[VISION] ❌ Could not open camera")
             return False
 
         focal_px = self._cam.get_focal_length_px(hfov_deg=vcfg.CAMERA_HFOV_DEG)
-        print(f"[VISION] ✅ Camera ready  ({vcfg.CAMERA_RESOLUTION[0]}×"
-              f"{vcfg.CAMERA_RESOLUTION[1]}, f={focal_px:.1f}px)")
+        logger.info(
+            f"[VISION] ✅ Camera ready  ({vcfg.CAMERA_RESOLUTION[0]}×"
+            f"{vcfg.CAMERA_RESOLUTION[1]}, f={focal_px:.1f}px)"
+        )
 
         self._detector = SimpleBallDetector(
             min_radius=vcfg.BALL_MIN_RADIUS,
@@ -224,17 +232,17 @@ class VisionBridge:
             max_balls_per_color=4,
             focal_length_px=focal_px,
         )
-        print("[VISION] ✅ Detector initialised")
+        logger.info("[VISION] ✅ Detector initialised")
         return True
 
-    def close(self):
+    def close(self) -> None:
         """Release camera resources and close any OpenCV display windows."""
         if self._cam is not None:
             self._cam.release()
             self._cam = None
         self._detector = None
         cv2.destroyAllWindows()
-        print("[VISION] Camera released")
+        logger.info("[VISION] Camera released")
 
     # ── Coordinate transform ──────────────────────────────────────────
 
@@ -268,7 +276,7 @@ class VisionBridge:
     def _draw_debug_hud(
         self,
         overlay: np.ndarray,
-        balls,
+        balls: List[DetectedBall],
         fps: float,
     ) -> None:
         """Draw a semi-transparent debug statistics panel in the top-left corner.
@@ -405,7 +413,7 @@ class VisionBridge:
             cv2.putText(overlay, text, (PAD_X, y_pos),
                         FONT, FONT_SCALE, color, THICKNESS, cv2.LINE_AA)
 
-    def show_frame(self, frame: np.ndarray, balls) -> None:
+    def show_frame(self, frame: np.ndarray, balls: List[DetectedBall]) -> None:
         """Draw detection overlays on *frame* and display it in an OpenCV window.
 
         This is a **non-blocking** display helper.  For every detected ball
@@ -500,11 +508,11 @@ class VisionBridge:
             ``"z"`` (float, cm).  Ready for ``run_sorting_cycle()``.
         """
         if not self.use_camera:
-            print("[VISION] 📷 Returning fake detections (simulation mode)")
+            logger.info("[VISION] 📷 Returning fake detections (simulation mode)")
             return list(self._FAKE_DETECTIONS)  # shallow copy
 
         if self._cam is None or self._detector is None:
-            print("[VISION] ❌ Camera not opened — call open() first")
+            logger.error("[VISION] ❌ Camera not opened — call open() first")
             return []
 
         # ── Start of new scan round ───────────────────────────────────────
@@ -538,7 +546,7 @@ class VisionBridge:
             self.show_frame(best_frame, best_balls)
 
         if not best_balls:
-            print("[VISION] 📷 No balls detected")
+            logger.info("[VISION] 📷 No balls detected")
             return []
 
         # Convert DetectedBall objects → arm-frame dicts
@@ -562,7 +570,7 @@ class VisionBridge:
             f"{d['colour'].upper()} at ({d['x']}, {d['y']})"
             for d in detections
         )
-        print(f"[VISION] 📷 Detected {len(detections)} ball(s): {colour_summary}")
+        logger.info(f"[VISION] 📷 Detected {len(detections)} ball(s): {colour_summary}")
         return detections
 
     # ── Visual servoing helper ────────────────────────────────────────
@@ -589,24 +597,28 @@ class VisionBridge:
             # so the pick-and-place cycle can proceed normally.
             for det in self._FAKE_DETECTIONS:
                 if det["colour"] == approximate_colour:
-                    print(f"  📸 [VISION] Correction image — returning fake "
-                          f"({det['x']}, {det['y']}) (simulation)")
+                    logger.info(
+                        f"  📸 [VISION] Correction image — returning fake "
+                        f"({det['x']}, {det['y']}) (simulation)"
+                    )
                     return dict(det)
-            print("  📸 [VISION] Correction image — no match (simulation)")
+            logger.info("  📸 [VISION] Correction image — no match (simulation)")
             return None
 
         detections = self.scan_for_balls(num_frames=3)
         matches = [d for d in detections if d["colour"] == approximate_colour]
 
         if not matches:
-            print(f"  📸 [VISION] Correction — {approximate_colour} ball not visible")
+            logger.warning(f"  📸 [VISION] Correction — {approximate_colour} ball not visible")
             return None
 
         # Return the highest-confidence match (scan_for_balls already
         # uses pick-best logic, so just take the first)
         best = matches[0]
-        print(f"  📸 [VISION] Correction — {approximate_colour} now at "
-              f"({best['x']}, {best['y']})")
+        logger.info(
+            f"  📸 [VISION] Correction — {approximate_colour} now at "
+            f"({best['x']}, {best['y']})"
+        )
         return best
 
     # ── Context manager ───────────────────────────────────────────────
@@ -615,5 +627,10 @@ class VisionBridge:
         self.open()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()

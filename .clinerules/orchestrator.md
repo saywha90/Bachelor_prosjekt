@@ -51,7 +51,7 @@ When all subtasks are complete:
 
 ## Project Context Notes
 This repo is a bachelor project combining:
-- `src/IK/` — inverse kinematics, Raspberry Pi ↔ OpenRB serial bridge, simulator under `Simu/`.
+- `src/ik/` — inverse kinematics, Raspberry Pi ↔ OpenRB serial bridge, simulator under `src/simulation/`.
 - `src/vision/` — OAK camera pipeline, HSV tuning, color classifier, detection diagnostics.
 
 When decomposing, respect this split: vision subtasks go to vision specialists, kinematics/hardware subtasks go to code/debug specialists, and any cross-cutting change should get an `architect` subtask first.

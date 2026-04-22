@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "autonomia"
+version = "1.0.0"
+description = "Autonomous ball-sorting robot arm — Bachelor thesis project"
+requires-python = ">=3.9"
+dependencies = [
+    "depthai==2.24.0.0",
+    "opencv-python==4.9.0.80",
+    "numpy==1.26.4",
+    "scipy==1.12.0",
+    "scikit-learn==1.4.2",
+    "dynamixel-sdk==3.7.31",
+    "pyserial==3.5",
+    "Flask==3.0.3",
+    "Flask-SocketIO==5.3.6",
+    "Flask-CORS==4.0.1",
+    "eventlet==0.36.1",
+    "requests==2.31.0",
+    "matplotlib==3.8.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
