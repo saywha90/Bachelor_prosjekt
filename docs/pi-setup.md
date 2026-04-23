@@ -71,7 +71,7 @@ ls -l /dev/ttyACM0  # should exist when OpenRB-150 is connected
 ## 7. Clone and Install the Project
 
 ```bash
-git clone https://github.com/<your-org>/Bachelor_prosjekt.git
+git clone https://github.com/YOUR-USERNAME/Bachelor_prosjekt.git
 cd Bachelor_prosjekt
 python3 -m venv .venv
 source .venv/bin/activate
