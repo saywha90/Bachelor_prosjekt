@@ -1,6 +1,14 @@
 # Autonomia — Autonomous Ball-Sorting Robot
 
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![Tests](https://img.shields.io/badge/tests-28%20passing-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red)
+
 A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using an OAK-D camera, computes inverse kinematics, and sorts them into bins — achieving 98–100% detection accuracy at 20–25 FPS with a target pick success rate of ≥ 80%.
+
+<!-- TODO: Add a photo of the robot arm in action -->
+<!-- ![Autonomia arm sorting balls](docs/images/arm-in-action.jpg) -->
 
 ## Quick Start
 
@@ -21,11 +29,10 @@ A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using
 ### Installation
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/YOUR-USERNAME/Bachelor_prosjekt.git
 cd Bachelor_prosjekt
 python -m venv .venv && source .venv/bin/activate  # optional but recommended
-pip install -r requirements.txt
-pip install -e .   # installs project in editable mode; enables consistent imports
+pip install -e .                   # install project + pinned dependencies
 ```
 
 ### Running
@@ -37,6 +44,8 @@ python src/main.py
 # Real hardware mode
 python src/main.py --real-serial --real-camera
 ```
+
+> **⚠️ First time on real hardware?** Complete the [calibration guide](docs/calibration.md) first (45–70 min). Running `--real-serial --real-camera` on an uncalibrated system may cause unexpected arm movements.
 
 ### Running Tests
 
@@ -65,7 +74,7 @@ See [docs/architecture.md](docs/architecture.md) for the full component diagram,
 ```
 autonomia/
 ├── README.md                          📖 Project overview & quick start
-├── CHANGELOG.md                       📝 Vision system iteration history
+├── CHANGELOG.md                       📝 Project changelog (semantic versioning)
 ├── LICENSE                            ⚖️  MIT licence
 ├── pyproject.toml                     📦 Build config, pinned deps, pytest settings
 ├── requirements.txt                   📦 Pinned Python dependencies
@@ -95,7 +104,7 @@ autonomia/
 │   │   └── vision_bridge.py           🔌 Camera → arm coordinate adapter
 │   │
 │   ├── vision/                        👁️  Computer vision pipeline
-│   │   ├── camera.py                  📷 OAK-D Lite camera wrapper (DepthAI)
+│   │   ├── camera.py                  📷 OAK-D S2 camera wrapper (DepthAI)
 │   │   ├── classifier.py             🤖 SVM colour classification inference
 │   │   ├── detector.py               ⭐ SimpleBallDetector — main detection engine
 │   │   └── models/                    🧠 Trained ML models
@@ -146,7 +155,8 @@ autonomia/
 | [Calibration Guide](docs/calibration.md) | 9-step calibration pipeline (Steps 0–8) |
 | [Performance](docs/performance.md) | Detection accuracy, cycle times, test protocol |
 | [Troubleshooting](docs/troubleshooting.md) | Motor errors, camera issues, detection problems |
-| [Changelog](CHANGELOG.md) | Vision system iteration history |
+| [Changelog](CHANGELOG.md) | Project changelog (semantic versioning) |
+| [Manual Test Scripts](scripts/manual_tests/README.md) | Hardware validation & demo scripts |
 
 ### Design Decisions (ADRs)
 
@@ -172,14 +182,17 @@ See [docs/performance.md](docs/performance.md) for full metrics, cycle timing, a
 
 ## Hardware
 
-The system uses a Dynamixel-based 4-DOF arm (XM430 + XM540 + XL430 servos) controlled by an OpenRB-150 microcontroller via JSON-over-serial. Vision is provided by a Luxonis OAK-D Lite stereo camera (IMX378 sensor, 640×400 at 81° HFOV). The arm runs on a Raspberry Pi 5 host.
+The system uses a Dynamixel-based 4-DOF arm (XM430 + XM540 + XL430 servos) controlled by an OpenRB-150 microcontroller via JSON-over-serial. Vision is provided by a Luxonis OAK-D S2 stereo camera (IMX378 sensor, configured at 640 × 400 for the detection pipeline, 81° HFOV). The arm runs on a Raspberry Pi 5 host.
 
 | Parameter | Value |
 |-----------|-------|
 | L1 (Shoulder → Elbow) | 25.5 cm |
 | L2 (Elbow → Wrist) | 23.0 cm |
 | L3 (Wrist → Claw tip) | 16.5 cm |
-| Max reach | 48.5 cm |
+| Max reach (theoretical) | 48.5 cm (L1 + L2) |
+| Practical workspace radius | ~40 cm¹ |
+
+¹ Practical reach is limited by motor torque and vertical clearance constraints.
 
 See [docs/architecture.md](docs/architecture.md) for the full hardware specification and component descriptions.
 
@@ -195,4 +208,5 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
-**Team Autonomia — Bachelor 2026**
+**Team Autonomia — Bachelor 2026**  
+*[Student Name 1], [Student Name 2], [Student Name 3] · [University Name] · Supervisor: [Supervisor Name]*
