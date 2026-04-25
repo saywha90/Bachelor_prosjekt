@@ -32,13 +32,14 @@ BINS = {
 HOME_POSITION = (20.0, 0.0, 30.0)
 
 # ── Grab / drop heights ──────────────────────────────────────────────
-GRAB_HEIGHT      = 13.0  # z when closing the claw (floor is 6.0, raised to 13.0)Scan privilegeScan
+GRAB_HEIGHT      = 2.0   # z when closing the claw (target center of ball on table)
 APPROACH_HEIGHT  = 24.0  # z during the 80% XY approach (raised to stay above grab height)
 CLEARANCE_HEIGHT = 28.0  # z to lift to before traversing to a bin
 
 # ── Timing (seconds) ─────────────────────────────────────────────────
-GRAB_DWELL   = 0.8   # time to wait while the claw closes
+GRAB_DWELL    = 0.8   # time to wait while the claw closes
 RELEASE_DWELL = 0.5   # time to wait while the claw opens
+SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 
 # ── Camera-to-shoulder coordinate correction ─────────────────────────
 # The homography WORKSPACE_CM now maps pixels directly to the shoulder
@@ -47,14 +48,49 @@ RELEASE_DWELL = 0.5   # time to wait while the claw opens
 # in cm from the shoulder joint itself.
 #
 # Previously CAMERA_OFFSET_X was 25.5 cm because the homography corners
-# were measured from the camera pillar/base, causing double-counting.
+# were measured from the external camera stand (fixed-camera setup), causing double-counting.
 #
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
 # Use  python src/calibration/06_homography.py  to recalibrate.
 CAMERA_OFFSET_X = 0.0     # homography is shoulder-relative; no offset needed
 CAMERA_OFFSET_Y = 0.0     # homography is shoulder-relative; no offset needed
-CAMERA_HEIGHT   = 43.0   # cm – camera lens height above table surface
+CAMERA_HEIGHT   = 29.0   # cm – camera lens height above table surface (measured 2026-04-25)
+
+# ── Wrist-mounted camera scan pose ──────────────────────────────────
+# Joint positions (Dynamixel steps) where the arm parks the
+# wrist-mounted camera so it sees the entire workspace from above.
+#
+# Tuning notes (wrist-mounted OAK-D S2):
+#   m1 (base)     — keep centred (2048) so camera looks straight forward
+#   m2 (shoulder) — lifted up so the wrist sits ~30–40 cm above desk
+#   m3 (elbow)    — folded back so the forearm tilts the camera downward
+#   m4 (wrist)    — angled so the camera optical axis points at the desk
+#                   (NOT along the claw direction — see calibration step 02c)
+#   m5 (claw)     — open and out of camera view
+#
+# MUST BE TUNED EMPIRICALLY for your specific camera mount geometry.
+# See docs/calibration.md → Step 02c.
+SCAN_POSE = {
+    "m1": 2048,
+    "m2": 2750,   # shoulder raised — wrist ~35 cm above desk
+    "m3": 750,    # elbow folded — forearm angled down toward desk
+    "m4": 1050,   # wrist tilted — camera optical axis points at workspace
+    "m5": 2248,   # claw open and out of camera view
+}
+
+# Tolerance for verifying the arm is actually at SCAN_POSE before
+# running vision (Dynamixel steps; ~1.8° at 4096 steps/360°)
+SCAN_POSE_TOLERANCE = 20
+
+# ── Motion profile for startup home move ─────────────────────────────
+# Dynamixel profile velocity (~0.229 rpm per unit) and acceleration
+# (~214 rev/min² per unit) used when moving to SCAN_POSE on startup.
+# These produce a smooth trapezoidal velocity profile: the arm accelerates
+# gently, holds a moderate speed, then decelerates before stopping.
+# Increase VEL to move faster; decrease ACC for a softer start/stop.
+STARTUP_PROFILE_VEL = 60    # fast but controlled (not sluggish, not instant)
+STARTUP_PROFILE_ACC = 15    # gentle ramp-up / ramp-down
 
 
 def get_bin_coords(color_string: str) -> tuple:

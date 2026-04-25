@@ -93,22 +93,8 @@ class TestReachability:
 
     def test_too_close_raises_value_error(self, arm):
         """A target inside the dead zone (closer than |L1 − L2|) should raise."""
-        # With L1=25.5, L2=23.0, min reach ≈ 2.5 cm in the planar frame.
-        # But z adjustments (shoulder_height, L3, sag) change effective d.
-        # A coordinate at the shoulder itself is clearly inside the dead zone
-        # only if d < min_reach after all z transforms.
-        # Use a point with x≈0, y≈0 at a z that makes d very small.
-        # shoulder_height=33, L3=16.5, so z_ik = z + L3 - shoulder_height
-        # For z_ik ≈ 0 and r ≈ 0 → d ≈ 0 < min_reach → should raise.
-        # z_ik = z + 16.5 + sag - 33 = z - 16.5 + sag
-        # To get z_ik ≈ 0: z ≈ 16.5 (sag is small for r≈0)
-        # But Z_MIN clamps z to at least 6.0, and r = sqrt(0.01^2) ≈ 0.01
-        # d = sqrt(0.01^2 + z_ik^2) where z_ik = 6 + 16.5 - 33 = -10.5
-        # d ≈ 10.5, min_reach = 2.5 → still reachable.
-        # Instead, craft a z that puts d below min_reach:
-        # Need d < 2.5.  z_ik = z + 16.5 - 33 = z - 16.5 (sag ≈ 0 for r≈0)
-        # |z_ik| < 2.5 → z between 14.0 and 19.0 (and r ≈ 0)
-        # With r = 0.01, d ≈ |z_ik| → for z = 16.5: d ≈ 0.01 < 2.5 ✓
+        # Force shoulder_height to match the test's assumptions (z_ik ≈ 0 at z=16.5)
+        arm.shoulder_height = 33.0
         with pytest.raises(ValueError, match="too close"):
             arm.solve(x=0.01, y=0.0, z=16.5)
 

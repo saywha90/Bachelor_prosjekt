@@ -45,7 +45,7 @@ python src/main.py
 python src/main.py --real-serial --real-camera
 ```
 
-> **⚠️ First time on real hardware?** Complete the [calibration guide](docs/calibration.md) first (45–70 min). Running `--real-serial --real-camera` on an uncalibrated system may cause unexpected arm movements.
+> **⚠️ First time on real hardware?** Complete the [calibration guide](docs/calibration.md) first (55–80 min). Running `--real-serial --real-camera` on an uncalibrated system may cause unexpected arm movements.
 
 ### Running Tests
 
@@ -65,7 +65,7 @@ OAK-D Camera ──► VisionBridge ──► State Machine ──► IK Solver 
   (RGB stream)    (homography)      (main.py)      (geometric)     (serial)       (5 axes)
 ```
 
-The system runs a continuous **scan → approach → pick → sort → rescan** loop. The OAK-D camera captures frames, the vision pipeline detects balls using an HSV + Hough + SVM ensemble, a perspective homography converts pixel coordinates to centimetres, and the geometric IK solver computes motor positions for the 4-DOF arm. Communication with the five Dynamixel servos is handled via JSON commands over USB serial to an OpenRB-150 microcontroller.
+The system runs a continuous **move-to-scan-pose → scan → approach → pick → sort → drop → move-to-scan-pose → rescan** loop. The OAK-D camera captures frames, the vision pipeline detects balls using an HSV + Hough + SVM ensemble, a perspective homography converts pixel coordinates to centimetres, and the geometric IK solver computes motor positions for the 4-DOF arm. Communication with the five Dynamixel servos is handled via JSON commands over USB serial to an OpenRB-150 microcontroller.
 
 See [docs/architecture.md](docs/architecture.md) for the full component diagram, state machine, and data flow.
 
@@ -81,13 +81,13 @@ autonomia/
 │
 ├── docs/                              📚 Full documentation
 │   ├── architecture.md                🏗️  System design, state machine, data flow
-│   ├── calibration.md                 🔧 9-step calibration guide (Steps 0–8)
+│   ├── calibration.md                 🔧 10-step calibration guide (Steps 0–8)
 │   ├── performance.md                 📊 Detection accuracy, cycle times, test protocol
 │   ├── troubleshooting.md             🩺 Motor, camera & detection issue fixes
 │   └── decisions/                     📐 Architecture Decision Records
 │       ├── 001-hsv-over-cnn.md        🎨 Why classical HSV over CNN detection
 │       ├── 002-4dof-geometry.md       📐 Why geometric IK over numerical
-│       └── 003-two-step-servoing.md   🎯 Why two-step visual servoing
+│       └── 003-fixed-scan-pose.md     🎯 Why fixed scan pose over continuous servoing
 │
 ├── firmware/                          🎛️  OpenRB-150 firmware (flashed via Arduino IDE)
 │   └── openrb_bridge/
@@ -152,7 +152,7 @@ autonomia/
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System design, component diagram, state machine, data flow |
-| [Calibration Guide](docs/calibration.md) | 9-step calibration pipeline (Steps 0–8) |
+| [Calibration Guide](docs/calibration.md) | 10-step calibration pipeline (Steps 0–8, including 2b and 2c) |
 | [Performance](docs/performance.md) | Detection accuracy, cycle times, test protocol |
 | [Troubleshooting](docs/troubleshooting.md) | Motor errors, camera issues, detection problems |
 | [Changelog](CHANGELOG.md) | Project changelog (semantic versioning) |
@@ -164,7 +164,7 @@ autonomia/
 |----------|---------|
 | [ADR-001](docs/decisions/001-hsv-over-cnn.md) | Classical HSV vision over CNN-based detection |
 | [ADR-002](docs/decisions/002-4dof-geometry.md) | Geometric 4-DOF inverse kinematics |
-| [ADR-003](docs/decisions/003-two-step-servoing.md) | Two-step visual servoing approach |
+| [ADR-003](docs/decisions/003-fixed-scan-pose.md) | Fixed scan pose over continuous visual servoing |
 
 ## Key Results
 
@@ -182,7 +182,7 @@ See [docs/performance.md](docs/performance.md) for full metrics, cycle timing, a
 
 ## Hardware
 
-The system uses a Dynamixel-based 4-DOF arm (XM430 + XM540 + XL430 servos) controlled by an OpenRB-150 microcontroller via JSON-over-serial. Vision is provided by a Luxonis OAK-D S2 stereo camera (IMX378 sensor, configured at 640 × 400 for the detection pipeline, 81° HFOV). The arm runs on a Raspberry Pi 5 host.
+The system uses a Dynamixel-based 4-DOF arm (XM430 + XM540 + XL430 servos) controlled by an OpenRB-150 microcontroller via JSON-over-serial. Vision is provided by a Luxonis OAK-D S2 mounted on the arm wrist, looking down at the workspace (IMX378 sensor, configured at 640 × 400 for the detection pipeline, 81° HFOV). The arm runs on a Raspberry Pi 5 host.
 
 | Parameter | Value |
 |-----------|-------|
@@ -198,7 +198,7 @@ See [docs/architecture.md](docs/architecture.md) for the full hardware specifica
 
 ## Calibration
 
-The system requires a 9-step calibration pipeline (Steps 0–8) before autonomous operation, covering motor setup, sag compensation, HSV colour tuning, pixel-to-cm homography, and end-to-end pick verification. Total time: approximately 45–70 minutes.
+The system requires a 10-step calibration pipeline (Steps 0–8, including 2b and 2c) before autonomous operation, covering motor setup, SCAN_POSE tuning for the wrist-mounted camera, sag compensation, HSV colour tuning, pixel-to-cm homography, and end-to-end pick verification. Total time: approximately 55–80 minutes.
 
 See [docs/calibration.md](docs/calibration.md) for the complete step-by-step guide.
 

@@ -29,7 +29,7 @@ from ik.solver import ArmIK
 # calibrate_sag.py.  Change SERIAL_PORT / SERIAL_BAUD to match your
 # setup.
 
-SERIAL_PORT = "/dev/cu.usbmodem101"
+SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call

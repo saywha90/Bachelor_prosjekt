@@ -33,7 +33,7 @@ from ik.solver import ArmIK
 # Identical lazy-singleton pattern used by calibrate_joints.py.
 # Change SERIAL_PORT / SERIAL_BAUD to match your setup.
 
-SERIAL_PORT = "/dev/cu.usbmodem101"
+SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call
@@ -196,10 +196,15 @@ def print_results(data, linear_coeffs, quad_coeffs, linear_rmse, quad_rmse):
         improvement = (1.0 - quad_rmse / linear_rmse) * 100.0
         print(f"\nRecommendation: Use quadratic model "
               f"(RMSE improved by {improvement:.0f}%)")
+        print(f"  z_offset_quadratic (a) = {quad_coeffs[0]:.6f}")
+        print(f"  z_offset_multiplier (b) = {quad_coeffs[1]:.4f}")
+        print(f"  z_offset_constant (c)   = {quad_coeffs[2]:.4f}")
         recommended = "quadratic"
     else:
         print(f"\nRecommendation: Use linear model "
               f"(quadratic does not improve fit by ≥20%)")
+        print(f"  z_offset_multiplier = {linear_multiplier:.4f}")
+        print(f"  z_offset_constant   = {linear_coeffs[1]:.4f}")
         recommended = "linear"
 
     return recommended
@@ -297,11 +302,16 @@ def main():
         print("NEXT STEPS")
         print("=" * 60)
         print()
-        print(f"To apply the linear model, edit src/ik/solver.py line 53:")
+        print(f"To apply the linear model, edit src/ik/solver.py:")
         print(f"    z_offset_multiplier: float = {linear_multiplier:.4f}")
+        print(f"    z_offset_constant:   float = {linear_coeffs[1]:.4f}")
         print()
-        print(f"To apply the quadratic model, see README or update")
-        print(f"src/ik/solver.py to load sag_calibration.json.")
+        print(f"To apply the quadratic model, edit src/ik/solver.py:")
+        print(f"    z_offset_quadratic:  float = {quad_coeffs[0]:.6f}")
+        print(f"    z_offset_multiplier: float = {quad_coeffs[1]:.4f}")
+        print(f"    z_offset_constant:   float = {quad_coeffs[2]:.4f}")
+        print()
+        print(f"NOTE: ArmIK also auto-loads sag_calibration.json on startup.")
         print()
 
     except KeyboardInterrupt:

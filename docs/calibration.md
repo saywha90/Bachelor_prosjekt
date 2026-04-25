@@ -5,7 +5,7 @@
 
 Complete calibration pipeline for first-time setup and recalibration.
 Follow Phases A → B → C in order — each step depends on the ones before it.
-Total time: approximately 45–70 minutes.
+Total time: approximately 55–80 minutes.
 
 ---
 
@@ -48,6 +48,7 @@ Required packages: `numpy`, `opencv-python`, `pyserial`, `depthai`, `scikit-lear
 | **1** | A | `python src/diagnostics/diagnose_motors.py` | System check — verify all motors respond | ~2 min |
 | **2** | A | `python src/calibration/02_joints.py` | Joint calibration — verify motor signs and zeros | ~10–15 min |
 | **2b** | A | `python src/calibration/02b_claw.py` | Claw open/close calibration | ~2 min |
+| **2c** | A | `python src/calibration/02c_scan_pose.py` | Tune SCAN_POSE for wrist-mounted camera | ~5–10 min |
 | **3** | A | `python src/calibration/03_sag.py` | Sag (droop) compensation calibration | ~10–20 min |
 | **4** | B | `python src/calibration/04_hsv_tuner.py` | Interactive HSV colour tuning | ~5–15 min |
 | **5** | B | `python src/calibration/05_hsv_refine.py` | Statistical HSV refinement | ~5 min |
@@ -191,6 +192,40 @@ CLAW_CLOSED_POS = 1600   # grips a 50 mm ball without crushing
 
 ---
 
+#### Step 02c — Tune SCAN_POSE (wrist-mounted camera only)
+
+The wrist-mounted camera moves with the arm, so vision only works
+from a known pose. Use the interactive tuning script to find and save
+the right joint positions.
+
+Run the interactive tuner:
+
+```
+python3 -m src.calibration.02c_scan_pose
+```
+
+The script:
+1. Connects to the OpenRB-150 and moves the arm to the current SCAN_POSE
+2. Opens the OAK-D S2 live camera feed
+3. Shows current motor values overlaid on the frame
+
+**Keyboard controls:**
+- `W` / `S` → m2 shoulder raise / lower
+- `E` / `D` → m3 elbow fold / unfold
+- `R` / `F` → m4 wrist tilt up / down
+- `T` / `G` → m1 base rotate
+- `Y` / `H` → m5 claw open / close
+- `[` / `]` → step size ×2 / ÷2
+- `ENTER`   → **save** to `src/config/arm.py` and exit
+- `Q`       → quit without saving
+
+**Goal:** adjust until the camera looks straight down and the entire
+workspace is visible in the frame with the claw out of view.
+
+**Time:** ~5–10 min. Re-run if you change the camera mount.
+
+---
+
 ### Step 3 — Sag (Droop) Compensation Calibration
 
 **What it does:** Measures the arm's gravitational droop at different reach
@@ -328,6 +363,8 @@ python src/calibration/06_homography.py
 `homography_calibration.json`. The hardcoded fallback defaults in
 [`vision_bridge.py`](../src/ik/vision_bridge.py:90) are only used when no
 calibration file exists.
+
+> ⚠️ This calibration is pose-dependent. If you change `SCAN_POSE` at any point, you must re-run Step 06.
 
 ---
 
@@ -469,6 +506,7 @@ You only need to redo specific steps when something changes:
 
 | What Changed | Steps to Redo |
 |-------------|---------------|
+| Changed camera mount or SCAN_POSE | 2c, 6, 6b, 7 |
 | Moved the camera | 6, 6b, 7 |
 | Changed lighting (new room, new lamp) | 4, 5 |
 | Rebuilt or tightened the arm | 2, 2b, 3 |
@@ -507,6 +545,6 @@ If the system was working and accuracy has degraded:
 | Motor direction wrong in Step 2 | Joint moves opposite to expected | Negate the sign in [`solver.py`](../src/ik/solver.py) for that motor |
 | Sag model poor fit (R² < 0.90) | Large Z errors after calibration | Re-measure more carefully; ensure ruler is perpendicular to table |
 | HSV mask noisy in Step 4 | Background objects show in mask | Tighten S and V minimums; remove coloured objects from workspace |
-| Homography off by > 2 cm | Detected cm don't match ruler | Re-measure corner positions from shoulder joint, not camera pillar |
+| Homography off by > 2 cm | Detected cm don't match ruler | Re-measure corner positions from shoulder joint; verify arm is at SCAN_POSE |
 | Camera not found in Step 4/6 | `OAKCamera: Could not open camera` | Re-plug USB, check `depthai` install, see [troubleshooting](troubleshooting.md) |
 | Pick test < 80 % | Multiple partial/fail results | Identify the dominant failure mode from the diagnostic table above |

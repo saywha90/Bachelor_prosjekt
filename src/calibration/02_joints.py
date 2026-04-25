@@ -31,7 +31,7 @@ import time
 # Change SERIAL_PORT / SERIAL_BAUD to match your setup (values taken
 # from main.py defaults).
 
-SERIAL_PORT = "/dev/cu.usbmodem101"
+SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call
