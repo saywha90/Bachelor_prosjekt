@@ -34,7 +34,7 @@ HOME_POSITION = (20.0, 0.0, 30.0)
 # ── Grab / drop heights ──────────────────────────────────────────────
 GRAB_HEIGHT      = 2.0   # z when closing the claw (target center of ball on table)
 APPROACH_HEIGHT  = 24.0  # z during the 80% XY approach (raised to stay above grab height)
-CLEARANCE_HEIGHT = 28.0  # z to lift to before traversing to a bin
+CLEARANCE_HEIGHT = 15.0  # Reduced from 28.0; 15 is plenty of room and prevents IK clamping at far reaches
 
 # ── Timing (seconds) ─────────────────────────────────────────────────
 GRAB_DWELL    = 0.8   # time to wait while the claw closes
