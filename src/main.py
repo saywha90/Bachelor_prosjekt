@@ -4,11 +4,16 @@ main.py
 Master sorting loop for the autonomous robotic arm.
 
 Implements a state-machine that drives the arm through:
-    IDLE → SCANNING → APPROACHING (80%) → APPROACHING (100%) → GRABBING →
-    SORTING (lift + move to bin) → DROPPING → IDLE → (next in queue or rescan)
+    HOME → MOVE_TO_SCAN_POSE → SCANNING → APPROACHING → GRABBING →
+    SORTING (lift + move to bin) → DROPPING → MOVE_TO_SCAN_POSE →
+    (rescan or next from queue)
 
 Camera integration
 ------------------
+Uses a wrist-mounted OAK-D S2 camera.  The arm parks at SCAN_POSE
+(joint-space positions defined in config/arm.py) before every vision
+scan, then approaches in a single full move.
+
 When ``--real-camera`` is passed, uses ``VisionBridge`` to capture real
 detections from the OAK-D camera and convert pixel positions to arm-frame
 centimetres via a calibrated homography.
@@ -43,6 +48,10 @@ from config.arm import (
     GRAB_DWELL,
     RELEASE_DWELL,
     CAMERA_OFFSET_X,
+    SCAN_POSE,
+    STARTUP_PROFILE_VEL,
+    STARTUP_PROFILE_ACC,
+    SCAN_INTERVAL,
 )
 from simulation.mock_serial import MockSerial
 from simulation.visualizer import ArmVisualizer
@@ -51,7 +60,7 @@ from ik.vision_bridge import VisionBridge
 logger = logging.getLogger(__name__)
 
 # ─── Serial / connection settings ─────────────────────────────────────
-SERIAL_PORT     = "/dev/cu.usbmodem101"
+SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD     = 115200
 
 # ─── Claw motor positions (Dynamixel steps) ───────────────────────────
@@ -66,25 +75,27 @@ MOVE_SETTLE_TIME = 1.5    # seconds (adjust based on profile velocity)
 
 # ── State machine ─────────────────────────────────────────────────────
 class State(Enum):
-    IDLE        = auto()
-    SCANNING    = auto()
-    APPROACHING = auto()
-    GRABBING    = auto()
-    SORTING     = auto()
-    DROPPING    = auto()
-    DONE        = auto()
+    IDLE             = auto()
+    MOVE_TO_SCAN_POSE = auto()
+    SCANNING         = auto()
+    APPROACHING      = auto()
+    GRABBING         = auto()
+    SORTING          = auto()
+    DROPPING         = auto()
+    DONE             = auto()
 
 
 # ── Pretty logging ────────────────────────────────────────────────────
 def log_state(state: State, msg: str = ""):
     icons = {
-        State.IDLE:        "🏠",
-        State.SCANNING:    "📷",
-        State.APPROACHING: "🎯",
-        State.GRABBING:    "✊",
-        State.SORTING:     "📦",
-        State.DROPPING:    "📤",
-        State.DONE:        "✅",
+        State.IDLE:             "🏠",
+        State.MOVE_TO_SCAN_POSE: "🔄",
+        State.SCANNING:         "📷",
+        State.APPROACHING:      "🎯",
+        State.GRABBING:         "✊",
+        State.SORTING:          "📦",
+        State.DROPPING:         "📤",
+        State.DONE:             "✅",
     }
     icon = icons.get(state, "❓")
     print(f"\n{'═' * 60}")
@@ -125,29 +136,7 @@ def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
     return response
 
 
-def send_partial(ser, arm: ArmIK, tx, ty, tz, pct, ox=0.0, oy=0.0, oz=0.0, label="",
-                 viz=None):
-    """Solve partial IK, send JSON over serial, wait for ACK, and update visualizer."""
-    if label:
-        print(f"\n  📍 {label}: {int(pct*100)}% toward ({tx:.1f}, {ty:.1f}, {tz:.1f})")
-
-    solution = arm.calculate_partial_move(tx, ty, tz, pct, ox, oy, oz)
-    cmd_json = json.dumps(solution)
-    ser.write((cmd_json + "\n").encode())
-
-    response = ser.readline().decode().strip()
-    if response != "OK":
-        print(f"  ⚠️  Unexpected response: {response}")
-
-    # Update visualizer if available (needed for real serial mode)
-    if viz is not None:
-        viz.update_plot(solution)
-
-    # Wait for the physical arm to reach the target position
-    if USE_REAL_SERIAL:
-        time.sleep(MOVE_SETTLE_TIME)
-
-    return response
+# send_partial() removed — two-step approach replaced with single move (see ADR 003)
 
 
 def send_claw(ser, position: int, label: str = ""):
@@ -189,95 +178,80 @@ def send_claw(ser, position: int, label: str = ""):
         print(f"  ⚠️  Claw response: {resp}")
 
 
-def smooth_startup(ser, arm: ArmIK, viz=None):
-    """Gradually ramp the arm from its current position to HOME on startup.
+def send_scan_pose(ser, viz=None):
+    """Drive all five motors directly to SCAN_POSE step values.
+
+    Uses raw joint positions (NOT IK) because SCAN_POSE is defined in
+    Dynamixel step space.  Waits at least 1 second after the move for
+    motion to settle.
+
+    Parameters
+    ----------
+    ser : serial port
+        The (mock or real) serial connection.
+    viz : ArmVisualizer or None
+        If provided, update the 3-D plot with the new motor positions.
+    """
+    print("  🔄  Moving arm to SCAN_POSE for vision scan...")
+    cmd_json = json.dumps(SCAN_POSE)
+    ser.write((cmd_json + "\n").encode())
+
+    response = ser.readline().decode().strip()
+    if response != "OK":
+        print(f"  ⚠️  Unexpected SCAN_POSE response: {response}")
+
+    if viz is not None:
+        viz.update_plot(SCAN_POSE)
+
+    # Allow motion to settle before capturing images
+    time.sleep(max(1.0, MOVE_SETTLE_TIME))
+
+
+def smooth_startup(ser, viz=None):
+    """Move arm to SCAN_POSE on startup using a smooth Dynamixel velocity profile.
 
     Steps:
-      1. Set a slow motion profile on the firmware.
-      2. Read current motor positions from the firmware.
-      3. Interpolate from current positions to HOME in 10 steps.
-      4. Restore normal motion profile.
+      1. Re-enable motor torque (safe after a 12V power cycle with USB still on).
+      2. Set a moderate trapezoidal velocity profile — the firmware's built-in
+         profile handles smooth acceleration and deceleration automatically,
+         so no manual interpolation is needed.
+      3. Send SCAN_POSE (joint-space step values) in one command.
+      4. Wait for the arm to physically settle at SCAN_POSE.
 
-    Falls back to a direct (but slow-profile) HOME command if reading
-    current positions fails.
+    Parameters
+    ----------
+    ser : serial port
+        The (mock or real) serial connection.
+    viz : ArmVisualizer or None
+        If provided, update the 3-D plot with the new motor positions.
     """
-    NUM_STEPS = 10
-    STEP_DELAY = 0.15  # seconds between interpolation steps
-
-    # 0. Send an explicit torque command in case 12V power was cycled but USB stayed on
+    # 0. Re-enable torque in case 12V power was cycled but USB stayed on
     print("  🔌  Re-enabling motor torque...")
     cmd = json.dumps({"cmd": "enable_torque"})
     ser.write((cmd + "\n").encode())
-    resp = ser.readline().decode().strip()
+    ser.readline()  # consume ACK (may be empty on first boot)
 
-    # 1. Set slow startup profile
-    print("  🐢  Setting slow startup profile...")
-    cmd = json.dumps({"cmd": "set_profile", "vel": 30, "acc": 10})
+    # 1. Set smooth motion profile (trapezoidal: ramp-up → cruise → ramp-down)
+    print(f"  🎯  Setting motion profile  (vel={STARTUP_PROFILE_VEL}, acc={STARTUP_PROFILE_ACC})...")
+    cmd = json.dumps({"cmd": "set_profile", "vel": STARTUP_PROFILE_VEL, "acc": STARTUP_PROFILE_ACC})
     ser.write((cmd + "\n").encode())
     resp = ser.readline().decode().strip()
     print(f"       Profile response: {resp}")
 
-    # 2. Read current motor positions
-    print("  📖  Reading current motor positions...")
-    cmd = json.dumps({"cmd": "read_pos"})
-    ser.write((cmd + "\n").encode())
-    resp = ser.readline().decode().strip()
+    # 2. Send SCAN_POSE directly — the profile ensures smooth, controlled motion
+    print("  🏠  Moving to SCAN_POSE (home position)...")
+    cmd_json = json.dumps(SCAN_POSE)
+    ser.write((cmd_json + "\n").encode())
+    response = ser.readline().decode().strip()
+    if response != "OK":
+        print(f"  ⚠️  Unexpected SCAN_POSE response: {response}")
 
-    # Compute HOME target positions
-    home_positions = arm.solve(*HOME_POSITION)
+    if viz is not None:
+        viz.update_plot(SCAN_POSE)
 
-    # Try to parse current positions
-    current_positions = None
-    try:
-        current_positions = json.loads(resp)
-        # Validate that all motor keys exist
-        for key in ("m1", "m2", "m3", "m4", "m5"):
-            if key not in current_positions:
-                raise ValueError(f"Missing key {key} in response")
-        print(f"       Current positions: {current_positions}")
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        print(f"  ⚠️  Could not parse positions ({e}) — falling back to direct HOME")
-        # Fall back: just send HOME with slow profile already set
-        cmd_json = json.dumps(home_positions)
-        ser.write((cmd_json + "\n").encode())
-        resp = ser.readline().decode().strip()
-        print(f"       HOME response: {resp}")
-        # Restore normal profile
-        cmd = json.dumps({"cmd": "set_profile", "vel": 80, "acc": 20})
-        ser.write((cmd + "\n").encode())
-        ser.readline()
-        return
-
-    # 3. Interpolate from current to HOME in NUM_STEPS steps
-    print(f"  🔄  Interpolating to HOME in {NUM_STEPS} steps...")
-    motor_keys = ["m1", "m2", "m3", "m4", "m5"]
-
-    for step in range(1, NUM_STEPS + 1):
-        t = step / NUM_STEPS  # 0.1, 0.2, ..., 1.0
-        interp = {}
-        for key in motor_keys:
-            start_val = current_positions[key]
-            end_val = home_positions[key]
-            interp[key] = int(round(start_val + (end_val - start_val) * t))
-
-        cmd_json = json.dumps(interp)
-        ser.write((cmd_json + "\n").encode())
-        resp = ser.readline().decode().strip()
-        if resp != "OK":
-            print(f"  ⚠️  Step {step}/{NUM_STEPS} response: {resp}")
-        # Update visualizer during startup ramp
-        if viz is not None:
-            viz.update_plot(interp)
-        time.sleep(STEP_DELAY)
-
-    print("  ✅  Startup ramp complete — arm at HOME")
-
-    # 4. Restore normal motion profile
-    print("  🚀  Restoring normal motion profile...")
-    cmd = json.dumps({"cmd": "set_profile", "vel": 80, "acc": 20})
-    ser.write((cmd + "\n").encode())
-    resp = ser.readline().decode().strip()
-    print(f"       Profile response: {resp}")
+    # 3. Wait for the arm to physically reach SCAN_POSE before the loop starts
+    time.sleep(max(2.0, MOVE_SETTLE_TIME))
+    print("  ✅  Arm at SCAN_POSE — ready")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -298,7 +272,7 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
 
             {"colour": "red", "x": 20.0, "y": 5.0, "z": 0.0}
     vision : VisionBridge
-        The vision bridge (used for visual-servoing correction image).
+        The vision bridge instance (retained for future use).
     viz : ArmVisualizer or None
         Live 3-D visualizer (passed to movement commands).
     """
@@ -307,78 +281,31 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     obj_y  = detection["y"]
     obj_z  = detection["z"]
 
-    # Home position as the "origin" for partial moves
-    hx, hy, hz = HOME_POSITION
-
     # ── 1. IDLE ───────────────────────────────────────────────────────
     log_state(State.IDLE, f"Detection: {colour.upper()} ball at ({obj_x}, {obj_y}, {obj_z})")
     time.sleep(0.3)
 
-    # ── 2. APPROACHING (two-step visual servoing) ────────────────────
-    log_state(State.APPROACHING, "Phase 1 — moving 80% toward object")
+    # ── 2. APPROACHING (single full move) ────────────────────────────
+    # Two-step approach removed — wrist-mounted camera occludes ball during approach (see ADR 003)
+    log_state(State.APPROACHING, "Moving directly to grab position")
 
     # Ensure claw is open before approaching
     send_claw(ser, CLAW_OPEN_POS, label="Ensuring claw is OPEN")
 
-    # 80% move from current (home) position — stay at safe hover height
-    send_partial(
-        ser, arm, obj_x, obj_y, APPROACH_HEIGHT, 0.80,
-        hx, hy, hz,
-        label="Partial approach (80%)",
-        viz=viz,
-    )
-
-    # Visual servoing correction (DISABLED for stability)
-    # correction = vision.refine_detection(colour) ...
-    print("  📸  Skipping correction to maintain grab alignment stability.")
-
-    log_state(State.APPROACHING, "Phase 2 — moving to final grab position")
-
-    # 100% move — descend to grab height
+    # Single full move — descend to grab height in one motion
     send_command(
         ser, arm, obj_x, obj_y, GRAB_HEIGHT,
-        label="Final approach (100%)",
+        label="Full approach to grab position",
         viz=viz,
     )
-
-    # ── MEASUREMENT PAUSE ─────────────────────────────────────────────
-    import math as _math
-    _reach = _math.sqrt(obj_x**2 + obj_y**2)
-    print(f"\n{'='*58}")
-    print("  ⏸  PAUSED AT GRAB POSITION")
-    print(f"{'='*58}")
-    print(f"  Vision target : x={obj_x:.1f}, y={obj_y:.1f}, z={GRAB_HEIGHT}")
-    print(f"  Horiz. reach  : {_reach:.1f} cm from shoulder")
-    print(f"  CAMERA_OFFSET_X = {CAMERA_OFFSET_X:.1f} cm  (from config/arm.py)")
-    print(f"{'─'*58}")
-    print("  📏 MEASURE NOW:")
-    print("     1. Distance from SHOULDER JOINT to the BALL (cm)")
-    print("     2. Distance from SHOULDER JOINT to the CLAW TIP (cm)")
-    print("     3. Claw height above table (cm)")
-    print(f"{'─'*58}")
-    print("  If the claw is SHORT of the ball, INCREASE CAMERA_OFFSET_X")
-    print("  If the claw OVERSHOOTS the ball, DECREASE CAMERA_OFFSET_X")
-    print(f"{'='*58}")
-    print("  📷  Showing live vision feed for verification...")
-    print("  ⌨️   Press [ENTER] in this terminal to continue or [Q] in camera window to skip...")
-    
-    # Simple loop to keep camera feed alive during pause
-    while True:
-        vision.scan_for_balls() # This updates the CV2 window
-        if cv2.waitKey(100) & 0xFF == ord('q'):
-            break
-        # We use a non-blocking check for Enter key (via input with timeout is hard in standard python, 
-        # so we'll just wait for the user to hit Enter in the terminal which will break the main flow)
-        print("  Press ENTER to continue...", end="\r")
-        # In this specific CLI script, we'll just use a normal input() but 
-        # the user can see the window update in the background.
-        break 
-
-    input("  Press ENTER to proceed with GRAB...")
-    print()
 
     # ── 3. GRABBING ──────────────────────────────────────────────────
     log_state(State.GRABBING, f"Closing claw on {colour.upper()} ball")
+    
+    # Optional pause for measurement (as requested by user 2026-04-25)
+    print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {GRAB_HEIGHT:.1f} cm")
+    input("  📏  [MEASURE] Arm is at grab position. Measure height now, then press ENTER to close claw... ")
+
     print(f"  ✊  [CLAW] Closing... (dwell {GRAB_DWELL}s)")
     send_claw(ser, CLAW_CLOSED_POS, label="CLOSE grip")
     time.sleep(GRAB_DWELL)
@@ -481,9 +408,9 @@ def main():
         resp = ser.readline().decode(errors="replace").strip()
         print(f"[INIT] clear_errors response: {resp}")
 
-    # ── Go to HOME on startup (smooth ramp to avoid jerking) ─────────
-    print("\n[INIT] Moving to HOME position on startup (smooth ramp)...")
-    smooth_startup(ser, arm, viz=viz)
+    # ── Go to SCAN_POSE on startup (smooth profile move) ─────────────
+    print("\n[INIT] Moving to SCAN_POSE (home position) on startup...")
+    smooth_startup(ser, viz=viz)
 
     # ── Continuous scan → sort → rescan loop ──────────────────────────
     IDLE_RESCAN_DELAY = 3       # seconds to wait between idle rescans
@@ -493,12 +420,17 @@ def main():
         while True:
             scan_round += 1
 
+            # ── MOVE_TO_SCAN_POSE ─────────────────────────────────────
+            log_state(State.MOVE_TO_SCAN_POSE, f"Preparing for scan round {scan_round}")
+            send_scan_pose(ser, viz=viz)
+
             # ── SCANNING ──────────────────────────────────────────────
             log_state(State.SCANNING, f"Scan round {scan_round}")
+            time.sleep(SCAN_INTERVAL)   # wait SCAN_INTERVAL seconds before capturing frame
             detections = vision.scan_for_balls()
 
             if not detections:
-                # No balls found — stay at HOME and wait before rescanning.
+                # No balls found — wait before rescanning.
                 # Reset round counter so it never "runs out".
                 scan_round = 0
                 print("\n  📷  No objects found — workspace is clear")
@@ -527,7 +459,7 @@ def main():
                   f"{detection['colour'].upper()} at ({detection['x']:.1f}, {detection['y']:.1f})")
 
             run_sorting_cycle(ser, arm, detection, vision, viz=viz)
-            print("\n[DONE] Object processed — rescanning workspace for updated positions...")
+            print("\n[DONE] Object processed — returning to SCAN_POSE for next cycle...")
 
             # In simulation mode, one pass is enough (fake data won't change)
             if not USE_REAL_CAMERA:

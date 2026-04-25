@@ -15,7 +15,7 @@ The following diagram shows the data flow from camera frame to servo command.
 flowchart TD
     subgraph Hardware
         PI["Raspberry Pi 5\n(Host – Python 3.11)"]
-        CAM["OAK-D S2\n(USB-C, 20–25 FPS)"]
+        CAM["OAK-D S2 (wrist-mounted)\n(USB-C, 20–25 FPS)"]
         MCU["OpenRB-150\n(Dynamixel controller)"]
         SERVO["Dynamixel Servos\nJoints 1–4 + Claw"]
         PSU["Dual-output PSU\n12 V + 5 V"]
@@ -29,7 +29,7 @@ flowchart TD
     subgraph IK ["IK & Servoing (src/ik/)"]
         HOM["vision_bridge.py\nHomography: px → cm"]
         SOLVER["solver.py\nGeometric IK + sag compensation"]
-        SERVO_LOOP["vision_bridge.py\nTwo-step visual servoing"]
+        SERVO_LOOP["vision_bridge.py\nScan-pose servoing"]
     end
 
     subgraph Config ["Config (src/config/)"]
@@ -177,7 +177,7 @@ The master control loop in `main.py` implements a state machine that orchestrate
 |---|---|
 | **Input** | Detection dicts from `VisionBridge`, constants from `config/arm.py` |
 | **Output** | Motor commands (JSON) sent via serial to the OpenRB-150 |
-| **States** | `IDLE`, `SCANNING`, `APPROACHING`, `GRABBING`, `SORTING`, `DROPPING`, `DONE` |
+| **States** | `IDLE`, `MOVE_TO_SCAN_POSE`, `SCANNING`, `APPROACHING`, `GRABBING`, `SORTING`, `DROPPING`, `DONE` |
 | **Settle time** | 1.5 s per movement command (`MOVE_SETTLE_TIME`) when using real serial |
 | **File** | [`src/main.py`](../src/main.py) |
 
@@ -190,7 +190,7 @@ Key features:
 - **Sag compensation**: corrects for gravity droop using a linear or quadratic model loaded from `sag_calibration.json`
 - **Shoulder height**: subtracts `shoulder_height` (33.0 cm) to convert workspace Z to the shoulder-relative frame
 - **Joint limits**: clamps motor positions to safe ranges to prevent hardware overload errors
-- **Two-step servoing**: `calculate_partial_move()` interpolates in Cartesian space for a partial (e.g., 80%) approach
+- **Partial approach**: `calculate_partial_move()` interpolates in Cartesian space for a partial (e.g., 80%) approach
 
 | Property | Detail |
 |---|---|
@@ -260,6 +260,7 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 | State | Purpose |
 |---|---|
 | `IDLE` | Arm is at HOME, waiting. Logs detection details before a cycle begins. |
+| `MOVE_TO_SCAN_POSE` | Move the arm to `SCAN_POSE` so the wrist-mounted camera has a valid view of the workspace. |
 | `SCANNING` | `VisionBridge.scan_for_balls()` captures frames and returns detections. |
 | `APPROACHING` | Two-phase approach: 80% partial move at `APPROACH_HEIGHT`, then 100% at `GRAB_HEIGHT`. |
 | `GRABBING` | Close the claw, wait `GRAB_DWELL`, lift to `CLEARANCE_HEIGHT`. |
@@ -276,8 +277,15 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
                           └──────────┬───────────────────────┘
                                      │
                                      ▼
-                              ┌──────────────┐
-                         ┌───►│   SCANNING    │
+                              ┌──────────────────┐
+                         ┌───►│ MOVE_TO_SCAN_POSE │
+                         │    │ move arm to       │
+                         │    │ SCAN_POSE         │
+                         │    └──────┬───────────┘
+                         │           │
+                         │           ▼
+                         │    ┌──────────────┐
+                         │    │   SCANNING    │
                          │    │ scan_for_balls │
                          │    └──────┬───────┘
                          │           │
@@ -330,7 +338,7 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
                          │    │    DONE       │
                          │    └──────┬───────┘
                          │           │
-                         └───────────┘  (rescan workspace)
+                         └───────────┘  (MOVE_TO_SCAN_POSE → rescan)
 ```
 
 ### 3.3 Failure Modes and Recovery
@@ -355,6 +363,12 @@ The `smooth_startup()` function prevents sudden arm jerks on power-on:
 5. Restore normal motion profile (velocity = 80, acceleration = 20)
 
 Falls back to a direct (slow-profile) HOME command if position reading fails.
+
+### 3.5 Wrist-Mounted Camera Constraint
+
+Vision is only valid when the arm is at `SCAN_POSE`. The camera moves with the wrist (motors 1–4), so the homography calibration is only valid at the exact joint configuration where it was performed. Mid-approach visual correction was removed because the claw occludes the target ball during approach.
+
+The state machine enforces this by always transitioning through `MOVE_TO_SCAN_POSE` before entering `SCANNING`, and again after `DROPPING` before the next scan cycle. The flow is: `HOME → MOVE_TO_SCAN_POSE → SCANNING → APPROACHING → GRABBING → SORTING → DROPPING → MOVE_TO_SCAN_POSE → ...`
 
 ---
 
@@ -432,13 +446,13 @@ The five Dynamixel servos (XM430 × 2, XM540 × 1, XL430 × 2) execute the goal 
 |---|---|---|
 | Classical HSV vision over CNN | HSV + Hough + SVM ensemble chosen for deterministic behaviour, no training data requirement, and real-time performance. Three prior attempts (CNN, complex pipeline) failed. | [ADR-001](decisions/001-hsv-over-cnn.md) |
 | Geometric 4-DOF IK | Closed-form solution using Law of Cosines chosen for exact results, fast computation, and predictable behaviour. Sag compensation added as post-processing. | [ADR-002](decisions/002-4dof-geometry.md) |
-| Two-step visual servoing | 80% coarse approach followed by 20% fine correction designed to account for calibration errors, mechanical play, and homography imperfections. Currently disabled in production for stability but infrastructure remains. | [ADR-003](decisions/003-two-step-servoing.md) |
+| Fixed scan pose over continuous visual servoing | Camera is wrist-mounted; vision only works from a fixed `SCAN_POSE`. The arm moves to this known joint configuration before every scan. Homography is calibrated once at this pose. Mid-approach visual correction was removed because the claw occludes the target ball during approach. | [ADR-003](decisions/003-fixed-scan-pose.md) |
 
 ---
 
 ## 6. Calibration Pipeline
 
-The system requires a 9-step calibration pipeline before autonomous operation. Each step builds on previous ones. Total time: approximately 45–70 minutes.
+The system requires a 10-step calibration pipeline before autonomous operation. Each step builds on previous ones. Total time: approximately 55–80 minutes.
 
 ### Phase A — Arm Hardware (no camera needed)
 
@@ -448,6 +462,7 @@ The system requires a 9-step calibration pipeline before autonomous operation. E
 | **1** | Upload `openrb_bridge.ino` | Flash the USB bridge firmware to the OpenRB-150 via Arduino IDE |
 | **2** | `src/calibration/02_joints.py` | Drive each motor one at a time to verify sign conventions, zero positions, and rotation directions |
 | **2b** | `src/calibration/02b_claw.py` | Tune claw open (`CLAW_OPEN_POS`) and close (`CLAW_CLOSED_POS`) positions for reliable gripping |
+| **2c** | Manual | Tune `SCAN_POSE` joint positions for wrist-mounted camera workspace coverage |
 | **3** | `src/calibration/03_sag.py` | Measure gravity droop at 5 reach distances, fit a linear/quadratic compensation model, and save to `sag_calibration.json` |
 
 ### Phase B — Vision Setup (camera needed)

@@ -10,15 +10,14 @@ using a **perspective transform (homography)**.
 
 Calibration
 -----------
-The camera is mounted on a pillar beside the arm base, looking forward and
-slightly downward across the workspace.  A simple pinhole back-projection
-would fail because of the oblique viewing angle.
+The camera is wrist-mounted and moved to a fixed SCAN_POSE before each
+scan.  A homography calibrated at that pose maps any pixel ``(u, v)``
+→ ``(x_cm, y_cm)`` on the workspace plane (Z = 0).
 
-Instead we define four physical corners of the sorting workspace (measured
-in cm relative to the arm shoulder origin) and their corresponding pixel
-positions in the camera frame.  ``cv2.getPerspectiveTransform`` gives us a
-3×3 homography that maps any pixel ``(u, v)`` → ``(x_cm, y_cm)`` on the
-workspace plane (Z = 0).
+Calibration data is stored in ``src/calibration/homography_calibration.json``
+and loaded at construction time.  The JSON also records the motor positions
+(``calibrated_at_scan_pose``) and tolerance used during calibration so we
+can verify the arm is in the correct pose before scanning.
 
 Usage
 -----
@@ -26,7 +25,7 @@ Usage
 
     from vision_bridge import VisionBridge
 
-    bridge = VisionBridge()         # uses defaults or env toggle
+    bridge = VisionBridge()         # loads homography from JSON
     bridge.open()                   # opens OAK camera
     detections = bridge.scan_for_balls()
     # → [{"colour": "red", "x": 20.3, "y": 5.1, "z": 0.0}, ...]
@@ -54,92 +53,40 @@ from vision.camera import OAKCamera
 from vision.detector import SimpleBallDetector, BallColor, DetectedBall
 from config import vision as vcfg
 
-from config.arm import CAMERA_OFFSET_X, CAMERA_OFFSET_Y
+from config.arm import CAMERA_OFFSET_X, CAMERA_OFFSET_Y, SCAN_POSE, SCAN_POSE_TOLERANCE
 
 logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Homography Calibration Points
+#  Homography Calibration Points  (dev-reference defaults)
 # ══════════════════════════════════════════════════════════════════════
 #
-#  ⚠️  CRITICAL: WORKSPACE_CM must be measured from the SHOULDER JOINT
-#     (motor 2 pivot), NOT from the camera pillar or arm base!
-#     CAMERA_OFFSET_X/Y are now 0 — the homography maps directly to
-#     the shoulder-origin frame that the IK solver expects.
+# These hardcoded values are kept as a *reference only*.  At runtime the
+# calibration is loaded from ``homography_calibration.json`` (see
+# ``VisionBridge.__init__``).  Run  python -m src.calibration.06_homography
+# to regenerate the JSON after any physical repositioning.
 #
-#  HOW TO CALIBRATE (run once after any physical repositioning):
+# _DEFAULT_WORKSPACE_PX = np.float32([
+#     [   9,   17],      # TL (top-left)
+#     [ 619,   16],      # TR (top-right)
+#     [ 618,  381],      # BR (bottom-right)
+#     [  23,  378]       # BL (bottom-left)
+# ])
 #
-#  1. Place 4 markers at known positions on your workspace (e.g. the
-#     corners of an A3 sheet, or tape marks).
-#
-#  2. Measure each marker's (x, y) in cm FROM THE SHOULDER JOINT:
-#       x = forward (away from arm base)
-#       y = left(+) / right(−)
-#
-#  3. Run  python src/calibration/06_homography.py  — it shows the camera feed
-#     and lets you click each marker to capture pixel coordinates.
-#     Alternatively, hover over each marker to read pixel coords.
-#
-#  4. Fill in the two arrays below so that WORKSPACE_PX[i] corresponds
-#     to the same physical corner as WORKSPACE_CM[i].
-#
-#  Order: top-left, top-right, bottom-right, bottom-left
-#  (when looking at the camera image).
-#
-# ──────────────────────────────────────────────────────────────────────
+# _DEFAULT_WORKSPACE_CM = np.float32([
+#     [28.0,  22.0],   # top-left      → 28cm far, 22cm left
+#     [28.0, -22.0],   # top-right     → 28cm far, 22cm right
+#     [10.0, -22.0],   # bottom-right  → 10cm near, 22cm right
+#     [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
+# ])
 
-# ── Default (hardcoded) calibration values ────────────────────────────
-# These are used as fallback when no calibration file exists.
-# Run  python src/calibration/06_homography.py  to generate an updated file.
-_DEFAULT_WORKSPACE_PX = np.float32([
-    [   9,   17],      # TL (top-left)
-    [ 619,   16],      # TR (top-right)
-    [ 618,  381],      # BR (bottom-right)
-    [  23,  378]       # BL (bottom-left)
-])
-
-_DEFAULT_WORKSPACE_CM = np.float32([
-    [28.0,  22.0],   # top-left      → 28cm far, 22cm left
-    [28.0, -22.0],   # top-right     → 28cm far, 22cm right
-    [10.0, -22.0],   # bottom-right  → 10cm near, 22cm right
-    [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
-])
-
-# ── Load calibration from JSON (auto-saved by 06_homography.py) ─
+# ── Calibration JSON path (auto-saved by 06_homography.py) ───────────
 _CALIBRATION_FILE = (
     Path(__file__).resolve().parent.parent
     / "calibration"
     / "homography_calibration.json"
 )
-
-
-def _load_calibration() -> Tuple[np.ndarray, np.ndarray]:
-    """Load WORKSPACE_PX and WORKSPACE_CM from the calibration JSON file.
-
-    Returns the saved arrays if the file exists and is valid, otherwise
-    falls back to the hardcoded defaults above.
-    """
-    if _CALIBRATION_FILE.is_file():
-        try:
-            with open(_CALIBRATION_FILE, "r") as f:
-                data = json.load(f)
-            px = np.float32(data["workspace_px"])
-            cm = np.float32(data["workspace_cm"])
-            if px.shape == (4, 2) and cm.shape == (4, 2):
-                logger.info(f"[VISION] ✅ Loaded calibration from {_CALIBRATION_FILE.name}")
-                return px, cm
-            else:
-                logger.warning("[VISION] ⚠️  Calibration file has unexpected shape — using defaults")
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            logger.warning(
-                f"[VISION] ⚠️  Could not parse {_CALIBRATION_FILE.name}: {exc} — using defaults",
-                exc_info=True,
-            )
-    return _DEFAULT_WORKSPACE_PX, _DEFAULT_WORKSPACE_CM
-
-
-WORKSPACE_PX, WORKSPACE_CM = _load_calibration()
 
 
 # Colour → BGR mapping for OpenCV drawing
@@ -158,14 +105,15 @@ class VisionBridge:
         - ``use_camera=False`` → returns canned fake detections (for
           testing the state machine and 3-D visualiser without hardware)
 
+    At construction time, loads the homography calibration from
+    ``src/calibration/homography_calibration.json``.  If the JSON also
+    contains ``calibrated_at_scan_pose`` and ``tolerance``, those are
+    stored for runtime pose verification (see :meth:`verify_pose`).
+
     Parameters
     ----------
     use_camera : bool
         Set ``True`` to use the real OAK camera.
-    workspace_px : np.ndarray, optional
-        4×2 array of workspace corner pixel coordinates.
-    workspace_cm : np.ndarray, optional
-        4×2 array of corresponding real-world cm coordinates.
     """
 
     # ── Fake detections for simulation mode ───────────────────────────
@@ -177,8 +125,6 @@ class VisionBridge:
     def __init__(
         self,
         use_camera: bool = False,
-        workspace_px: Optional[np.ndarray] = None,
-        workspace_cm: Optional[np.ndarray] = None,
     ) -> None:
         self.use_camera = use_camera
         self._cam: Optional[OAKCamera] = None
@@ -193,10 +139,73 @@ class VisionBridge:
         self._conf_history: List[float] = []
         self._CONF_SMOOTH: int = 30  # rolling average window size
 
-        # Build homography matrix from calibration points
-        px = workspace_px if workspace_px is not None else WORKSPACE_PX
-        cm = workspace_cm if workspace_cm is not None else WORKSPACE_CM
-        self._homography = cv2.getPerspectiveTransform(px, cm)
+        # ── Load homography calibration from JSON ─────────────────────
+        if not _CALIBRATION_FILE.is_file():
+            raise FileNotFoundError(
+                "No homography calibration found. "
+                "Run 'python -m src.calibration.06_homography' first."
+            )
+
+        with open(_CALIBRATION_FILE, "r") as fh:
+            cal = json.load(fh)
+
+        workspace_px = np.float32(cal["workspace_px"])
+        workspace_cm = np.float32(cal["workspace_cm"])
+
+        # The homography may be pre-computed in the JSON (3×3 list-of-lists)
+        # or we can derive it from the four corner pairs.
+        if "homography" in cal:
+            self._homography = np.float64(cal["homography"])
+        else:
+            self._homography = cv2.getPerspectiveTransform(
+                workspace_px, workspace_cm
+            )
+
+        # Scan-pose verification data (backwards-compatible with older JSONs)
+        self._calibrated_scan_pose: dict = cal.get(
+            "calibrated_at_scan_pose", SCAN_POSE
+        )
+        self._scan_pose_tolerance: int = cal.get(
+            "tolerance", SCAN_POSE_TOLERANCE
+        )
+
+        logger.info(
+            "[VISION] ✅ Loaded calibration from %s  "
+            "(scan_pose=%s, tolerance=%d)",
+            _CALIBRATION_FILE.name,
+            self._calibrated_scan_pose,
+            self._scan_pose_tolerance,
+        )
+
+    # ── Pose verification ─────────────────────────────────────────────
+
+    def verify_pose(self, current_motor_positions: dict) -> bool:
+        """Check if the arm is at the calibrated SCAN_POSE within tolerance.
+
+        Args:
+            current_motor_positions: dict with keys ``"m1"`` through ``"m5"``
+                and int step values.
+
+        Returns:
+            True if all motors are within tolerance of the calibrated scan
+            pose.
+        """
+        ok = True
+        for motor_key in ("m1", "m2", "m3", "m4", "m5"):
+            expected = self._calibrated_scan_pose.get(motor_key)
+            actual = current_motor_positions.get(motor_key)
+            if expected is None or actual is None:
+                continue
+            delta = abs(int(actual) - int(expected))
+            if delta > self._scan_pose_tolerance:
+                logger.warning(
+                    "[VISION] ⚠️  Motor %s is %d steps from SCAN_POSE "
+                    "(expected %d, got %d, tolerance %d)",
+                    motor_key, delta, expected, actual,
+                    self._scan_pose_tolerance,
+                )
+                ok = False
+        return ok
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -496,6 +505,14 @@ class VisionBridge:
 
         In simulation mode, returns canned fake detections.
 
+        .. important::
+
+           The caller (typically ``main.py``) is responsible for moving
+           the arm to ``SCAN_POSE`` **before** calling this method.
+           VisionBridge does not have direct access to the serial/motor
+           layer; use :meth:`verify_pose` from the caller if you want
+           an explicit check.
+
         Parameters
         ----------
         num_frames : int
@@ -573,53 +590,7 @@ class VisionBridge:
         logger.info(f"[VISION] 📷 Detected {len(detections)} ball(s): {colour_summary}")
         return detections
 
-    # ── Visual servoing helper ────────────────────────────────────────
-
-    def refine_detection(self, approximate_colour: str) -> Optional[dict]:
-        """Take a fresh image and return the best detection matching *colour*.
-
-        Used during the APPROACHING state (after the 80% move) to get an
-        updated position for the final 20% correction.
-
-        Parameters
-        ----------
-        approximate_colour : str
-            ``"red"`` or ``"blue"`` — filters detections to this colour only.
-
-        Returns
-        -------
-        dict or None
-            Updated ``{"colour", "x", "y", "z"}`` or ``None`` if the ball
-            is no longer visible (arm may be occluding it).
-        """
-        if not self.use_camera:
-            # In simulation mode, return the fake detection for this colour
-            # so the pick-and-place cycle can proceed normally.
-            for det in self._FAKE_DETECTIONS:
-                if det["colour"] == approximate_colour:
-                    logger.info(
-                        f"  📸 [VISION] Correction image — returning fake "
-                        f"({det['x']}, {det['y']}) (simulation)"
-                    )
-                    return dict(det)
-            logger.info("  📸 [VISION] Correction image — no match (simulation)")
-            return None
-
-        detections = self.scan_for_balls(num_frames=3)
-        matches = [d for d in detections if d["colour"] == approximate_colour]
-
-        if not matches:
-            logger.warning(f"  📸 [VISION] Correction — {approximate_colour} ball not visible")
-            return None
-
-        # Return the highest-confidence match (scan_for_balls already
-        # uses pick-best logic, so just take the first)
-        best = matches[0]
-        logger.info(
-            f"  📸 [VISION] Correction — {approximate_colour} now at "
-            f"({best['x']}, {best['y']})"
-        )
-        return best
+    # refine_detection() removed — wrist-mounted camera occludes ball during approach (see ADR 003)
 
     # ── Context manager ───────────────────────────────────────────────
 

@@ -310,7 +310,7 @@ significantly different from their actual positions (> 2 cm error).
 
 | Cause | Fix |
 |-------|-----|
-| Corner positions measured from camera pillar instead of shoulder joint | Re-measure all 4 corners from the **shoulder joint** (motor 2 pivot). CAMERA_OFFSET_X/Y should be 0.0. |
+| Corner positions measured incorrectly (not from shoulder joint) | Re-measure all 4 corners from the **shoulder joint** (motor 2 pivot). CAMERA_OFFSET_X/Y should be 0.0. Ensure arm is at SCAN_POSE during calibration. |
 | Clicked wrong pixel positions during calibration | Re-run `python src/calibration/06_homography.py` and click more carefully |
 | Camera has moved since calibration | Re-run Step 6 |
 | Using default hardcoded calibration instead of JSON | Check that `homography_calibration.json` exists in the `src/calibration/` directory |
@@ -361,6 +361,69 @@ the camera views at a steeper angle will have parallax error.
    — run Step 6b.
 2. A 5 cm camera height error causes ~3 mm parallax at edges.
 3. Keep the workspace surface flat and level.
+
+---
+
+## 4b  Wrist-mounted camera issues
+
+### 4b.1  Balls detected at wrong coordinates
+
+**Symptom:** The vision bridge reports ball positions that are offset from
+their actual positions, even though the homography was recently calibrated.
+
+**Root cause:** Most likely the arm wasn't at `SCAN_POSE` when vision ran.
+The wrist-mounted camera's homography is only valid at the exact joint
+configuration where it was calibrated.
+
+**Fix:**
+1. Check logs for the `verify_pose` warning — this indicates the arm was
+   not at `SCAN_POSE` when scanning began.
+2. If `SCAN_POSE` was changed without recalibrating homography, redo
+   Step 06 (`python src/calibration/06_homography.py`).
+3. Verify the arm consistently reaches `SCAN_POSE` before scanning by
+   watching the state machine transitions.
+
+### 4b.2  Claw appears in camera view during scanning
+
+**Symptom:** The camera image shows part of the claw assembly, potentially
+causing false detections or occluding the workspace.
+
+**Root cause:** `SCAN_POSE` wrist angle (m4) is wrong; the camera is
+looking partly at its own claw.
+
+**Fix:** Re-tune Step 02c — adjust the m4 (wrist tilt) value in
+`SCAN_POSE` so the camera looks past the claw. The claw should be fully
+open during scanning.
+
+### 4b.3  Camera doesn't see the whole workspace
+
+**Symptom:** Balls placed at the edges of the workspace are not detected
+because they fall outside the camera's field of view at `SCAN_POSE`.
+
+**Root cause:** The camera height or angle at `SCAN_POSE` doesn't provide
+sufficient coverage. The OAK-D S2 with 81° HFOV covers roughly a 50×30 cm
+area at 30 cm height.
+
+**Fix:**
+1. Lift the arm higher (adjust m2 shoulder value in `SCAN_POSE`).
+2. Tilt the wrist more (adjust m4 in `SCAN_POSE`).
+3. Alternatively, shrink the workspace boundaries in the homography
+   calibration (Step 06).
+
+### 4b.4  Coordinate accuracy degraded after some operation
+
+**Symptom:** Pick accuracy was good initially but has degraded over time
+or after certain operations.
+
+**Root cause:** Motor positions may have drifted from `SCAN_POSE` between
+operations due to loose belts, slipped gears, or hardware errors.
+
+**Fix:**
+1. Re-run Step 02c verification — manually check that the arm reaches the
+   expected `SCAN_POSE` joint positions.
+2. Use `python src/diagnostics/diagnose_motors.py` to check for motor errors.
+3. If positions have drifted, re-calibrate `SCAN_POSE` (Step 02c) and then
+   re-run the homography calibration (Step 06).
 
 ---
 

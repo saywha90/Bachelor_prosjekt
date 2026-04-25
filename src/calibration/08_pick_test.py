@@ -46,7 +46,7 @@ MOVE_SETTLE = 1.5
 # Identical lazy-singleton pattern used by calibrate_joints.py,
 # calibrate_sag.py, and calibrate_claw.py.
 
-SERIAL_PORT = "/dev/cu.usbmodem101"
+SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call

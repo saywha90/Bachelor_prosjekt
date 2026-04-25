@@ -330,13 +330,19 @@ class SimpleBallDetector:
         ]
 
         # Multi-range HSV thresholds for BLUE
-        # ✅ KALIBRERT live med diagnose_detection.py — egne målinger på faktiske baller
-        # Målte piksler: H=103-110, S=174-255, V=92-200
+        # ✅ Utvidet 2026-04-25 for å dekke mørk marineblå (navy) i tillegg til lyseblå.
+        # Lyseblå (tidligere kalibrert): H=103-110, S=174-255, V=92-200
+        # Mørk marineblå (navy):         H=100-130, S=80-180,  V=20-130
+        #
+        # Adaptive "high" lighting legger til +10 på S_min og V_min, så reelle
+        # effektive gulv under sterkt lys er:
+        #   Range 1: S≥160, V≥60  (lyseblå)
+        #   Range 2: S≥90,  V≥30  (mørk navy)
         self.blue_ranges = [
-            # Blå — primær range (høy metning, kjernen av ballen)
-            (np.array([100, 200,  85]), np.array([115, 255, 255])),
-            # Litt bredere for kant-piksler (målte S ned til 174)
-            (np.array([ 98, 170,  85]), np.array([118, 255, 255])),
+            # Blå — primær range (lyseblå, høy metning)
+            (np.array([100, 150,  50]), np.array([130, 255, 255])),
+            # Mørk marineblå (navy) — lavere S og V, bredere H
+            (np.array([ 95,  80,  20]), np.array([130, 255, 180])),
         ]
         
         # Morphological kernels for noise reduction.
@@ -726,9 +732,10 @@ class SimpleBallDetector:
         sat_ch = roi[:, :, 1]
         val_ch = roi[:, :, 2]
         
-        # Strammere sat/val-sjekk for å avvise feil fra Hough (f.eks. rød kube eller bobleplast).
-        # Må matche minst de faktiske HSV-maskenes minimumskrav (sat >= 120 for rød).
-        valid_mask = (sat_ch >= 120) & (val_ch >= 70)
+        # sat/val-sjekk for å avvise feil fra Hough (f.eks. rød kube eller bobleplast).
+        # V-terskel senket fra 70 → 30 for å inkludere mørk marineblå (navy, V≈20-120).
+        # S≥100 krever fortsatt moderat metning — ekskluderer grå/hvit bakgrunn.
+        valid_mask = (sat_ch >= 100) & (val_ch >= 30)
         valid_pixels = int(np.sum(valid_mask))
 
         # Krev at minst 50% av ROI-pikslene er klare farger (var 25%).

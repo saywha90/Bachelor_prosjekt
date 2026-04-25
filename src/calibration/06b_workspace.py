@@ -19,13 +19,80 @@ Author: Bachelor Project 2026 – Autonomia
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+import json
 import time
 import math
 from pathlib import Path
 
 
-from config.arm import CAMERA_HEIGHT
+from config.arm import CAMERA_HEIGHT, SCAN_POSE
 from ik.solver import ArmIK
+
+# ── Serial settings (same as 06_homography.py) ───────────────────────
+SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_BAUD = 115200
+
+_ser = None  # lazily initialised on first call
+
+
+# ── Serial helpers (pattern from 06_homography.py) ───────────────────
+
+def _get_serial():
+    """Return the shared serial connection, opening it on first use."""
+    global _ser
+    if _ser is None:
+        import serial
+        print(f"[SERIAL] Opening {SERIAL_PORT} @ {SERIAL_BAUD} …")
+        _ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
+        time.sleep(3)  # wait for OpenRB-150 to boot
+
+        # Drain any boot messages
+        boot_msg = ""
+        while _ser.in_waiting:
+            boot_msg += _ser.readline().decode(errors="replace").strip() + " "
+        if not boot_msg.strip():
+            boot_msg = _ser.readline().decode(errors="replace").strip()
+        print(f"[SERIAL] OpenRB says: {boot_msg.strip()}")
+
+        # Re-enable torque
+        cmd = json.dumps({"cmd": "enable_torque"})
+        _ser.write((cmd + "\n").encode())
+        _ser.readline()
+
+        # Set a conservative motion profile so large jumps are slow
+        cmd = json.dumps({"cmd": "set_profile", "vel": 40, "acc": 10})
+        _ser.write((cmd + "\n").encode())
+        _ser.readline()
+        print("[SERIAL] Ready (profile: vel=40, acc=10)")
+    return _ser
+
+
+def send_command(positions: dict):
+    """Send a dict of motor positions (e.g. {"m1": 2048, …}) to the OpenRB.
+
+    The firmware expects a JSON object with keys m1–m5 containing
+    Dynamixel step values (0–4095).  Returns the firmware response string.
+    """
+    ser = _get_serial()
+    cmd_json = json.dumps(positions)
+    ser.write((cmd_json + "\n").encode())
+    resp = ser.readline().decode(errors="replace").strip()
+    if resp != "OK":
+        print(f"  ⚠️  Unexpected response: {resp}")
+    return resp
+
+
+def _move_to_scan_pose():
+    """Connect to the OpenRB-150 and command the arm to SCAN_POSE.
+
+    Waits 2 seconds after sending the command for the motion to settle.
+    """
+    print("[ARM] Moving arm to SCAN_POSE for calibration...")
+    pose_str = ", ".join(f"{k}={v}" for k, v in SCAN_POSE.items())
+    print(f"[ARM] Target: {pose_str}")
+    send_command(SCAN_POSE)
+    time.sleep(2)  # wait for motion to settle
+    print("[ARM] ✅ Arm is at SCAN_POSE.\n")
 
 # ── Test positions: corners + centre of arm workspace ─────────────────
 TEST_POSITIONS = [
@@ -208,6 +275,30 @@ def main():
     print("║  You'll need: a ruler, a coloured ball, and both the     ║")
     print("║  camera and arm connected.                               ║")
     print("╚═══════════════════════════════════════════════════════════╝")
+
+    # ── Step 0: Connect to OpenRB-150 and move arm to SCAN_POSE ───────
+    print("\n[INIT] Connecting to OpenRB-150 and moving arm to SCAN_POSE...")
+    try:
+        _move_to_scan_pose()
+        if _ser is not None:
+            _ser.close()
+    except Exception as e:
+        err_str = str(e)
+        if ("No such file or directory" in err_str
+                or "Errno 2" in err_str
+                or "could not open port" in err_str.lower()):
+            print(f"\n  ⚠️  Serial port not found: {e}")
+            print(f"       (Expected port: {SERIAL_PORT})")
+            print("       Make sure the arm is manually moved to SCAN_POSE.")
+            ans = input("  Is the arm already at SCAN_POSE? (y/n): ").strip().lower()
+            if ans != 'y':
+                print("  ❌ Please move the arm to SCAN_POSE and re-run this script.")
+                return
+            print("  [ARM] ✅ Arm is at SCAN_POSE (confirmed by user).")
+        else:
+            print(f"\n  ❌ Could not connect to OpenRB-150 or move arm: {e}")
+            print("     Check serial connection and try again.")
+            return
 
     # ── Phase 1: Camera height ────────────────────────────────────────
     measured = _phase_camera_height()

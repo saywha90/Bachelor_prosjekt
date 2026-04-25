@@ -17,6 +17,7 @@ See [`docs/calibration.md`](../../docs/calibration.md) for full instructions for
 |---|---|---|
 | `02_joints.py` | 02 | Joint range + direction verification |
 | `02b_claw.py` | 02b | Claw open/close calibration |
+| `02c_scan_pose.py` | 02c | Interactive SCAN_POSE tuner: connects to the arm, opens live camera, lets you nudge motors with keyboard and saves the final pose to `src/config/arm.py` |
 | `03_sag.py` | 03 | Gravity sag compensation table |
 | `04_hsv_tuner.py` | 04 | Interactive HSV colour range tuning |
 | `05_hsv_refine.py` | 05 | HSV threshold refinement |

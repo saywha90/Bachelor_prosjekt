@@ -1,0 +1,43 @@
+{
+  "test_z_cm": 5.0,
+  "measurements": [
+    {
+      "reach": 12.0,
+      "commanded_z": 5.0,
+      "measured_z": 10.0
+    },
+    {
+      "reach": 18.0,
+      "commanded_z": 5.0,
+      "measured_z": 5.0
+    },
+    {
+      "reach": 24.0,
+      "commanded_z": 5.0,
+      "measured_z": 3.0
+    },
+    {
+      "reach": 30.0,
+      "commanded_z": 5.0,
+      "measured_z": 2.0
+    },
+    {
+      "reach": 36.0,
+      "commanded_z": 5.0,
+      "measured_z": 1.0
+    }
+  ],
+  "linear": {
+    "z_offset_multiplier": 0.34999999999999976,
+    "intercept": -7.599999999999993,
+    "rmse_cm": 1.1575836902790224
+  },
+  "quadratic": {
+    "a": -0.01785714285714283,
+    "b": 1.2071428571428557,
+    "c": -16.59999999999998,
+    "rmse_cm": 0.4276179870598795
+  },
+  "recommended_model": "quadratic",
+  "timestamp": "2026-04-25 15:04:51"
+}

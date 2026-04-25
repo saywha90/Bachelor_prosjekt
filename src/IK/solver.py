@@ -35,12 +35,12 @@ class ArmIK:
     # Measured from the real robot on 2026-04-21
     L1: float = 25.5   # Shoulder → Elbow
     L2: float = 23.0   # Elbow   → Wrist pivot
-    L3: float = 16.5   # Wrist pivot → Claw tip (end-effector offset)
+    L3: float = 20.5   # Wrist pivot → Claw tip (updated from 16.5 on 2026-04-25)
 
     # ── Dynamixel constants ────────────────────────────────────────────
     STEPS_PER_REV: int = 4096
     STEP_CENTRE: int = 2048        # 180° = "neutral" (used by motors 2-5)
-    M1_CENTRE: int = 1012          # Physically measured center for motor 1 (base/shoulder rotation)
+    M1_CENTRE: int = 2048          # Center for motor 1 (base pan) — same as Dynamixel centre (2048 = straight ahead)
     DEG_PER_STEP: float = 360.0 / 4096.0
     RAD_PER_STEP: float = (2.0 * math.pi) / 4096.0
 
@@ -52,8 +52,9 @@ class ArmIK:
     #   z_correction = horizontal_reach * z_offset_multiplier
     #
     #   Tune this value empirically on your physical arm.
-    z_offset_multiplier: float = 0.04   # Reduced from 0.08; tune empirically if arm still hovers
+    z_offset_multiplier: float = 0.14   # Increased from 0.04 to compensate for ~6cm sag at far reach
     z_offset_quadratic: float = 0.0     # quadratic sag coefficient (reach^2 term)
+    z_offset_constant: float = 0.0      # constant vertical offset (intercept)
     sag_model: str = "linear"           # "linear" or "quadratic"
 
     # ── Shoulder height above the workspace plane (cm) ─────────────────
@@ -61,12 +62,12 @@ class ArmIK:
     #   picks from, set this so the Z math references the shoulder as
     #   origin.  Set to 0 if your coordinate frame already accounts for
     #   this.
-    shoulder_height: float = 33.0
+    shoulder_height: float = 11.0
 
     # ── Floor / hover constraint (cm) ─────────────────────────────────
     #   Minimum allowed Z for the claw tip.  Set to 12.0 so the arm
     #   can reach down to grab objects near the desk surface.
-    Z_MIN: float = 6.0
+    Z_MIN: float = 1.5
 
     # ── Joint limits (Dynamixel steps) ────────────────────────────────
     #   Safe operating ranges for each motor to prevent overload errors.
@@ -90,6 +91,7 @@ class ArmIK:
         l3: Optional[float] = None,
         z_offset_multiplier: Optional[float] = None,
         z_offset_quadratic: Optional[float] = None,
+        z_offset_constant: Optional[float] = None,
         sag_model: Optional[str] = None,
         shoulder_height: Optional[float] = None,
     ) -> None:
@@ -103,13 +105,15 @@ class ArmIK:
             self.z_offset_multiplier = z_offset_multiplier
         if z_offset_quadratic is not None:
             self.z_offset_quadratic = z_offset_quadratic
+        if z_offset_constant is not None:
+            self.z_offset_constant = z_offset_constant
         if sag_model is not None:
             self.sag_model = sag_model
         if shoulder_height is not None:
             self.shoulder_height = shoulder_height
 
         # Auto-load sag calibration if file exists and no explicit overrides given
-        if z_offset_multiplier is None and z_offset_quadratic is None:
+        if z_offset_multiplier is None and z_offset_quadratic is None and z_offset_constant is None:
             self._load_sag_calibration()
 
     def _load_sag_calibration(self) -> None:
@@ -126,12 +130,14 @@ class ArmIK:
                 self.sag_model = "quadratic"
                 self.z_offset_quadratic = cal["quadratic"]["a"]
                 self.z_offset_multiplier = cal["quadratic"]["b"]
+                self.z_offset_constant = cal["quadratic"].get("c", 0.0)
             elif "linear" in cal:
                 self.sag_model = "linear"
                 self.z_offset_multiplier = cal["linear"]["z_offset_multiplier"]
+                self.z_offset_constant = cal["linear"].get("intercept", 0.0)
             logger.info(
-                "[ArmIK] Loaded sag calibration: model=%s, multiplier=%.4f, quadratic=%.6f",
-                self.sag_model, self.z_offset_multiplier, self.z_offset_quadratic,
+                "[ArmIK] Loaded sag calibration: model=%s, mult=%.4f, quad=%.6f, const=%.4f",
+                self.sag_model, self.z_offset_multiplier, self.z_offset_quadratic, self.z_offset_constant,
             )
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("[ArmIK] Failed to load sag calibration: %s", e)
@@ -189,9 +195,9 @@ class ArmIK:
         # ── 2. Sag / droop compensation (linear or quadratic model) ──
         horiz_reach = math.sqrt(x ** 2 + y ** 2)
         if self.sag_model == "quadratic" and self.z_offset_quadratic != 0.0:
-            z_ik += (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier
+            z_ik += (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier + self.z_offset_constant
         else:
-            z_ik += horiz_reach * self.z_offset_multiplier
+            z_ik += horiz_reach * self.z_offset_multiplier + self.z_offset_constant
 
         # ── 3. Account for shoulder height ────────────────────────────
         z_ik -= self.shoulder_height
@@ -271,7 +277,7 @@ class ArmIK:
         theta_wrist = (-math.pi / 2.0) - (theta_shoulder - theta_elbow)
 
         # ── 9. Convert to Dynamixel steps ────────────────────────────
-        # Motor 1 uses M1_CENTRE (1012) — physically measured center.
+        # Motor 1 uses M1_CENTRE (2048) — Dynamixel centre = straight ahead.
         m1 = max(0, min(self.STEPS_PER_REV - 1,
                         int(round(self.M1_CENTRE + theta_base / self.RAD_PER_STEP))))
         # m2=2048 is upper arm VERTICAL (straight up), not horizontal.

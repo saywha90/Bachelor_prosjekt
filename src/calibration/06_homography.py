@@ -4,12 +4,17 @@
 Interactive tool to calibrate the 4-point homography that maps camera
 pixels → shoulder-relative centimetres.
 
+**Wrist-mounted camera workflow** — the arm moves to ``SCAN_POSE``
+before the camera opens so the wrist-mounted OAK-D sees the full
+workspace from the correct vantage point.
+
 Usage
 -----
-    python src/calibration/06_homography.py
+    python -m src.calibration.06_homography
 
 Workflow
 --------
+  0. The script connects to the OpenRB-150 and moves the arm to SCAN_POSE.
   1. The camera opens and shows a live feed.
   2. Click the 4 workspace corners IN ORDER:
        TL (top-left) → TR (top-right) → BR (bottom-right) → BL (bottom-left)
@@ -20,7 +25,9 @@ Workflow
        a. Computes the homography.
        b. Prints the exact WORKSPACE_PX / WORKSPACE_CM Python code to
           paste into vision_bridge.py.
-       c. Reopens the camera for live verification with ball detection.
+       c. Saves calibration (including SCAN_POSE metadata) to
+          homography_calibration.json.
+       d. Reopens the camera for live verification with ball detection.
 
 Press 'r' during the click phase to reset all points and start over.
 Press 'q' or Ctrl+C at any time to quit.
@@ -34,6 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import json
 import time
+from datetime import date
 from pathlib import Path
 from typing import List, Tuple
 
@@ -44,6 +52,7 @@ import numpy as np
 from vision.camera import OAKCamera
 from vision.detector import SimpleBallDetector, BallColor
 from config import vision as vcfg
+from config.arm import SCAN_POSE, SCAN_POSE_TOLERANCE
 
 # ── Constants ─────────────────────────────────────────────────────────
 CORNER_NAMES = ["TL (top-left)", "TR (top-right)", "BR (bottom-right)", "BL (bottom-left)"]
@@ -51,10 +60,78 @@ CORNER_COLORS = [(0, 255, 0), (255, 255, 0), (0, 0, 255), (255, 0, 255)]
 WINDOW_NAME = "Homography Calibration"
 CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.json"
 
+# ── Serial settings (same as 02_joints.py / 02b_claw.py) ─────────────
+SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_BAUD = 115200
+
+_ser = None  # lazily initialised on first call
+
 # ── Global state for mouse callback ──────────────────────────────────
 _clicked_points: List[Tuple[int, int]] = []
 _current_mouse: Tuple[int, int] = (0, 0)
 
+
+# ── Serial helpers (pattern from 02_joints.py) ───────────────────────
+
+def _get_serial():
+    """Return the shared serial connection, opening it on first use."""
+    global _ser
+    if _ser is None:
+        import serial
+        print(f"[SERIAL] Opening {SERIAL_PORT} @ {SERIAL_BAUD} …")
+        _ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
+        time.sleep(3)  # wait for OpenRB-150 to boot
+
+        # Drain any boot messages
+        boot_msg = ""
+        while _ser.in_waiting:
+            boot_msg += _ser.readline().decode(errors="replace").strip() + " "
+        if not boot_msg.strip():
+            boot_msg = _ser.readline().decode(errors="replace").strip()
+        print(f"[SERIAL] OpenRB says: {boot_msg.strip()}")
+
+        # Re-enable torque
+        cmd = json.dumps({"cmd": "enable_torque"})
+        _ser.write((cmd + "\n").encode())
+        _ser.readline()
+
+        # Set a conservative motion profile so large jumps are slow
+        cmd = json.dumps({"cmd": "set_profile", "vel": 40, "acc": 10})
+        _ser.write((cmd + "\n").encode())
+        _ser.readline()
+        print("[SERIAL] Ready (profile: vel=40, acc=10)")
+    return _ser
+
+
+def send_command(positions: dict):
+    """Send a dict of motor positions (e.g. {"m1": 2048, …}) to the OpenRB.
+
+    The firmware expects a JSON object with keys m1–m5 containing
+    Dynamixel step values (0–4095).  Returns the firmware response string.
+    """
+    ser = _get_serial()
+    cmd_json = json.dumps(positions)
+    ser.write((cmd_json + "\n").encode())
+    resp = ser.readline().decode(errors="replace").strip()
+    if resp != "OK":
+        print(f"  ⚠️  Unexpected response: {resp}")
+    return resp
+
+
+def _move_to_scan_pose():
+    """Connect to the OpenRB-150 and command the arm to SCAN_POSE.
+
+    Waits 2 seconds after sending the command for the motion to settle.
+    """
+    print("[ARM] Moving arm to SCAN_POSE for calibration...")
+    pose_str = ", ".join(f"{k}={v}" for k, v in SCAN_POSE.items())
+    print(f"[ARM] Target: {pose_str}")
+    send_command(SCAN_POSE)
+    time.sleep(2)  # wait for motion to settle
+    print("[ARM] ✅ Arm is at SCAN_POSE.\n")
+
+
+# ── Mouse / drawing helpers ──────────────────────────────────────────
 
 def _mouse_callback(event, x, y, flags, param):
     """Handle mouse events on the calibration window."""
@@ -155,11 +232,18 @@ def _save_calibration(pixel_points: List[Tuple[int, int]],
     The file is written to ``CALIBRATION_FILE`` (``homography_calibration.json``
     next to this script).  ``vision_bridge.py`` loads it at import time so
     no manual editing of source files is needed.
+
+    The expanded schema includes ``calibrated_at_scan_pose`` and
+    ``tolerance`` so downstream code can verify the arm is at the correct
+    pose before trusting the homography.
     """
     data = {
+        "calibrated_at_scan_pose": {k: int(v) for k, v in SCAN_POSE.items()},
+        "tolerance": int(SCAN_POSE_TOLERANCE),
         "workspace_px": [list(map(int, pt)) for pt in pixel_points],
         "workspace_cm": [list(map(float, pt)) for pt in cm_points],
         "homography": homography.tolist(),
+        "calibration_date": date.today().isoformat(),
     }
     with open(CALIBRATION_FILE, "w") as f:
         json.dump(data, f, indent=2)
@@ -232,10 +316,11 @@ def main():
     global _clicked_points
 
     print("╔══════════════════════════════════════════════════════════════╗")
-    print("║        HOMOGRAPHY CALIBRATION TOOL                         ║")
+    print("║        HOMOGRAPHY CALIBRATION TOOL  (wrist-mounted cam)    ║")
     print("╠══════════════════════════════════════════════════════════════╣")
     print("║  This tool calibrates the pixel → cm mapping.              ║")
     print("║                                                            ║")
+    print("║  Step 0: Arm moves to SCAN_POSE (wrist camera overhead)    ║")
     print("║  Step 1: Click 4 corners on the camera feed (TL→TR→BR→BL) ║")
     print("║  Step 2: Type the physical (x, y) from shoulder joint      ║")
     print("║  Step 3: Verify with a ball at a known position            ║")
@@ -243,7 +328,16 @@ def main():
     print("║  Keys: 'r' = reset | 'q' = quit                           ║")
     print("╚══════════════════════════════════════════════════════════════╝\n")
 
-    # Open camera
+    # ── Step 0: Connect to OpenRB-150 and move arm to SCAN_POSE ───────
+    print("[INIT] Connecting to OpenRB-150 and moving arm to SCAN_POSE...")
+    try:
+        _move_to_scan_pose()
+    except Exception as e:
+        print(f"❌ Could not connect to OpenRB-150 or move arm: {e}")
+        print("   Check serial connection and try again.")
+        return
+
+    # ── Step 1: Open camera ───────────────────────────────────────────
     print("[INIT] Opening OAK-D camera...")
     cam = OAKCamera(resolution=vcfg.CAMERA_RESOLUTION)
     if not cam.open():
@@ -310,7 +404,14 @@ def main():
     # ── Phase 2: Ask physical coordinates (terminal only) ─────────────
     print(f"\n{'─'*60}")
     print("  📏  Now enter the physical coordinates for each corner.")
-    print("       Measure from the SHOULDER JOINT (motor 2 pivot).")
+    # NOTE: Even though the camera is now wrist-mounted, the coordinate
+    # frame is still centred on the SHOULDER JOINT (motor 2 pivot, on
+    # the desk directly below the shoulder).  Measure WORKSPACE_CM
+    # corners from that origin — the wrist camera position does not
+    # change the reference frame.
+    print("  ⚠️  IMPORTANT: Measure from the SHOULDER JOINT (motor 2 pivot)")
+    print("       on the desk directly below the shoulder — NOT from the camera.")
+    print("       The wrist-mounted camera does NOT change the coordinate frame.")
     print(f"{'─'*60}")
 
     cm_points: List[Tuple[float, float]] = []
@@ -332,7 +433,7 @@ def main():
     # ── Print code snippet ────────────────────────────────────────────
     _print_code_snippet(pixel_points, cm_points)
 
-    # ── Auto-save calibration to JSON ─────────────────────────────────
+    # ── Auto-save calibration to JSON (expanded schema) ───────────────
     _save_calibration(pixel_points, cm_points, homography)
 
     # ── Verification test with the clicked corners ────────────────────
@@ -357,6 +458,11 @@ def main():
         return
 
     print("\n[INIT] Reopening camera for verification...")
+    # Re-send SCAN_POSE in case the arm drifted during terminal input
+    print("[ARM] Re-sending SCAN_POSE to ensure arm is in position...")
+    send_command(SCAN_POSE)
+    time.sleep(1)
+
     cam2 = OAKCamera(resolution=vcfg.CAMERA_RESOLUTION)
     if not cam2.open():
         print("❌ Could not reopen camera.")

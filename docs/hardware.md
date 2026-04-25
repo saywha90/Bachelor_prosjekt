@@ -7,7 +7,7 @@
 | # | Component | Model / Spec | Qty | Role |
 |---|-----------|-------------|-----|------|
 | 1 | Host computer | Raspberry Pi 5 (8 GB) | 1 | Runs Python pipeline (`main.py`), vision, IK |
-| 2 | Camera | Luxonis OAK-D S2 | 1 | RGB + depth, connected via USB-C |
+| 2 | Camera | Luxonis OAK-D S2 (wrist-mounted) | 1 | RGB + depth, mounted on arm wrist, USB-C |
 | 3 | Motor controller | ROBOTIS OpenRB-150 | 1 | Drives Dynamixel bus, USB-C serial to Pi |
 | 4 | Servo – Base (ID 1) | Dynamixel XM430-W350 | 1 | Joint 1 rotation |
 | 5 | Servo – Shoulder (ID 2) | Dynamixel XM540-W270 | 1 | Joint 2 lift |
@@ -19,6 +19,23 @@
 | 11 | USB-C cable (data) | USB-C to USB-C | 2 | Pi ↔ OpenRB-150, Pi ↔ OAK-D S2 |
 | 12 | USB-C cable (power) | USB-C power cable | 1 | PSU 5 V → Pi |
 | 13 | TTL servo cable | 3-pin JST (Dynamixel) | 5 | Daisy-chain between servos |
+
+### Camera mounting
+
+The OAK-D S2 is mounted on the arm wrist, attached to the
+3D-printed bracket above the claw assembly. The camera optical
+axis is angled approximately 30° below the forearm axis so that
+when the arm is at SCAN_POSE, the camera looks down at the
+workspace from a height of ~30–40 cm.
+
+This mounting choice was made because:
+- It allows the camera to follow the arm during approach (future
+  visual-servoing capability)
+- It avoids the need for a separate camera pillar
+- It keeps all sensing/actuation in a single moveable unit
+
+Note that this mounting requires a calibrated SCAN_POSE; see
+docs/calibration.md → Step 02c.
 
 ## Wiring Diagram
 
