@@ -41,6 +41,7 @@ import cv2
 
 from ik.solver import ArmIK
 from config.arm import (
+    get_bin_coords,
     HOME_POSITION,
     GRAB_HEIGHT,
     APPROACH_HEIGHT,
@@ -70,7 +71,7 @@ CLAW_CLOSED_POS = 1600    # closed/grip position (tune on real hardware)
 # ─── Movement settling time (seconds) ────────────────────────────────
 #   After sending a position command, wait this long for the arm to
 #   physically reach the target before sending the next command.
-MOVE_SETTLE_TIME = 1.5    # seconds (adjust based on profile velocity)
+MOVE_SETTLE_TIME = 1.5    # seconds (MUST be long enough for the arm to physically reach the target)
 
 
 # ── State machine ─────────────────────────────────────────────────────
@@ -133,23 +134,24 @@ def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
     if USE_REAL_SERIAL:
         time.sleep(MOVE_SETTLE_TIME)
 
-    return response
+    return solution
 
 
 # send_partial() removed — two-step approach replaced with single move (see ADR 003)
 
 
-def send_claw(ser, position: int, label: str = ""):
+def send_claw(ser, last_solution: dict, position: int, label: str = ""):
     """Send a claw (motor 5) position command over serial.
 
-    This reads the last known IK solution's m1-m4 values and replaces m5
-    with the desired claw position.  For simplicity, we send only the
-    m5 update as a full 5-motor JSON (keeping m1-m4 at their last values).
+    This uses the last known IK solution's m1-m4 values and replaces m5
+    with the desired claw position.
 
     Parameters
     ----------
     ser : serial port
         The serial connection.
+    last_solution : dict
+        The last target positions sent to the arm (m1-m4).
     position : int
         Dynamixel step value for the claw motor (0-4095).
     label : str
@@ -158,16 +160,8 @@ def send_claw(ser, position: int, label: str = ""):
     if label:
         print(f"  🦀  [CLAW] {label} (m5 → {position})")
 
-    # We read the current positions first, then set only m5
-    cmd = json.dumps({"cmd": "read_pos"})
-    ser.write((cmd + "\n").encode())
-    resp = ser.readline().decode().strip()
-
-    try:
-        current = json.loads(resp)
-    except (json.JSONDecodeError, TypeError):
-        # If we can't read, send a safe command with centre values for m1-m4
-        current = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
+    # Use the last known positions to prevent sudden jerks
+    current = last_solution.copy() if last_solution else {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048}
 
     # Override only the claw motor
     current["m5"] = position
@@ -290,10 +284,10 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     log_state(State.APPROACHING, "Moving directly to grab position")
 
     # Ensure claw is open before approaching
-    send_claw(ser, CLAW_OPEN_POS, label="Ensuring claw is OPEN")
+    send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="Ensuring claw is OPEN")
 
     # Single full move — descend to grab height in one motion
-    send_command(
+    last_ik = send_command(
         ser, arm, obj_x, obj_y, GRAB_HEIGHT,
         label="Full approach to grab position",
         viz=viz,
@@ -301,36 +295,32 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
 
     # ── 3. GRABBING ──────────────────────────────────────────────────
     log_state(State.GRABBING, f"Closing claw on {colour.upper()} ball")
-    
-    # Optional pause for measurement (as requested by user 2026-04-25)
-    print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {GRAB_HEIGHT:.1f} cm")
-    input("  📏  [MEASURE] Arm is at grab position. Measure height now, then press ENTER to close claw... ")
 
     print(f"  ✊  [CLAW] Closing... (dwell {GRAB_DWELL}s)")
-    send_claw(ser, CLAW_CLOSED_POS, label="CLOSE grip")
+    send_claw(ser, last_ik, CLAW_CLOSED_POS, label="CLOSE grip")
     time.sleep(GRAB_DWELL)
     print("  ✊  [CLAW] Object secured")
 
     # Lift to clearance height before traversing
-    send_command(
+    last_ik = send_command(
         ser, arm, obj_x, obj_y, CLEARANCE_HEIGHT,
         label="Lifting to clearance height",
         viz=viz,
     )
 
-    # ── 4. RETURN HOME ───────────────────────────────────────────────
-    log_state(State.SORTING, "Returning to HOME position before dropping")
-    send_command(ser, arm, *HOME_POSITION, label="Return HOME (with ball)", viz=viz)
+    # ── 4. MOVE TO SCAN POSE ─────────────────────────────────────────
+    log_state(State.SORTING, "Returning to SCAN_POSE to drop the ball")
+    send_scan_pose(ser, viz=viz)
 
-    # Small delay to let the arm stabilise at home before releasing
+    # Small delay to let the arm stabilise before releasing
     time.sleep(0.5)
 
     # ── 5. DROPPING ──────────────────────────────────────────────────
-    log_state(State.DROPPING, f"Releasing {colour.upper()} ball at HOME")
+    log_state(State.DROPPING, f"Releasing {colour.upper()} ball at SCAN_POSE")
     print(f"  📤  [CLAW] Opening... (dwell {RELEASE_DWELL}s)")
-    send_claw(ser, CLAW_OPEN_POS, label="OPEN grip (release)")
+    send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="OPEN grip (release)")
     time.sleep(RELEASE_DWELL)
-    print("  📤  [CLAW] Object released at HOME")
+    print("  📤  [CLAW] Object released at SCAN_POSE")
 
     log_state(State.DONE, "Cycle complete ✅")
 
@@ -471,16 +461,16 @@ def main():
         print("  ⛔  KeyboardInterrupt received — shutting down gracefully...")
         print(f"{'━' * 60}")
 
-    # Return arm to HOME before powering off
+    # Return arm to SCAN_POSE before powering off
     try:
-        log_state(State.IDLE, "Returning to HOME before shutdown")
-        send_command(ser, arm, *HOME_POSITION, label="Shutdown HOME", viz=viz)
+        log_state(State.IDLE, "Returning to SCAN_POSE before shutdown")
+        send_scan_pose(ser, viz=viz)
     except Exception as e:
-        print(f"  ⚠️  Could not return to HOME: {e}")
+        print(f"  ⚠️  Could not return to SCAN_POSE: {e}")
 
     # ── Shutdown ──────────────────────────────────────────────────────
     print(f"\n{'━' * 60}")
-    print("  🏁  Arm is at HOME.  Shutting down.")
+    print("  🏁  Arm is at SCAN_POSE.  Shutting down.")
     print(f"{'━' * 60}\n")
 
     vision.close()                # releases camera + destroys OpenCV windows

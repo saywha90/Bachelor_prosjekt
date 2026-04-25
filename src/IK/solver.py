@@ -52,7 +52,7 @@ class ArmIK:
     #   z_correction = horizontal_reach * z_offset_multiplier
     #
     #   Tune this value empirically on your physical arm.
-    z_offset_multiplier: float = 0.14   # Increased from 0.04 to compensate for ~6cm sag at far reach
+    z_offset_multiplier: float = 0.18   # Increased to 0.18 on 2026-04-25 (lifts arm away from desk)
     z_offset_quadratic: float = 0.0     # quadratic sag coefficient (reach^2 term)
     z_offset_constant: float = 0.0      # constant vertical offset (intercept)
     sag_model: str = "linear"           # "linear" or "quadratic"
