@@ -33,11 +33,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Full 4-DOF pick-and-place pipeline (`src/main.py`)
 - HSV-based ball detection with homography projection (`src/vision/detector.py`)
 - Geometric IK solver with sag compensation (`src/ik/solver.py`)
-- Two-step visual servoing: coarse IK + fine pixel-error correction (`src/ik/vision_bridge.py`)
+- Visual servoing bridge with homography-based pixel-to-cm conversion (`src/ik/vision_bridge.py`)
 - OAK-D camera integration (`src/vision/camera.py`)
 - Simulation mode with mock serial and 2-D visualiser (`src/simulation/`)
 - Numbered calibration pipeline: Steps 02–08 (`src/calibration/`)
-- Architecture Decision Records: HSV vs CNN, 4-DOF geometry, two-step servoing
+- Architecture Decision Records: HSV vs CNN, 4-DOF geometry, fixed scan pose
 - Comprehensive docs: architecture, calibration, performance, troubleshooting
 
 ### Metrics (as of 2026-04-21)

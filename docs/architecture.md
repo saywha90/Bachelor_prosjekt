@@ -190,7 +190,7 @@ Key features:
 - **Sag compensation**: corrects for gravity droop using a linear or quadratic model loaded from `sag_calibration.json`
 - **Shoulder height**: subtracts `shoulder_height` (33.0 cm) to convert workspace Z to the shoulder-relative frame
 - **Joint limits**: clamps motor positions to safe ranges to prevent hardware overload errors
-- **Partial approach**: `calculate_partial_move()` interpolates in Cartesian space for a partial (e.g., 80%) approach
+- **Partial-move interpolation**: `calculate_partial_move()` interpolates in Cartesian space (utility for tests/demos; production uses a single direct move — see ADR-003)
 
 | Property | Detail |
 |---|---|
@@ -233,7 +233,6 @@ Configuration is split into two modules:
 **`src/config/arm.py`** — Physical arm parameters:
 - `HOME_POSITION` = (20.0, 0.0, 30.0) cm — safe resting position
 - `GRAB_HEIGHT` = 13.0 cm — Z when closing the claw
-- `APPROACH_HEIGHT` = 24.0 cm — Z during the 80% XY approach
 - `CLEARANCE_HEIGHT` = 28.0 cm — Z to lift to before traversing
 - `VERIFY_HEIGHT` = 8.0 cm — Z to lift to for grip verification
 - `CAMERA_OFFSET_X/Y` = 0.0 cm — fine-tuning offset (homography maps directly to shoulder frame)
@@ -265,7 +264,7 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 | `IDLE` | Arm is at HOME, waiting. Logs detection details before a cycle begins. |
 | `MOVE_TO_SCAN_POSE` | Move the arm to `SCAN_POSE` so the wrist-mounted camera has a valid view of the workspace. |
 | `SCANNING` | `VisionBridge.scan_for_balls()` captures frames and returns detections. |
-| `APPROACHING` | Two-phase approach: 80% partial move at `APPROACH_HEIGHT`, then 100% at `GRAB_HEIGHT`. |
+| `APPROACHING` | Single direct move to `(obj_x, obj_y, GRAB_HEIGHT)`. |
 | `GRABBING` | Close the claw, wait `GRAB_DWELL`, lift to `VERIFY_HEIGHT`. |
 | `VERIFY_GRIP` | Grip verification via position check and load check. On failure, open claw and immediately re-scan (up to `MAX_PICK_RETRIES` attempts before skipping). On success, lift to `CLEARANCE_HEIGHT` and continue. |
 | `SORTING` | Return to `HOME_POSITION` while carrying the ball. |
@@ -274,95 +273,33 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 
 ### 3.2 State Diagram
 
-```
-                          ┌──────────────────────────────────┐
-                          │          MAIN LOOP                │
-                          │   (continuous while True)         │
-                          └──────────┬───────────────────────┘
-                                     │
-                                     ▼
-                              ┌──────────────────┐
-                         ┌───►│ MOVE_TO_SCAN_POSE │
-                         │    │ move arm to       │
-                         │    │ SCAN_POSE         │
-                         │    └──────┬───────────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────┐
-                         │    │   SCANNING    │
-                         │    │ scan_for_balls │
-                         │    └──────┬───────┘
-                         │           │
-                         │     ┌─────▼──────┐  no balls    ┌─────────┐
-                         │     │ detections? ├─────────────►│  IDLE   │
-                         │     └─────┬───────┘  wait 3s     │ (wait)  │
-                         │           │ yes                   └────┬────┘
-                         │           ▼                            │
-                         │    ┌──────────────┐                   │
-                         │    │    IDLE       │◄──────────────────┘
-                         │    │ log detection │       rescan
-                         │    └──────┬───────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────────┐
-                         │    │  APPROACHING      │
-                         │    │  Phase 1: 80%     │
-                         │    │  (APPROACH_HEIGHT) │
-                         │    └──────┬───────────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────────┐
-                         │    │  APPROACHING      │
-                         │    │  Phase 2: 100%    │
-                         │    │  (GRAB_HEIGHT)    │
-                         │    └──────┬───────────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────┐
-                         │    │  GRABBING     │
-                         │    │  close claw   │
-                         │    │  lift to      │
-                         │    │  VERIFY_HEIGHT │
-                         │    └──────┬───────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────────┐
-                         │    │  VERIFY_GRIP      │
-                         │    │  position check   │───── fail ──┐
-                         │    │  + load check     │             │
-                         │    └──────┬───────────┘             │
-                         │           │ pass                     │
-                         │           │                  ┌───────▼────────┐
-                         │           │                  │ open claw,     │
-                         │           │                  │ immediate      │
-                         │           │                  │ re-scan        │
-                         │           │                  │ (retry ≤ 2)    │
-                         │           │                  └───────┬────────┘
-                         │           │                          │
-                         │           │                  ┌───────▼────────┐
-                         │           │                  │ retries left?  │
-                         │           │                  └──┬──────────┬──┘
-                         │           │              yes │          │ no
-                         │           │     (→ SCANNING) │          │ (skip ball
-                         │           │                  │          │  → DONE)
-                         │           ▼
-                         │    ┌──────────────┐
-                         │    │  SORTING      │
-                         │    │  return HOME  │
-                         │    └──────┬───────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────┐
-                         │    │  DROPPING     │
-                         │    │  open claw    │
-                         │    └──────┬───────┘
-                         │           │
-                         │           ▼
-                         │    ┌──────────────┐
-                         │    │    DONE       │
-                         │    └──────┬───────┘
-                         │           │
-                         └───────────┘  (MOVE_TO_SCAN_POSE → rescan)
+```mermaid
+stateDiagram-v2
+    [*] --> MOVE_TO_SCAN_POSE
+
+    MOVE_TO_SCAN_POSE --> SCANNING : arm at SCAN_POSE
+
+    SCANNING --> IDLE : balls detected → log detection
+    SCANNING --> MOVE_TO_SCAN_POSE : no balls → wait 3 s, rescan
+
+    IDLE --> APPROACHING : begin pick cycle
+
+    APPROACHING --> GRABBING : direct move to\n(obj_x, obj_y, GRAB_HEIGHT)
+
+    GRABBING --> VERIFY_GRIP : close claw, lift to VERIFY_HEIGHT
+
+    VERIFY_GRIP --> SORTING : grip confirmed ✓
+    VERIFY_GRIP --> grip_fail : grip failed ✗
+
+    state grip_fail <<choice>>
+    grip_fail --> MOVE_TO_SCAN_POSE : retries < MAX_PICK_RETRIES (2)\nopen claw → immediate rescan
+    grip_fail --> DONE : retries exhausted\nskip ball
+
+    SORTING --> DROPPING : move to bin position
+
+    DROPPING --> DONE : open claw, release ball
+
+    DONE --> MOVE_TO_SCAN_POSE : loop back for next scan
 ```
 
 ### 3.3 Failure Modes and Recovery
@@ -393,7 +330,7 @@ Falls back to a direct (slow-profile) HOME command if position reading fails.
 
 Vision is only valid when the arm is at `SCAN_POSE`. The camera moves with the wrist (motors 1–4), so the homography calibration is only valid at the exact joint configuration where it was performed. Mid-approach visual correction was removed because the claw occludes the target ball during approach.
 
-The state machine enforces this by always transitioning through `MOVE_TO_SCAN_POSE` before entering `SCANNING`, and again after `DROPPING` before the next scan cycle. The flow is: `HOME → MOVE_TO_SCAN_POSE → SCANNING → APPROACHING → GRABBING → VERIFY_GRIP → SORTING → DROPPING → MOVE_TO_SCAN_POSE → ...`
+The state machine enforces this by always transitioning through `MOVE_TO_SCAN_POSE` before entering `SCANNING`, and again after `DONE` before the next scan cycle. The flow is: `MOVE_TO_SCAN_POSE → SCANNING → IDLE → APPROACHING → GRABBING → VERIFY_GRIP → SORTING → DROPPING → DONE → MOVE_TO_SCAN_POSE → ...`
 
 ### 3.6 Timing Instrumentation
 

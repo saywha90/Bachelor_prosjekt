@@ -328,7 +328,7 @@ class ArmIK:
         return result
 
     # ──────────────────────────────────────────────────────────────────
-    #  Two-step servoing
+    #  Partial-move interpolation (utility for tests and demos)
     # ──────────────────────────────────────────────────────────────────
     def calculate_partial_move(
         self,
@@ -342,8 +342,14 @@ class ArmIK:
     ) -> dict:
         """Calculate an IK solution for a *partial* move toward the target.
 
-        This enables **visual servoing**: move 80 % of the way, take a
-        new picture, re-compute, then move the final 20 %.
+        Linearly interpolates in Cartesian space between the origin and
+        the target, then solves IK at the intermediate point.
+
+        .. note::
+           The production pick-and-place loop (``main.py``) no longer
+           uses this method — it moves directly to the grab position in
+           a single step (see ADR-003).  This helper is retained for
+           tests and manual demo scripts.
 
         Parameters
         ----------
@@ -415,7 +421,7 @@ if __name__ == "__main__":
     print(f"Full move steps : {result}")
     print(f"Full move JSON  : {json.dumps(result)}\n")
 
-    # Two-step servoing: 80% then 100%
+    # Partial-move interpolation demo (utility — not used in production)
     partial = arm.calculate_partial_move(*target, percentage=0.80)
     print(f"80 %% move steps: {partial}")
     print(f"80 %% move JSON : {json.dumps(partial)}\n")

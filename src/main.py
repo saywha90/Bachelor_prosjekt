@@ -44,7 +44,6 @@ from config.arm import (
     get_bin_coords,
     HOME_POSITION,
     GRAB_HEIGHT,
-    APPROACH_HEIGHT,
     CLEARANCE_HEIGHT,
     GRAB_DWELL,
     RELEASE_DWELL,
