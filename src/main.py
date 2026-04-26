@@ -9,7 +9,7 @@ Implements a state-machine that drives the arm through:
     MOVE_TO_SCAN_POSE → (rescan or next from queue)
 
 Camera integration
-------------------
+-------------------
 Uses a wrist-mounted OAK-D S2 camera.  The arm parks at SCAN_POSE
 (joint-space positions defined in config/arm.py) before every vision
 scan, then approaches in a single full move.
