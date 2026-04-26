@@ -238,7 +238,7 @@ class TestGeometricConsistency:
 
 
 class TestPartialMove:
-    """Tests for the two-step visual-servoing helper."""
+    """Tests for the Cartesian partial-move interpolation helper."""
 
     def test_100_percent_equals_full_solve(self, arm):
         """calculate_partial_move at 100% should equal solve() exactly."""

@@ -10,7 +10,6 @@ from config.arm import (
     BINS,
     HOME_POSITION,
     GRAB_HEIGHT,
-    APPROACH_HEIGHT,
     CLEARANCE_HEIGHT,
 )
 

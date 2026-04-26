@@ -108,7 +108,9 @@ Display size constants centralized in `DISPLAY_W, DISPLAY_H`.
 
 **Root cause:** The state machine processed a static queue from the initial scan without a final verification step.
 
-**Fix:** Modified `run_sorting_cycle()` to check the return value of `vision.refine_detection()`. If the object is lost during the 80% approach, the arm now cancels the cycle and returns to `HOME` safely.
+**Fix:** Modified `run_sorting_cycle()` to check the return value of `vision.refine_detection()`. If the object was lost during the approach, the arm cancelled the cycle and returned to `HOME` safely.
+
+> **Note (2026-04-26):** The two-step 80 %→100 % approach and `refine_detection()` have since been removed entirely — the arm now moves directly to the grab position in a single step because the wrist-mounted camera is occluded during approach (see ADR-003).
 
 ---
 

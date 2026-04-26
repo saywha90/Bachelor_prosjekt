@@ -63,13 +63,12 @@ The 12-step pipeline in [`SimpleBallDetector.detect_balls()`](../src/vision/dete
 | Phase | Duration | Notes |
 |-------|----------|-------|
 | Scan (5 frames, pick-best) | ~0.3–0.5 s | [`scan_for_balls(num_frames=5)`](../src/ik/vision_bridge.py:475) |
-| Approach — 80 % partial move | ~1.5 s | [`MOVE_SETTLE_TIME`](../src/main.py:64) = 1.5 s |
-| Approach — 100 % final move | ~1.5 s | Same settle time |
+| Approach — single direct move | ~1.5 s | [`MOVE_SETTLE_TIME`](../src/main.py:64) = 1.5 s |
 | Grab (claw close + dwell) | ~0.8 s | [`GRAB_DWELL`](../src/config/arm.py:36) = 0.8 s |
-| Lift to clearance height | ~1.5 s | CLEARANCE_HEIGHT = 28 cm |
-| Return to HOME | ~1.5 s | |
+| Lift to clearance height | ~1.5 s | CLEARANCE_HEIGHT = 15 cm |
+| Return to SCAN_POSE | ~1.5 s | |
 | Drop (claw open + dwell) | ~0.5 s | [`RELEASE_DWELL`](../src/config/arm.py:37) = 0.5 s |
-| **Total (estimated)** | **~8–10 s** | Excludes measurement pause in current code |
+| **Total (estimated)** | **~6–8 s** | Excludes measurement pause in current code |
 
 ---
 
@@ -213,7 +212,7 @@ Ball  Colour  Detected  Colour-OK  Pick    Bin-OK  Notes
 
 ## 8  Known Limitations
 
-- **Visual servoing disabled** — the 80 %→100 % correction image is currently skipped for stability (see [`run_sorting_cycle()`](../src/main.py:331)). Enabling it may improve positioning accuracy at the cost of cycle time.
+- **No mid-approach visual correction** — the arm moves directly to the grab position in a single step; a mid-approach re-scan is not possible because the wrist-mounted camera is occluded by the claw during approach (see ADR-003).
 - **Single-ball-at-a-time** — the system picks one ball per scan round and rescans. Batch processing (pick without rescanning) was considered but rejected to ensure fresh position data.
 - **No depth-based height compensation** — Z is assumed 0 (table surface). Balls on uneven surfaces would cause Z errors.
 - **Lighting sensitivity** — HSV ranges are calibrated for 300–700 lux. Outside this range, recalibration is required (Steps 4–5).

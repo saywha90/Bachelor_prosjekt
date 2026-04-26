@@ -249,6 +249,10 @@ def main():
                 detected_x, detected_y = pos["x"], pos["y"]
 
         # ── APPROACH ─────────────────────────────────────────────────
+        # NOTE: This manual test intentionally uses a 2-step descent
+        # (approach height → grab height) for operator safety during
+        # calibration.  The production code in main.py uses a single
+        # direct move to GRAB_HEIGHT (see ADR-003).
         print("  Moving to approach height...")
         try:
             approach = arm.solve(detected_x, detected_y, APPROACH_HEIGHT)

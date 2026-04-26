@@ -130,12 +130,12 @@ def run_incremental_sweep(arm: ArmIK):
 
 
 def run_partial_move_test(arm: ArmIK):
-    """Test the two-step servoing at 0 %, 20 %, 40 %, …, 100 %."""
+    """Test Cartesian partial-move interpolation at 0 %, 20 %, 40 %, …, 100 %."""
 
     target = (25.0, 10.0, 0.0)
 
     print("\n╔══════════════════════════════════════════════════════════════════╗")
-    print(f"║   TWO-STEP SERVOING  target=({target[0]}, {target[1]}, {target[2]})              ║")
+    print(f"║   PARTIAL-MOVE INTERPOLATION  target=({target[0]}, {target[1]}, {target[2]})      ║")
     print("║   Stepping from 0% to 100% in 20% increments                   ║")
     print("╚══════════════════════════════════════════════════════════════════╝\n")
 
