@@ -52,8 +52,8 @@ Required packages: `numpy`, `opencv-python`, `pyserial`, `depthai`, `scikit-lear
 | **3** | A | `python src/calibration/03_sag.py` | Sag (droop) compensation calibration | ~10–20 min |
 | **4** | B | `python src/calibration/04_hsv_tuner.py` | Interactive HSV colour tuning | ~5–15 min |
 | **5** | B | `python src/calibration/05_hsv_refine.py` | Statistical HSV refinement | ~5 min |
-| **6** | B | `python src/calibration/06_homography.py` | Pixel-to-cm homography calibration | ~5–10 min |
-| **6b** | B | `python src/calibration/06b_workspace.py` | Camera height and scan region verification | ~3 min |
+| **6** | B | `python src/calibration/09_touch_calibration.py` | Pixel-to-cm touch-based homography calibration | ~5–10 min |
+
 | **7** | C | `python src/calibration/07_vision_offset.py` | Fine-tune residual camera-to-shoulder offset | ~5 min |
 | **8** | C | `python src/calibration/08_pick_test.py` | End-to-end pick-and-place verification | ~10 min |
 
@@ -322,35 +322,37 @@ confirm detection still works.
 
 ---
 
-### Step 6 — Homography Calibration
+### Step 6 — Homography Calibration (Touch-Based)
 
 **What it does:** Maps camera pixel coordinates to physical centimetres on
-the workspace plane using a 4-point perspective transform. This is the
-critical bridge between vision and arm positioning.
+the workspace plane using a 4-point perspective transform. The arm physically
+touches each corner to capture IK coordinates as ground truth — no ruler
+measurements needed.
+
+> **Note:** This step was previously done with `06_homography.py` which required
+> manual ruler measurements. The new `09_touch_calibration.py` is more accurate
+> because it uses the arm's own IK coordinates. See [ADR 004](decisions/004-touch-calibration-replaces-homography.md).
 
 **Script:**
 
 ```bash
-python src/calibration/06_homography.py
+python src/calibration/09_touch_calibration.py
 ```
 
 **Procedure:**
 
-1. The script shows the live camera feed.
+1. The arm moves to `SCAN_POSE` and the script shows the live camera feed.
 2. Click the 4 corners of your workspace (top-left, top-right, bottom-right,
    bottom-left as seen in the camera).
-3. Enter the physical (x, y) measurements of each corner in cm **from the
-   shoulder joint** (motor 2 pivot):
-   - x = forward (away from arm base)
-   - y = left (+) / right (−)
+3. For each corner, use WASD to drive the arm's claw to physically touch the
+   corner — the IK (x, y) coordinates are captured automatically.
 4. The script computes `cv2.getPerspectiveTransform` and saves the result to
    `homography_calibration.json`.
-5. Optionally verify by detecting a ball and showing its cm coordinates.
 
 **Expected output:**
 
 ```
-[HOMOGRAPHY] Saved calibration to homography_calibration.json
+[TOUCH-CAL] Saved calibration to homography_calibration.json
   Pixel corners: [[9, 17], [619, 16], [618, 381], [23, 378]]
   CM corners:    [[28.0, 22.0], [28.0, -22.0], [10.0, -22.0], [10.0, 22.0]]
 ```
@@ -367,42 +369,6 @@ calibration file exists.
 > ⚠️ This calibration is pose-dependent. If you change `SCAN_POSE` at any point, you must re-run Step 06.
 
 ---
-
-### Step 6b — Camera Height and Scan Region Verification
-
-**What it does:** Verifies that the camera height matches the configuration
-and that the camera can see balls across the entire arm workspace. Calculates
-worst-case parallax error.
-
-**Script:**
-
-```bash
-python src/calibration/06b_workspace.py
-```
-
-**Procedure:**
-
-1. Measure the camera lens height above the table surface with a ruler.
-2. Compare with [`CAMERA_HEIGHT`](../src/config/arm.py:53) (default: 43.0 cm).
-3. The script tests 5 positions (centre + 4 workspace corners) for visibility
-   and IK reachability.
-4. Calculates worst-case parallax error for 50 mm balls.
-
-**Expected output:**
-
-```
-  Camera height: 43.0 cm (configured) vs. 42.5 cm (measured) — OK
-  Parallax at edges: ±1.2 mm (acceptable)
-  5/5 positions visible and reachable
-  PASS
-```
-
-**How to verify:** All 5 test positions pass both the visibility and
-reachability checks. If parallax error exceeds 3 mm, adjust `CAMERA_HEIGHT`
-in [`src/config/arm.py`](../src/config/arm.py:53).
-
-> **Tip:** A 5 cm error in camera height causes approximately 3 mm parallax
-> at workspace edges.
 
 ---
 
@@ -495,7 +461,7 @@ diagnostic table below.
 | Off in different directions each time | Bad homography | Redo Step 6 |
 | Claw too high or too low | Sag calibration off | Redo Step 3, or nudge `z_offset_multiplier` ± 0.01 |
 | Ball squirts out when grabbed | Claw positions wrong | Redo Step 2b |
-| Arm can't reach detected balls | Scan region mismatch | Check Step 6b |
+| Arm can't reach detected balls | Scan region mismatch | Re-run touch calibration (Step 6) with corners within arm reach |
 | Wrong bin | Colour detection error | Redo Steps 4–5 |
 
 ---
@@ -506,8 +472,8 @@ You only need to redo specific steps when something changes:
 
 | What Changed | Steps to Redo |
 |-------------|---------------|
-| Changed camera mount or SCAN_POSE | 2c, 6, 6b, 7 |
-| Moved the camera | 6, 6b, 7 |
+| Changed camera mount or SCAN_POSE | 2c, 6, 7 |
+| Moved the camera | 6, 7 |
 | Changed lighting (new room, new lamp) | 4, 5 |
 | Rebuilt or tightened the arm | 2, 2b, 3 |
 | New claw or gripper attachment | 2b |
@@ -531,7 +497,7 @@ If the system was working and accuracy has degraded:
 | File | Created By | Loaded By |
 |------|-----------|-----------|
 | `sag_calibration.json` | Step 3 — [`03_sag.py`](../src/calibration/03_sag.py) | [`ArmIK.__init__()`](../src/ik/solver.py:115) |
-| `homography_calibration.json` | Step 6 — [`06_homography.py`](../src/calibration/06_homography.py) | [`VisionBridge`](../src/ik/vision_bridge.py:108) |
+| `homography_calibration.json` | Step 6 — [`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py) | [`VisionBridge`](../src/ik/vision_bridge.py:108) |
 | `claw_calibration.json` | Step 2b — [`02b_claw.py`](../src/calibration/02b_claw.py) | Manual — update [`config/arm.py`](../src/config/arm.py) |
 | `pick_test_results.json` | Step 8 — [`08_pick_test.py`](../src/calibration/08_pick_test.py) | Reference only |
 

@@ -9,8 +9,10 @@ with sag compensation disabled.  Fits both linear and quadratic
 compensation models to the measured errors and saves the coefficients
 to sag_calibration.json (auto-loaded by ArmIK on startup).
 
+Each reach point is measured 3 times and averaged to reduce ruler noise.
+
 Usage:
-    python calibrate_sag.py          # default test height = 5 cm
+    python calibrate_sag.py          # default test height = 2 cm (GRAB_HEIGHT)
     python calibrate_sag.py 8        # custom test height = 8 cm
 
 Author: Bachelor Project 2026 – Autonomia
@@ -95,16 +97,20 @@ def prompt(msg: str):
 NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
 
 # Default test parameters
-TEST_Z = 5.0  # cm above the desk — high enough to avoid hitting even with sag
-TEST_REACHES = [12, 18, 24, 30, 36]  # cm, along X axis (Y = 0)
+TEST_Z = 2.0  # cm — matches GRAB_HEIGHT in src/config/arm.py
+TEST_REACHES = [6, 12, 18, 24, 30, 36]  # cm, along X axis (Y = 0); 6 cm for near-range coverage
+NUM_REPEATS = 3  # measurements per reach point (averaged to reduce ruler noise)
 
 
 # ── Measurement helpers ─────────────────────────────────────────────
 
-def read_measurement(reach: float) -> float:
+def read_measurement(reach: float, trial: int = 1, total: int = 1) -> float:
     """Prompt the user for the measured claw-tip height, with input validation."""
     while True:
-        raw = input(f"  Enter measured claw tip height in cm (reach={reach}): ").strip()
+        if total > 1:
+            raw = input(f"  Measurement {trial}/{total} — enter claw tip height in cm (reach={reach}): ").strip()
+        else:
+            raw = input(f"  Enter measured claw tip height in cm (reach={reach}): ").strip()
         try:
             value = float(raw)
             return value
@@ -112,16 +118,37 @@ def read_measurement(reach: float) -> float:
             print("  ⚠️  Invalid input — please enter a number (e.g. 4.3)")
 
 
-def collect_data(arm: ArmIK, test_z: float, reaches: list) -> list:
+def read_averaged_measurement(reach: float, num_repeats: int = NUM_REPEATS) -> float:
+    """Take multiple measurements at one reach point and return the average.
+
+    Prompts the user *num_repeats* times, prints individual readings and
+    the averaged result so the operator can spot outliers.
+    """
+    readings: list[float] = []
+    for i in range(num_repeats):
+        val = read_measurement(reach, trial=i + 1, total=num_repeats)
+        readings.append(val)
+    avg = sum(readings) / len(readings)
+    spread = max(readings) - min(readings)
+    print(f"  → Readings: {readings}  |  avg = {avg:.2f} cm  |  spread = {spread:.2f} cm")
+    if spread > 0.5:
+        print("  ⚠️  Spread > 0.5 cm — consider re-measuring this point.")
+    return avg
+
+
+def collect_data(arm: ArmIK, test_z: float, reaches: list,
+                 num_repeats: int = NUM_REPEATS) -> list:
     """Move the arm to each test reach and collect user measurements.
 
-    Returns a list of (reach, commanded_z, measured_z) tuples.
+    At each reach, the user measures *num_repeats* times; the average is
+    recorded.  Returns a list of (reach, commanded_z, measured_z) tuples.
     """
     data = []
     for x in reaches:
         print(f"\n{'─'*50}")
         print(f"  Moving claw to X={x} cm, Y=0 cm, Z={test_z} cm")
-        print(f"  (sag compensation OFF)")
+        print(f"  (sag compensation OFF — all offsets zeroed)")
+        print(f"  You will measure {num_repeats} time(s) per reach point.")
         print(f"{'─'*50}")
 
         try:
@@ -133,9 +160,9 @@ def collect_data(arm: ArmIK, test_z: float, reaches: list) -> list:
 
         goto(solution, pause_s=2.5)
 
-        measured_z = read_measurement(x)
+        measured_z = read_averaged_measurement(x, num_repeats)
         data.append((float(x), test_z, measured_z))
-        print(f"  ✓ Recorded: reach={x}, commanded_z={test_z}, measured_z={measured_z}")
+        print(f"  ✓ Recorded: reach={x}, commanded_z={test_z}, measured_z={measured_z:.2f}")
 
     return data
 
@@ -268,8 +295,13 @@ def main():
     print()
     input("Clear the workspace around the arm, then press ENTER to start... ")
 
-    # Initialise IK with sag compensation DISABLED
-    arm = ArmIK(z_offset_multiplier=0.0)
+    # Initialise IK with ALL sag parameters zeroed so residual calibration
+    # does not influence the raw measurements.
+    arm = ArmIK(
+        z_offset_multiplier=0.0,
+        z_offset_quadratic=0.0,
+        z_offset_constant=0.0,
+    )
 
     try:
         # ── Move to neutral first ──────────────────────────────────

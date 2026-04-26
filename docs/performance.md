@@ -73,7 +73,47 @@ The 12-step pipeline in [`SimpleBallDetector.detect_balls()`](../src/vision/dete
 
 ---
 
-## 3  System Latency
+## 3  Timing Instrumentation
+
+The `CycleTimer` class in [`src/main.py`](../src/main.py) provides built-in timing instrumentation for every pick-and-place cycle. It records the wall-clock duration of each phase (scan, approach, grab, sort, drop) and prints a per-cycle summary after each successful cycle, plus a session-level summary on exit.
+
+### What it measures
+
+`CycleTimer` tracks five named phases that map directly to state machine transitions:
+
+| Phase | Description | Expected Duration |
+|-------|-------------|-------------------|
+| scan | Camera capture + HSV detection | ~0.3s |
+| approach | IK solve + motor move to target | ~1.8s |
+| grab | Claw close + dwell + grip verify | ~0.5s |
+| sort | Transit to drop zone | ~1.2s |
+| drop | Claw open + release dwell | ~0.4s |
+| **total** | **Full pick-sort cycle** | **~4.2s** |
+
+### Per-cycle output
+
+After each successful cycle (ball picked, sorted, and dropped), the timer prints:
+
+```
+⏱️  Cycle time: 4.20s (scan: 0.30s, approach: 1.80s, grab: 0.50s, sort: 1.20s, drop: 0.40s)
+```
+
+### Session summary
+
+On program exit (graceful shutdown or `KeyboardInterrupt`), a session summary is printed with aggregate statistics across all completed cycles:
+
+```
+SESSION TIMING SUMMARY (5 cycles)
+approach: avg 1.80s, grab: avg 0.50s, scan: avg 0.30s, sort: avg 1.20s, drop: avg 0.40s, total: avg 4.20s
+```
+
+### Thesis usage
+
+This timing data is intended for the performance evaluation section of the thesis. It provides empirical cycle-time measurements that can be compared against the estimated durations in Section 2 above, and used to identify bottleneck phases for future optimisation.
+
+---
+
+## 4  System Latency
 
 | Metric | Value | Method |
 |--------|-------|--------|
@@ -84,7 +124,7 @@ The 12-step pipeline in [`SimpleBallDetector.detect_balls()`](../src/vision/dete
 
 ---
 
-## 4  Reliability
+## 5  Reliability
 
 | Metric | Value | Method |
 |--------|-------|--------|
@@ -95,7 +135,7 @@ The 12-step pipeline in [`SimpleBallDetector.detect_balls()`](../src/vision/dete
 
 ---
 
-## 5  IK Solver Accuracy
+## 6  IK Solver Accuracy
 
 The geometric 4-DOF IK solver in [`ArmIK`](../src/ik/solver.py:29) uses:
 
@@ -113,7 +153,7 @@ The geometric 4-DOF IK solver in [`ArmIK`](../src/ik/solver.py:29) uses:
 
 ---
 
-## 6  Test Protocol — Standardised 10-Ball Test
+## 7  Test Protocol — Standardised 10-Ball Test
 
 Use this protocol for reproducible system-level evaluation.
 
@@ -171,7 +211,7 @@ Ball  Colour  Detected  Colour-OK  Pick    Bin-OK  Notes
 
 ---
 
-## 7  Known Limitations
+## 8  Known Limitations
 
 - **Visual servoing disabled** — the 80 %→100 % correction image is currently skipped for stability (see [`run_sorting_cycle()`](../src/main.py:331)). Enabling it may improve positioning accuracy at the cost of cycle time.
 - **Single-ball-at-a-time** — the system picks one ball per scan round and rescans. Batch processing (pick without rescanning) was considered but rejected to ensure fresh position data.

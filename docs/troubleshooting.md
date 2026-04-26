@@ -310,8 +310,8 @@ significantly different from their actual positions (> 2 cm error).
 
 | Cause | Fix |
 |-------|-----|
-| Corner positions measured incorrectly (not from shoulder joint) | Re-measure all 4 corners from the **shoulder joint** (motor 2 pivot). CAMERA_OFFSET_X/Y should be 0.0. Ensure arm is at SCAN_POSE during calibration. |
-| Clicked wrong pixel positions during calibration | Re-run `python src/calibration/06_homography.py` and click more carefully |
+| Corner positions measured incorrectly | Re-run `python src/calibration/09_touch_calibration.py` — the arm touches each corner so no manual ruler measurement is needed. Ensure arm is at SCAN_POSE during calibration. |
+| Clicked wrong pixel positions during calibration | Re-run `python src/calibration/09_touch_calibration.py` and click more carefully |
 | Camera has moved since calibration | Re-run Step 6 |
 | Using default hardcoded calibration instead of JSON | Check that `homography_calibration.json` exists in the `src/calibration/` directory |
 
@@ -358,7 +358,7 @@ the camera views at a steeper angle will have parallax error.
 
 **Fix:**
 1. Verify camera height matches [`CAMERA_HEIGHT`](../src/config/arm.py:53)
-   — run Step 6b.
+   — measure with a ruler.
 2. A 5 cm camera height error causes ~3 mm parallax at edges.
 3. Keep the workspace surface flat and level.
 
@@ -379,7 +379,7 @@ configuration where it was calibrated.
 1. Check logs for the `verify_pose` warning — this indicates the arm was
    not at `SCAN_POSE` when scanning began.
 2. If `SCAN_POSE` was changed without recalibrating homography, redo
-   Step 06 (`python src/calibration/06_homography.py`).
+   Step 06 (`python src/calibration/09_touch_calibration.py`).
 3. Verify the arm consistently reaches `SCAN_POSE` before scanning by
    watching the state machine transitions.
 
@@ -478,8 +478,8 @@ direction:
 
 1. Check that the homography isn't mapping edge pixels to extreme
    coordinates.
-2. Run Step 6b to verify the scan region stays within the arm's reachable
-   area.
+2. Verify the scan region stays within the arm's reachable area by re-running
+   touch calibration (Step 6).
 
 ### `[IK WARNING] ⚠️ m2=600 is AT JOINT LIMIT`
 

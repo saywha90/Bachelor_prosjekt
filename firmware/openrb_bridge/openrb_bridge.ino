@@ -197,6 +197,21 @@ void processCommand(const char* json) {
             return;
         }
 
+        if (strcmp(cmd, "read_load") == 0) {
+            // Read Present Load of all 5 motors and send back as JSON
+            // Present Load (addr 126, 2 bytes) reports load as a percentage
+            // of max torque.  Useful for grip verification on the claw motor.
+            JsonDocument resp;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                char key[4];
+                snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
+                resp[key] = (int16_t)dxl.readControlTableItem(PRESENT_LOAD, MOTOR_IDS[i]);
+            }
+            serializeJson(resp, PI_SERIAL);
+            PI_SERIAL.println();
+            return;
+        }
+
         if (strcmp(cmd, "read_errors") == 0) {
             // Read Hardware Error Status of all 5 motors and send back as JSON
             JsonDocument resp;

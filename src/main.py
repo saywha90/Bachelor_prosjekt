@@ -5,8 +5,8 @@ Master sorting loop for the autonomous robotic arm.
 
 Implements a state-machine that drives the arm through:
     HOME → MOVE_TO_SCAN_POSE → SCANNING → APPROACHING → GRABBING →
-    SORTING (lift + move to bin) → DROPPING → MOVE_TO_SCAN_POSE →
-    (rescan or next from queue)
+    VERIFY_GRIP → SORTING (lift + move to bin) → DROPPING →
+    MOVE_TO_SCAN_POSE → (rescan or next from queue)
 
 Camera integration
 ------------------
@@ -53,6 +53,10 @@ from config.arm import (
     STARTUP_PROFILE_VEL,
     STARTUP_PROFILE_ACC,
     SCAN_INTERVAL,
+    GRIP_VERIFY_TOLERANCE,
+    GRIP_LOAD_THRESHOLD,
+    MAX_PICK_RETRIES,
+    VERIFY_HEIGHT,
 )
 from simulation.mock_serial import MockSerial
 from simulation.visualizer import ArmVisualizer
@@ -60,13 +64,87 @@ from ik.vision_bridge import VisionBridge
 
 logger = logging.getLogger(__name__)
 
+
+# ══════════════════════════════════════════════════════════════════════
+#  CYCLE TIMER — timing instrumentation for sorting cycles
+# ══════════════════════════════════════════════════════════════════════
+class CycleTimer:
+    """Tracks timing for each phase of a sorting cycle."""
+
+    def __init__(self):
+        self._timestamps: dict[str, float] = {}
+        self._phase_times: dict[str, float] = {}
+        self._current_phase: str | None = None
+        self._cycle_start: float = 0.0
+        self._history: list[dict[str, float]] = []
+
+    def start_cycle(self):
+        """Mark the beginning of a new sorting cycle."""
+        self._timestamps.clear()
+        self._phase_times.clear()
+        self._current_phase = None
+        self._cycle_start = time.perf_counter()
+
+    def start_phase(self, name: str):
+        """Begin timing a named phase."""
+        now = time.perf_counter()
+        if self._current_phase:
+            self._phase_times[self._current_phase] = now - self._timestamps[self._current_phase]
+        self._timestamps[name] = now
+        self._current_phase = name
+
+    def end_cycle(self) -> dict[str, float]:
+        """End the cycle, record final phase, return all phase timings."""
+        now = time.perf_counter()
+        if self._current_phase:
+            self._phase_times[self._current_phase] = now - self._timestamps[self._current_phase]
+        self._phase_times["total"] = now - self._cycle_start
+        self._history.append(self._phase_times.copy())
+        return self._phase_times
+
+    def print_cycle_summary(self, timings: dict[str, float]):
+        """Print a formatted summary of the cycle timings."""
+        parts = []
+        for phase, duration in timings.items():
+            if phase != "total":
+                parts.append(f"{phase}: {duration:.2f}s")
+        total = timings.get("total", 0)
+        summary = ", ".join(parts)
+        print(f"\n  ⏱️  Cycle time: {total:.2f}s ({summary})")
+
+    def print_session_summary(self):
+        """Print average timings across all completed cycles."""
+        if not self._history:
+            print("\n  ⏱️  No completed cycles to summarize.")
+            return
+
+        # Collect all phase names
+        all_phases = set()
+        for h in self._history:
+            all_phases.update(h.keys())
+
+        print(f"\n{'='*60}")
+        print(f"  ⏱️  SESSION TIMING SUMMARY ({len(self._history)} cycles)")
+        print(f"{'='*60}")
+
+        for phase in sorted(all_phases):
+            values = [h[phase] for h in self._history if phase in h]
+            if values:
+                avg = sum(values) / len(values)
+                min_v = min(values)
+                max_v = max(values)
+                print(f"  {phase:>12}: avg {avg:.2f}s  "
+                      f"(min {min_v:.2f}s, max {max_v:.2f}s, n={len(values)})")
+        print(f"{'='*60}")
+
+
 # ─── Serial / connection settings ─────────────────────────────────────
 SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD     = 115200
 
 # ─── Claw motor positions (Dynamixel steps) ───────────────────────────
 CLAW_OPEN_POS   = 2048    # open/neutral position for gripper
-CLAW_CLOSED_POS = 1600    # closed/grip position (tune on real hardware)
+CLAW_CLOSED_POS = 2700    # closed/grip position (tune on real hardware)
 
 # ─── Movement settling time (seconds) ────────────────────────────────
 #   After sending a position command, wait this long for the arm to
@@ -81,6 +159,7 @@ class State(Enum):
     SCANNING         = auto()
     APPROACHING      = auto()
     GRABBING         = auto()
+    VERIFY_GRIP      = auto()
     SORTING          = auto()
     DROPPING         = auto()
     DONE             = auto()
@@ -94,6 +173,7 @@ def log_state(state: State, msg: str = ""):
         State.SCANNING:         "📷",
         State.APPROACHING:      "🎯",
         State.GRABBING:         "✊",
+        State.VERIFY_GRIP:      "🔍",
         State.SORTING:          "📦",
         State.DROPPING:         "📤",
         State.DONE:             "✅",
@@ -107,7 +187,7 @@ def log_state(state: State, msg: str = ""):
 
 
 def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
-                 viz=None):
+                 viz=None, claw_override=None):
     """Solve IK, send JSON over serial, wait for ACK, and update visualizer.
 
     Parameters
@@ -119,6 +199,9 @@ def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
         print(f"\n  📍 {label}: target=({x:.1f}, {y:.1f}, {z:.1f}) cm")
 
     solution = arm.solve(x, y, z)
+    if claw_override is not None:
+        solution["m5"] = claw_override
+    
     cmd_json = json.dumps(solution)
     ser.write((cmd_json + "\n").encode())
 
@@ -172,7 +255,78 @@ def send_claw(ser, last_solution: dict, position: int, label: str = ""):
         print(f"  ⚠️  Claw response: {resp}")
 
 
-def send_scan_pose(ser, viz=None):
+def read_positions(ser) -> dict | None:
+    """Read current positions from all motors via firmware."""
+    if ser is None:
+        return None
+    cmd = json.dumps({"cmd": "read_pos"}) + "\n"
+    ser.write(cmd.encode())
+    try:
+        raw = ser.readline().decode().strip()
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"  ⚠️  Failed to read positions: {e}")
+        return None
+
+
+def read_load(ser) -> dict | None:
+    """Read current load from all motors via firmware."""
+    if ser is None:
+        return None
+    cmd = json.dumps({"cmd": "read_load"}) + "\n"
+    ser.write(cmd.encode())
+    try:
+        raw = ser.readline().decode().strip()
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"  ⚠️  Failed to read load: {e}")
+        return None
+
+
+def verify_grip(ser, claw_closed_pos: int) -> bool:
+    """
+    Check if the claw actually gripped something.
+
+    Two checks:
+    1. Position check: if claw reached CLAW_CLOSED_POS (within tolerance),
+       it closed on empty air → no grip
+    2. Load check: if claw motor shows significant load, something is resisting → grip confirmed
+
+    Returns True if grip is confirmed, False if grip failed.
+    """
+    # Check 1: Position-based verification
+    positions = read_positions(ser)
+    if positions and "m5" in positions:
+        claw_pos = positions["m5"]
+        if abs(claw_pos - claw_closed_pos) <= GRIP_VERIFY_TOLERANCE:
+            print(f"  ❌ Grip check FAILED (position): claw at {claw_pos}, "
+                  f"target was {claw_closed_pos} (within {GRIP_VERIFY_TOLERANCE} tolerance)")
+            return False
+        else:
+            print(f"  ✅ Grip check passed (position): claw at {claw_pos}, "
+                  f"blocked {claw_closed_pos - claw_pos} steps from closed")
+
+    # Check 2: Load-based verification (supplementary)
+    loads = read_load(ser)
+    if loads and "m5" in loads:
+        claw_load = abs(loads["m5"])
+        if claw_load >= GRIP_LOAD_THRESHOLD:
+            print(f"  ✅ Grip check passed (load): claw load = {claw_load}")
+            return True
+        else:
+            print(f"  ⚠️  Grip check warning (load): claw load = {claw_load} "
+                  f"(below threshold {GRIP_LOAD_THRESHOLD})")
+
+    # If position check passed but load is low/unavailable, trust position
+    if positions and "m5" in positions:
+        return abs(positions["m5"] - claw_closed_pos) > GRIP_VERIFY_TOLERANCE
+
+    # Fallback: assume grip succeeded if we can't read anything
+    print("  ⚠️  Grip verification unavailable (no sensor data), assuming success")
+    return True
+
+
+def send_scan_pose(ser, viz=None, claw_override=None):
     """Drive all five motors directly to SCAN_POSE step values.
 
     Uses raw joint positions (NOT IK) because SCAN_POSE is defined in
@@ -185,9 +339,19 @@ def send_scan_pose(ser, viz=None):
         The (mock or real) serial connection.
     viz : ArmVisualizer or None
         If provided, update the 3-D plot with the new motor positions.
+    claw_override : int or None
+        If provided, overrides the m5 (claw) value in SCAN_POSE.
     """
-    print("  🔄  Moving arm to SCAN_POSE for vision scan...")
-    cmd_json = json.dumps(SCAN_POSE)
+    if claw_override is None:
+        print("  🔄  Moving arm to SCAN_POSE for vision scan...")
+    else:
+        print("  📦  Moving arm to SCAN_POSE with payload...")
+
+    pose = SCAN_POSE.copy()
+    if claw_override is not None:
+        pose["m5"] = claw_override
+
+    cmd_json = json.dumps(pose)
     ser.write((cmd_json + "\n").encode())
 
     response = ser.readline().decode().strip()
@@ -195,7 +359,7 @@ def send_scan_pose(ser, viz=None):
         print(f"  ⚠️  Unexpected SCAN_POSE response: {response}")
 
     if viz is not None:
-        viz.update_plot(SCAN_POSE)
+        viz.update_plot(pose)
 
     # Allow motion to settle before capturing images
     time.sleep(max(1.0, MOVE_SETTLE_TIME))
@@ -252,7 +416,7 @@ def smooth_startup(ser, viz=None):
 #  SINGLE PICK-AND-PLACE CYCLE
 # ══════════════════════════════════════════════════════════════════════
 def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
-                      viz=None):
+                      viz=None, timer: CycleTimer | None = None) -> bool:
     """Execute one full pick-and-place cycle for a detected object.
 
     Parameters
@@ -269,6 +433,13 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
         The vision bridge instance (retained for future use).
     viz : ArmVisualizer or None
         Live 3-D visualizer (passed to movement commands).
+    timer : CycleTimer or None
+        If provided, phases will be timed and recorded.
+
+    Returns
+    -------
+    bool
+        True if the cycle completed successfully, False if grip verification failed.
     """
     colour = detection["colour"]
     obj_x  = detection["x"]
@@ -282,6 +453,8 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     # ── 2. APPROACHING (single full move) ────────────────────────────
     # Two-step approach removed — wrist-mounted camera occludes ball during approach (see ADR 003)
     log_state(State.APPROACHING, "Moving directly to grab position")
+    if timer:
+        timer.start_phase("approach")
 
     # Ensure claw is open before approaching
     send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="Ensuring claw is OPEN")
@@ -295,34 +468,66 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
 
     # ── 3. GRABBING ──────────────────────────────────────────────────
     log_state(State.GRABBING, f"Closing claw on {colour.upper()} ball")
+    if timer:
+        timer.start_phase("grab")
+
+    # (debug input() removed — was a measurement artifact)
+    print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {GRAB_HEIGHT:.1f} cm")
 
     print(f"  ✊  [CLAW] Closing... (dwell {GRAB_DWELL}s)")
     send_claw(ser, last_ik, CLAW_CLOSED_POS, label="CLOSE grip")
     time.sleep(GRAB_DWELL)
     print("  ✊  [CLAW] Object secured")
 
+    # ── 3b. VERIFY_GRIP ──────────────────────────────────────────────
+    log_state(State.VERIFY_GRIP, "Lifting to verify height and checking grip")
+
+    # Lift to VERIFY_HEIGHT (partial lift for grip check)
+    last_ik = send_command(
+        ser, arm, obj_x, obj_y, VERIFY_HEIGHT,
+        label="Lifting to verify height",
+        viz=viz,
+        claw_override=CLAW_CLOSED_POS
+    )
+
+    grip_ok = verify_grip(ser, CLAW_CLOSED_POS)
+    if not grip_ok:
+        print(f"  ❌  PICK FAILED — grip verification failed for {colour.upper()} ball")
+        # Open claw to release any partial grip
+        send_claw(ser, last_ik, CLAW_OPEN_POS, label="OPEN grip (pick failed recovery)")
+        time.sleep(RELEASE_DWELL)
+        return False
+
+    print(f"  ✅  Grip verified — proceeding with {colour.upper()} ball")
+
     # Lift to clearance height before traversing
     last_ik = send_command(
         ser, arm, obj_x, obj_y, CLEARANCE_HEIGHT,
         label="Lifting to clearance height",
         viz=viz,
+        claw_override=CLAW_CLOSED_POS
     )
 
     # ── 4. MOVE TO SCAN POSE ─────────────────────────────────────────
     log_state(State.SORTING, "Returning to SCAN_POSE to drop the ball")
-    send_scan_pose(ser, viz=viz)
+    if timer:
+        timer.start_phase("sort")
+    send_scan_pose(ser, viz=viz, claw_override=CLAW_CLOSED_POS)
 
     # Small delay to let the arm stabilise before releasing
     time.sleep(0.5)
 
     # ── 5. DROPPING ──────────────────────────────────────────────────
     log_state(State.DROPPING, f"Releasing {colour.upper()} ball at SCAN_POSE")
+    if timer:
+        timer.start_phase("drop")
     print(f"  📤  [CLAW] Opening... (dwell {RELEASE_DWELL}s)")
     send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="OPEN grip (release)")
     time.sleep(RELEASE_DWELL)
     print("  📤  [CLAW] Object released at SCAN_POSE")
 
     log_state(State.DONE, "Cycle complete ✅")
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -405,6 +610,8 @@ def main():
     # ── Continuous scan → sort → rescan loop ──────────────────────────
     IDLE_RESCAN_DELAY = 3       # seconds to wait between idle rescans
     scan_round = 0
+    timer = CycleTimer()
+    pick_fail_count = 0         # consecutive pick failures for retry logic
 
     try:
         while True:
@@ -417,12 +624,16 @@ def main():
             # ── SCANNING ──────────────────────────────────────────────
             log_state(State.SCANNING, f"Scan round {scan_round}")
             time.sleep(SCAN_INTERVAL)   # wait SCAN_INTERVAL seconds before capturing frame
+
+            timer.start_cycle()
+            timer.start_phase("scan")
             detections = vision.scan_for_balls()
 
             if not detections:
                 # No balls found — wait before rescanning.
                 # Reset round counter so it never "runs out".
                 scan_round = 0
+                pick_fail_count = 0     # reset on new scan cycle
                 print("\n  📷  No objects found — workspace is clear")
                 print(f"  ⏳ Waiting for balls... (rescanning in {IDLE_RESCAN_DELAY}s)")
 
@@ -448,8 +659,24 @@ def main():
             print(f"\n[SCAN] Found {len(detections)} object(s). Processing the first: "
                   f"{detection['colour'].upper()} at ({detection['x']:.1f}, {detection['y']:.1f})")
 
-            run_sorting_cycle(ser, arm, detection, vision, viz=viz)
-            print("\n[DONE] Object processed — returning to SCAN_POSE for next cycle...")
+            success = run_sorting_cycle(ser, arm, detection, vision, viz=viz, timer=timer)
+
+            if success:
+                timings = timer.end_cycle()
+                timer.print_cycle_summary(timings)
+                pick_fail_count = 0     # reset on successful pick
+                print("\n[DONE] Object processed — returning to SCAN_POSE for next cycle...")
+            else:
+                pick_fail_count += 1
+                print(f"\n[PICK FAILED] Attempt {pick_fail_count}/{MAX_PICK_RETRIES} "
+                      f"for this detection")
+                if pick_fail_count >= MAX_PICK_RETRIES:
+                    print(f"  ⚠️  Skipping unreachable ball after {MAX_PICK_RETRIES} failed attempts")
+                    pick_fail_count = 0
+                else:
+                    print("  🔄  Returning to SCAN_POSE for retry (no idle delay)...")
+                # Skip idle delay — immediately loop back to scan
+                continue
 
             # In simulation mode, one pass is enough (fake data won't change)
             if not USE_REAL_CAMERA:
@@ -460,6 +687,9 @@ def main():
         print(f"\n\n{'━' * 60}")
         print("  ⛔  KeyboardInterrupt received — shutting down gracefully...")
         print(f"{'━' * 60}")
+
+    # Print session timing summary
+    timer.print_session_summary()
 
     # Return arm to SCAN_POSE before powering off
     try:
