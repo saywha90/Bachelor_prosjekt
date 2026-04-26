@@ -166,7 +166,7 @@ The homography maps four workspace corners (pixel coordinates) to their physical
 | **Input** | `OAKCamera` frames + `SimpleBallDetector` results |
 | **Output** | `List[dict]` — each `{"colour": str, "x": float, "y": float, "z": float}` in cm relative to shoulder joint |
 | **Modes** | `use_camera=True` (real OAK-D) or `use_camera=False` (canned fake detections for simulation) |
-| **Calibration** | Loaded from `homography_calibration.json` (auto-saved by `06_homography.py`); falls back to hardcoded defaults |
+| **Calibration** | Loaded from `homography_calibration.json` (auto-saved by `09_touch_calibration.py`); falls back to hardcoded defaults |
 | **File** | [`src/ik/vision_bridge.py`](../src/ik/vision_bridge.py) |
 
 ### 2.4 State Machine
@@ -177,7 +177,7 @@ The master control loop in `main.py` implements a state machine that orchestrate
 |---|---|
 | **Input** | Detection dicts from `VisionBridge`, constants from `config/arm.py` |
 | **Output** | Motor commands (JSON) sent via serial to the OpenRB-150 |
-| **States** | `IDLE`, `MOVE_TO_SCAN_POSE`, `SCANNING`, `APPROACHING`, `GRABBING`, `SORTING`, `DROPPING`, `DONE` |
+| **States** | `IDLE`, `MOVE_TO_SCAN_POSE`, `SCANNING`, `APPROACHING`, `GRABBING`, `VERIFY_GRIP`, `SORTING`, `DROPPING`, `DONE` |
 | **Settle time** | 1.5 s per movement command (`MOVE_SETTLE_TIME`) when using real serial |
 | **File** | [`src/main.py`](../src/main.py) |
 
@@ -210,6 +210,7 @@ The OpenRB-150 microcontroller runs firmware written in the Arduino framework (`
 |---|---|---|
 | `{"m1":N,"m2":N,"m3":N,"m4":N,"m5":N}` | Set goal positions for all 5 motors | `OK` |
 | `{"cmd":"read_pos"}` | Read current positions of all motors | `{"m1":N,...,"m5":N}` |
+| `{"cmd":"read_load"}` | Read Present Load from all motors (address 126) | `{"m1":N,...,"m5":N}` |
 | `{"cmd":"set_profile","vel":V,"acc":A}` | Set motion profile (velocity, acceleration) | `{"status":"profile_set"}` |
 | `{"cmd":"enable_torque"}` | Enable torque on all motors | `OK:TORQUE_ON` |
 | `{"cmd":"clear_errors"}` | Reboot motors with latched hardware errors | `{"cleared":N}` |
@@ -234,9 +235,11 @@ Configuration is split into two modules:
 - `GRAB_HEIGHT` = 13.0 cm — Z when closing the claw
 - `APPROACH_HEIGHT` = 24.0 cm — Z during the 80% XY approach
 - `CLEARANCE_HEIGHT` = 28.0 cm — Z to lift to before traversing
+- `VERIFY_HEIGHT` = 8.0 cm — Z to lift to for grip verification
 - `CAMERA_OFFSET_X/Y` = 0.0 cm — fine-tuning offset (homography maps directly to shoulder frame)
 - `BINS` — colour-to-position mapping: `RED_BIN` (20, 8, 10), `BLUE_BIN` (20, −8, 10), `REJECT_BIN` (25, 0, 12)
 - Timing: `GRAB_DWELL` = 0.8 s, `RELEASE_DWELL` = 0.5 s
+- Grip verification: `GRIP_VERIFY_TOLERANCE` = 30 steps, `GRIP_LOAD_THRESHOLD` = 50, `MAX_PICK_RETRIES` = 2
 
 **`src/config/vision.py`** — Vision subsystem constants:
 - `CAMERA_RESOLUTION` = (640, 400)
@@ -263,7 +266,8 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 | `MOVE_TO_SCAN_POSE` | Move the arm to `SCAN_POSE` so the wrist-mounted camera has a valid view of the workspace. |
 | `SCANNING` | `VisionBridge.scan_for_balls()` captures frames and returns detections. |
 | `APPROACHING` | Two-phase approach: 80% partial move at `APPROACH_HEIGHT`, then 100% at `GRAB_HEIGHT`. |
-| `GRABBING` | Close the claw, wait `GRAB_DWELL`, lift to `CLEARANCE_HEIGHT`. |
+| `GRABBING` | Close the claw, wait `GRAB_DWELL`, lift to `VERIFY_HEIGHT`. |
+| `VERIFY_GRIP` | Grip verification via position check and load check. On failure, open claw and immediately re-scan (up to `MAX_PICK_RETRIES` attempts before skipping). On success, lift to `CLEARANCE_HEIGHT` and continue. |
 | `SORTING` | Return to `HOME_POSITION` while carrying the ball. |
 | `DROPPING` | Open the claw at HOME, wait `RELEASE_DWELL`. |
 | `DONE` | Cycle complete. Control returns to the main loop for the next scan. |
@@ -318,9 +322,29 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
                          │    │  GRABBING     │
                          │    │  close claw   │
                          │    │  lift to      │
-                         │    │  CLEARANCE    │
+                         │    │  VERIFY_HEIGHT │
                          │    └──────┬───────┘
                          │           │
+                         │           ▼
+                         │    ┌──────────────────┐
+                         │    │  VERIFY_GRIP      │
+                         │    │  position check   │───── fail ──┐
+                         │    │  + load check     │             │
+                         │    └──────┬───────────┘             │
+                         │           │ pass                     │
+                         │           │                  ┌───────▼────────┐
+                         │           │                  │ open claw,     │
+                         │           │                  │ immediate      │
+                         │           │                  │ re-scan        │
+                         │           │                  │ (retry ≤ 2)    │
+                         │           │                  └───────┬────────┘
+                         │           │                          │
+                         │           │                  ┌───────▼────────┐
+                         │           │                  │ retries left?  │
+                         │           │                  └──┬──────────┬──┘
+                         │           │              yes │          │ no
+                         │           │     (→ SCANNING) │          │ (skip ball
+                         │           │                  │          │  → DONE)
                          │           ▼
                          │    ┌──────────────┐
                          │    │  SORTING      │
@@ -346,6 +370,7 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 | Failure | Handling |
 |---|---|
 | **No balls detected** | Main loop resets `scan_round` to 0, waits `IDLE_RESCAN_DELAY` (3 s), then rescans continuously. The OpenCV window stays responsive during the idle wait. |
+| **Pick failed (grip verification)** | After closing the claw, the arm lifts to `VERIFY_HEIGHT` (8 cm) and checks grip via two methods: (1) **Position check** — if claw motor position reached `CLAW_CLOSED_POS` within `GRIP_VERIFY_TOLERANCE` (30 steps), the claw closed on air → pick failed; (2) **Load check** — if claw motor load exceeds `GRIP_LOAD_THRESHOLD` (50), something is being gripped → pick confirmed. On failure, the claw opens and the system immediately re-scans (skips idle delay). Up to `MAX_PICK_RETRIES` (2) attempts before skipping the ball. Helper functions: `read_positions()`, `read_load()`, `verify_grip()`. |
 | **Camera fails to open** | `vision.open()` returns `False`; `main()` prints an error and exits immediately (no fallback to fake data in production mode). |
 | **IK target unreachable** | `ArmIK.solve()` clamps targets beyond `max_reach` (L1 + L2 = 48.5 cm) to 99% of max reach, preserving the base angle. Targets too close raise `ValueError`. |
 | **Motor overload / hardware error** | On startup, firmware reboots any motor with a latched hardware error. Python-side `clear_errors` command available. Joint limits in `ArmIK.JOINT_LIMITS` prevent commands that would cause overload. |
@@ -368,7 +393,26 @@ Falls back to a direct (slow-profile) HOME command if position reading fails.
 
 Vision is only valid when the arm is at `SCAN_POSE`. The camera moves with the wrist (motors 1–4), so the homography calibration is only valid at the exact joint configuration where it was performed. Mid-approach visual correction was removed because the claw occludes the target ball during approach.
 
-The state machine enforces this by always transitioning through `MOVE_TO_SCAN_POSE` before entering `SCANNING`, and again after `DROPPING` before the next scan cycle. The flow is: `HOME → MOVE_TO_SCAN_POSE → SCANNING → APPROACHING → GRABBING → SORTING → DROPPING → MOVE_TO_SCAN_POSE → ...`
+The state machine enforces this by always transitioning through `MOVE_TO_SCAN_POSE` before entering `SCANNING`, and again after `DROPPING` before the next scan cycle. The flow is: `HOME → MOVE_TO_SCAN_POSE → SCANNING → APPROACHING → GRABBING → VERIFY_GRIP → SORTING → DROPPING → MOVE_TO_SCAN_POSE → ...`
+
+### 3.6 Timing Instrumentation
+
+The `CycleTimer` class in [`src/main.py`](../src/main.py) tracks the wall-clock duration of each phase within a pick-and-place cycle: **scan**, **approach**, **grab**, **sort**, and **drop**. Phase transitions are recorded by calling `timer.start_phase(name)` at the beginning of each state.
+
+After each successful cycle, a per-cycle summary is printed:
+
+```
+⏱️  Cycle time: 4.20s (scan: 0.30s, approach: 1.80s, grab: 0.50s, sort: 1.20s, drop: 0.40s)
+```
+
+On program exit (graceful shutdown or `KeyboardInterrupt`), a session summary is printed with average, minimum, and maximum durations across all completed cycles:
+
+```
+SESSION TIMING SUMMARY (5 cycles)
+approach: avg 1.80s, grab: avg 0.50s, scan: avg 0.30s, sort: avg 1.20s, drop: avg 0.40s, total: avg 4.20s
+```
+
+This data is intended for the performance evaluation section of the thesis. See [`docs/performance.md`](performance.md) for expected phase durations.
 
 ---
 
@@ -471,8 +515,8 @@ The system requires a 10-step calibration pipeline before autonomous operation. 
 |:---:|---|---|
 | **4** | `src/calibration/04_hsv_tuner.py` | Interactive live HSV range tuning with trackbars under actual lighting conditions |
 | **5** | `src/calibration/05_hsv_refine.py` | Statistical refinement of HSV ranges from captured training images |
-| **6** | `src/calibration/06_homography.py` | Click 4 workspace corners in the camera feed, enter physical measurements → compute the pixel-to-cm perspective transform |
-| **6b** | `src/calibration/06b_workspace.py` | Verify camera height and confirm that the camera can see balls across the entire arm workspace |
+| **6** | `src/calibration/09_touch_calibration.py` | Click 4 workspace corners in the camera feed, drive the arm to touch each corner → compute the pixel-to-cm perspective transform |
+
 
 ### Phase C — Integration (arm + camera together)
 

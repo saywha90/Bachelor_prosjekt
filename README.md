@@ -115,8 +115,8 @@ autonomia/
 │   │   ├── 03_sag.py                 📐 Sag/droop compensation (Step 3)
 │   │   ├── 04_hsv_tuner.py           🎨 Interactive live HSV trackbar tuner (Step 4)
 │   │   ├── 05_hsv_refine.py          🔬 Analyse images → suggest new HSV ranges (Step 5)
-│   │   ├── 06_homography.py          🎯 Pixel-to-cm homography calibration (Step 6)
-│   │   ├── 06b_workspace.py          ✅ Camera height & scan region verification (Step 6b)
+│   │   ├── 06_homography.py          🎯 Pixel-to-cm homography calibration (Step 6, legacy)
+│   │   ├── 09_touch_calibration.py   🤖 Touch-based homography calibration (replaces Step 6)
 │   │   ├── 07_vision_offset.py       🔧 Fine-tune camera-to-shoulder offset (Step 7)
 │   │   └── 08_pick_test.py           🧪 End-to-end pick-and-place test (Step 8)
 │   │

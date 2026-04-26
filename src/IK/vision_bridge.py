@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 #
 # These hardcoded values are kept as a *reference only*.  At runtime the
 # calibration is loaded from ``homography_calibration.json`` (see
-# ``VisionBridge.__init__``).  Run  python -m src.calibration.06_homography
+# ``VisionBridge.__init__``).  Run  python -m src.calibration.09_touch_calibration
 # to regenerate the JSON after any physical repositioning.
 #
 # _DEFAULT_WORKSPACE_PX = np.float32([
@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 #     [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
 # ])
 
-# ── Calibration JSON path (auto-saved by 06_homography.py) ───────────
+# ── Calibration JSON path (auto-saved by 09_touch_calibration.py) ────
 _CALIBRATION_FILE = (
     Path(__file__).resolve().parent.parent
     / "calibration"
@@ -143,7 +143,7 @@ class VisionBridge:
         if not _CALIBRATION_FILE.is_file():
             raise FileNotFoundError(
                 "No homography calibration found. "
-                "Run 'python -m src.calibration.06_homography' first."
+                "Run 'python -m src.calibration.09_touch_calibration' first."
             )
 
         with open(_CALIBRATION_FILE, "r") as fh:

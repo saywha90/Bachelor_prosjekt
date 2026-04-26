@@ -21,10 +21,10 @@ See [`docs/calibration.md`](../../docs/calibration.md) for full instructions for
 | `03_sag.py` | 03 | Gravity sag compensation table |
 | `04_hsv_tuner.py` | 04 | Interactive HSV colour range tuning |
 | `05_hsv_refine.py` | 05 | HSV threshold refinement |
-| `06_homography.py` | 06 | Camera-to-workspace homography |
-| `06b_workspace.py` | 06b | Workspace boundary verification |
+| `06_homography.py` | 06 | Camera-to-workspace homography _(legacy — see `09_touch_calibration.py`)_ |
 | `07_vision_offset.py` | 07 | Vision-to-arm offset calibration |
 | `08_pick_test.py` | 08 | End-to-end pick success validation |
+| `09_touch_calibration.py` | 09 | **Touch-based homography** — arm physically touches corners for accurate calibration (replaces Step 06) |
 
 Run each script with the arm and camera connected:
 

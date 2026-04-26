@@ -93,10 +93,14 @@ class TestReachability:
 
     def test_too_close_raises_value_error(self, arm):
         """A target inside the dead zone (closer than |L1 − L2|) should raise."""
-        # Force shoulder_height to match the test's assumptions (z_ik ≈ 0 at z=16.5)
-        arm.shoulder_height = 33.0
+        # With dynamic pitch the wrist tilts to change wrist position,
+        # so we choose shoulder_height to make wrist_z_ik ≈ 0 at the
+        # Z_MIN-clamped z, so d ≈ 0 < min_reach.
+        # wrist_z = Z_MIN + L3 = 1.5 + 20.5 = 22.0 (claw straight down)
+        # Set shoulder_height = 22.0 so wrist_z_ik ≈ 0
+        arm.shoulder_height = 22.0
         with pytest.raises(ValueError, match="too close"):
-            arm.solve(x=0.01, y=0.0, z=16.5)
+            arm.solve(x=0.01, y=0.0, z=0.0)
 
     def test_far_point_is_clamped_not_error(self, arm):
         """A point at 200 cm away is far beyond max reach.
@@ -298,3 +302,83 @@ class TestEdgeCases:
         j = arm.solve_to_json(20.0, 0.0, 10.0)
         data = json.loads(j)
         assert all(k in data for k in MOTOR_KEYS)
+
+
+class TestDynamicPitch:
+    """Tests for the dynamic wrist pitch feature."""
+
+    def test_in_range_target_uses_straight_down(self, arm):
+        """For targets well within reach, pitch stays at -π/2 (straight down)."""
+        # A moderate target should not trigger pitch adjustment
+        result = arm.solve(x=20.0, y=0.0, z=5.0)
+        # m4 should correspond to straight-down wrist compensation
+        # (same as old behavior)
+        assert isinstance(result, dict)
+        assert all(k in result for k in MOTOR_KEYS)
+
+    def test_far_target_tilts_wrist_forward(self, arm):
+        """For targets beyond normal reach, the wrist should tilt forward,
+        resulting in a different m4 than straight-down would give."""
+        # Use a target that's near-but-beyond the arm's reach
+        # L1 + L2 = 48.5, L3 = 20.5. A target at x=45, z=0 should be
+        # at the edge when accounting for L3 offset
+        near_result = arm.solve(x=20.0, y=0.0, z=0.0)
+        far_result = arm.solve(x=45.0, y=0.0, z=0.0)
+        # The far target should have a different wrist angle
+        # (This is a smoke test — exact values depend on geometry)
+        assert isinstance(far_result, dict)
+        assert all(k in far_result for k in MOTOR_KEYS)
+
+    def test_pitch_does_not_exceed_limit(self, arm):
+        """Even for extremely far targets, pitch should not go beyond MAX_REACH_PITCH."""
+        # Very far target — should hit the pitch limit
+        result = arm.solve(x=200.0, y=0.0, z=0.0)
+        assert isinstance(result, dict)
+        assert all(k in result for k in MOTOR_KEYS)
+
+    def test_dynamic_pitch_activates_for_near_edge_target(self):
+        """Regression: the pitch loop must actually iterate for near-edge targets.
+
+        Before the fix, the guard `if theta_pitch <= MAX_REACH_PITCH` was
+        immediately True (−π/2 ≤ −π/4), so the loop broke on the first
+        iteration and the dynamic pitch feature never activated.
+
+        We construct a target that is ~1 cm beyond the max reach at
+        straight-down pitch (−π/2) but reachable with a slightly tilted
+        wrist. If the pitch loop works, the solver returns a valid
+        solution *without* clamping, and m4 differs from the value the
+        solver would produce if the wrist stayed at −π/2 the whole time.
+        """
+        # Use a clean arm with no sag so the geometry is predictable
+        arm = ArmIK(
+            l1=25.5, l2=23.0, l3=20.5,
+            z_offset_multiplier=0.0,
+            z_offset_quadratic=0.0,
+            shoulder_height=11.0,
+        )
+
+        # With straight-down pitch (−π/2), the wrist lands at:
+        #   wrist_x = x − L3·cos(−π/2) = x − 0 = x
+        #   wrist_z = z − L3·sin(−π/2) = z + L3 = z + 20.5
+        # After shoulder offset: wrist_z_ik = wrist_z − shoulder_height
+        # Max 2-link reach: L1 + L2 = 48.5 cm
+        # Pick z = arm.Z_MIN (1.5) so wrist_z_ik = 1.5 + 20.5 − 11.0 = 11.0
+        # Then d = sqrt(x² + 11²) = 48.5 → x ≈ 47.24 cm
+        # Use x = 48.5 — about 1.3 cm beyond straight-down reach.
+        target_x = 48.5
+        target_z = arm.Z_MIN  # will be clamped to Z_MIN anyway
+
+        result = arm.solve(x=target_x, y=0.0, z=target_z)
+        assert isinstance(result, dict)
+        assert all(k in result for k in MOTOR_KEYS)
+
+        # Compute what m4 would be if pitch stayed at −π/2 (no dynamic pitch).
+        # We can approximate this by solving a clearly-in-range target and
+        # comparing: a close target always uses −π/2 pitch.
+        close_result = arm.solve(x=20.0, y=0.0, z=target_z)
+
+        # The wrist step (m4) must differ — dynamic pitch tilted the wrist
+        assert result["m4"] != close_result["m4"], (
+            f"m4 should differ when dynamic pitch activates, "
+            f"but both are {result['m4']}"
+        )

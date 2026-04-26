@@ -5,7 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [Unreleased] – 2026-04-25
+
+### Added
+- **Pick-failed recovery**: `VERIFY_GRIP` state with position-based and load-based grip verification after each grab. On failure, the system opens the claw and immediately re-scans (up to 2 retries before skipping).
+- **Timing instrumentation**: `CycleTimer` class logs duration of each phase (scan, approach, grab, sort, drop) per cycle, with session-level averages on exit.
+- **Firmware `read_load` command**: reads Present Load from all Dynamixel motors for grip force measurement.
+- Grip verification config constants: `GRIP_VERIFY_TOLERANCE`, `GRIP_LOAD_THRESHOLD`, `MAX_PICK_RETRIES`, `VERIFY_HEIGHT`.
+
+## [Unreleased – previous]
 
 ### Added
 - `argparse` CLI flags `--real-serial` / `--real-camera` replacing hardcoded `USE_REAL_*` booleans in `src/main.py`

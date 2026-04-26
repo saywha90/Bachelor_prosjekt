@@ -22,6 +22,8 @@ import logging
 import math
 from typing import Optional
 
+from config.arm import MAX_REACH_PITCH
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,30 +189,54 @@ class ArmIK:
         if z < self.Z_MIN:
             z = self.Z_MIN
 
-        # ── 1. End-effector offset ────────────────────────────────────
-        #   Add L3 to Z so the wrist hovers above the object and the
-        #   claw (pointing straight down) reaches the target.
-        z_ik = z + self.L3
+        # ── 1. Dynamic claw pitch for extended reach ──────────────────
+        #   Start with claw pointing straight down (−π/2). If the target
+        #   is beyond reach, tilt the wrist forward in 1° steps until
+        #   the 2-link sub-chain can reach the wrist position, or until
+        #   we hit MAX_REACH_PITCH.
+        theta_pitch = -math.pi / 2.0  # start: straight down
 
-        # ── 2. Sag / droop compensation (linear or quadratic model) ──
+        # Sag / droop compensation (compute once from original horiz_reach)
         horiz_reach = math.sqrt(x ** 2 + y ** 2)
         if self.sag_model == "quadratic" and self.z_offset_quadratic != 0.0:
-            z_ik += (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+            sag_correction = (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier + self.z_offset_constant
         else:
-            z_ik += horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+            sag_correction = horiz_reach * self.z_offset_multiplier + self.z_offset_constant
 
-        # ── 3. Account for shoulder height ────────────────────────────
-        z_ik -= self.shoulder_height
+        max_reach = self.L1 + self.L2
+        pitch_step = math.radians(1)  # 1° per iteration
 
-        # ── 4. Base angle (Motor 1) ───────────────────────────────────
+        while True:
+            # Wrist position derived from pitch angle
+            wrist_x = x - self.L3 * math.cos(theta_pitch)
+            wrist_z = z - self.L3 * math.sin(theta_pitch)
+
+            # Apply sag compensation and shoulder height offset
+            wrist_z_ik = wrist_z + sag_correction - self.shoulder_height
+
+            # Planar reach from shoulder to wrist in the arm's 2D plane
+            r = math.sqrt(wrist_x ** 2 + y ** 2)
+            d = math.sqrt(r ** 2 + wrist_z_ik ** 2)
+
+            if d <= max_reach:
+                break  # Reachable — use this pitch
+
+            # Not reachable; try tilting forward (increasing pitch toward 0)
+            if theta_pitch >= MAX_REACH_PITCH:
+                break  # Hit the limit; use current (most-tilted) pitch
+
+            theta_pitch += pitch_step  # tilt forward (from -π/2 toward 0)
+
+        # ── 2. Use the final wrist position for remaining IK ──────────
+        z_ik = wrist_z_ik
+
+        # ── 3. Base angle (Motor 1) ───────────────────────────────────
         theta_base = math.atan2(y, x)   # radians
 
-        # ── 5. Planar distance to target (in the arm's 2-D plane) ─────
-        r = horiz_reach              # horizontal distance
-        d = math.sqrt(r ** 2 + z_ik ** 2)  # straight-line distance
+        # ── 4. Planar distance to target (in the arm's 2-D plane) ─────
+        # r and d already computed in the pitch loop above
 
         # Reachability check
-        max_reach = self.L1 + self.L2
         min_reach = abs(self.L1 - self.L2)
 
         if d > max_reach:
@@ -265,16 +291,12 @@ class ArmIK:
         # Shoulder servo angle relative to horizontal
         theta_shoulder = phi + alpha
 
-        # ── 8. Wrist compensation for vertical end-effector ──────────
-        #   We want the claw to point straight down (−Z).  The total
-        #   tilt of the arm chain is (shoulder − elbow).  The wrist
-        #   must add the remaining rotation to reach −π/2 from
-        #   horizontal.
-        #
-        #   Arm tilt from horizontal = theta_shoulder - theta_elbow
-        #   Desired total = -π/2 (pointing down from horizontal)
-        #   wrist = -π/2 - (theta_shoulder - theta_elbow)
-        theta_wrist = (-math.pi / 2.0) - (theta_shoulder - theta_elbow)
+        # ── 8. Wrist angle using dynamic pitch ────────────────────────
+        #   theta_pitch starts at −π/2 (straight down) and may have been
+        #   tilted forward by the pitch loop above.  The wrist servo must
+        #   compensate for the arm chain's orientation so the claw reaches
+        #   the desired pitch.
+        theta_wrist = theta_pitch - (theta_shoulder - theta_elbow)
 
         # ── 9. Convert to Dynamixel steps ────────────────────────────
         # Motor 1 uses M1_CENTRE (2048) — Dynamixel centre = straight ahead.

@@ -52,10 +52,10 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 #
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
-# Use  python src/calibration/06_homography.py  to recalibrate.
+# Use  python src/calibration/09_touch_calibration.py  to recalibrate.
 CAMERA_OFFSET_X = 0.0     # homography is shoulder-relative; no offset needed
-CAMERA_OFFSET_Y = 0.0     # homography is shoulder-relative; no offset needed
-CAMERA_HEIGHT   = 29.0   # cm – camera lens height above table surface (measured 2026-04-25)
+CAMERA_OFFSET_Y = 1.5     # Offset to shift the arm to the left (tuned)
+CAMERA_HEIGHT   = 35.5   # cm – camera lens height above table surface (measured 2026-04-25)
 
 # ── Wrist-mounted camera scan pose ──────────────────────────────────
 # Joint positions (Dynamixel steps) where the arm parks the
@@ -74,9 +74,9 @@ CAMERA_HEIGHT   = 29.0   # cm – camera lens height above table surface (measur
 SCAN_POSE = {
     "m1": 2048,
     "m2": 2750,   # shoulder raised — wrist ~35 cm above desk
-    "m3": 750,    # elbow folded — forearm angled down toward desk
-    "m4": 1050,   # wrist tilted — camera optical axis points at workspace
-    "m5": 2248,   # claw open and out of camera view
+    "m3": 1000,    # elbow folded — forearm angled down toward desk
+    "m4": 850,   # wrist tilted — camera optical axis points at workspace
+    "m5": 2048,   # claw open and out of camera view
 }
 
 # Tolerance for verifying the arm is actually at SCAN_POSE before
@@ -91,6 +91,19 @@ SCAN_POSE_TOLERANCE = 20
 # Increase VEL to move faster; decrease ACC for a softer start/stop.
 STARTUP_PROFILE_VEL = 60    # fast but controlled (not sluggish, not instant)
 STARTUP_PROFILE_ACC = 15    # gentle ramp-up / ramp-down
+
+# ── IK pitch limit ───────────────────────────────────────────────────
+# Maximum wrist pitch angle (radians) the IK solver will try when
+# tilting the claw forward to extend reach.  The pitch search starts
+# at −π/2 (straight down) and increments toward this value.
+# 0.0 = horizontal; negative values limit the tilt before horizontal.
+MAX_REACH_PITCH = 0.0
+
+# ── Grip verification ──────────────────────────────────────────────
+GRIP_VERIFY_TOLERANCE = 30        # Dynamixel steps: if claw pos is within this of CLAW_CLOSED_POS, grip failed
+GRIP_LOAD_THRESHOLD   = 50        # Minimum absolute load value to confirm grip (from read_load)
+MAX_PICK_RETRIES      = 2         # Number of re-grab attempts before skipping a ball
+VERIFY_HEIGHT         = 8.0       # cm – height to lift to for grip verification (between GRAB_HEIGHT and CLEARANCE_HEIGHT)
 
 
 def get_bin_coords(color_string: str) -> tuple:
