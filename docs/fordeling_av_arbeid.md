@@ -7,16 +7,17 @@ designvalg.
 
 | Person | Rolle | Tema |
 |--------|-------|------|
-| **U** | Kinematikk & verifisering | IK-solver, 3D-visualisering, FK-tester, touch-kalibrering |
-| **F** | Firmware & system-integrasjon | OpenRB-bro, hovedløkke, simulering, diagnostikk |
-| **O** | Datasyn (vision) | Kamera, ball-deteksjon, klassifisering, HSV-kalibrering |
+| **U** | Kinematikk, hardware & verifisering | IK-solver, 3D-visualisering, FK-tester, touch-/sag-/scan-kalibrering, hardware-valg, motor-diagnostikk, termal-beskyttelse |
+| **F** | Firmware & system-integrasjon | OpenRB-bro, hovedløkke, konfigurasjonsarkitektur, simulering, motor-kalibrering |
+| **O** | Datasyn (vision) | Kamera, ball-deteksjon, klassifisering, HSV-/homografi-kalibrering |
 
 ---
 
-## 👤 U — Kinematikk, Verifisering & 3D-Visualisering
+## 👤 U — Den Fysiske Armen: Hardware, Kinematikk, Verifisering & Diagnostikk
 
-**Rød tråd:** *"Hvordan armen vet hvor den skal — matematisk fundament,
-bevis og visualisering."*
+**Rød tråd:** *"Hele den fysiske armen — fra motorvalg og link-lengder,
+gjennom matematikken som styrer bevegelsen, til verifisering, 3D-visualisering,
+termal-beskyttelse og feilsøking."*
 
 ### Filer
 
@@ -41,7 +42,7 @@ bevis og visualisering."*
 | Dokument | Beskrivelse |
 |----------|-------------|
 | `docs/decisions/002-4dof-geometry.md` ⭐ | **Designvalg:** Hvorfor geometrisk IK fremfor numeriske/ML-tilnærminger. Inneholder ferdig sammenligningstabell mot Jacobian/gradient descent, ML-IK og Denavit–Hartenberg. |
-| `docs/decisions/003-fixed-scan-pose.md` | **Designvalg:** Hvorfor fast SCAN_POSE fremfor adaptiv scanning. Direkte koblet til `02c_scan_pose.py` og `arm.py`. |
+| `docs/decisions/003-fixed-scan-pose.md` | **Designvalg:** Hvorfor fast SCAN_POSE fremfor adaptiv scanning. Direkte koblet til `02c_scan_pose.py`. |
 | `docs/decisions/004-touch-calibration-replaces-homography.md` | Støtter `09_touch_calibration.py` — hvorfor touch erstatter linjals-måling. |
 | `docs/troubleshooting.md` | Feilsøkingsguide — IK-relaterte problemer (rekkevidde, joint limits, sag), SCAN_POSE-justering, M3 termal-issues. |
 | `docs/hardware.md` | Maskinvarespesifikasjoner og hardware-valg — Dynamixel-motorvalg (XM430/XM540/XL430), link-lengder, kabling, hvorfor disse motorene ble valgt. |
@@ -67,10 +68,11 @@ bevis og visualisering."*
 
 ---
 
-## 👤 F — Firmware, System-Integrasjon & Diagnostikk
+## 👤 F — Firmware & System-Integrasjon
 
-**Rød tråd:** *"Hvordan systemet henger sammen — fra Pi til motor, og
-hvordan vi feilsøker når noe går galt."*
+**Rød tråd:** *"Hvordan systemet henger sammen — firmware-broen mellom
+Pi og motorer, hovedløkken som orkestrerer alt, og konfigurasjonen som
+binder IK til den virkelige verden."*
 
 ### Filer
 
@@ -173,6 +175,20 @@ presentasjoner:
 
 ---
 
+## 📈 Fordelingsstatistikk
+
+| Eier | Kode-filer | Dokumenter | Totalt |
+|------|-----------:|-----------:|-------:|
+| **U** | 13 | 5 | **18** |
+| **F** | 8 | 3 | **11** |
+| **O** | 16 | 3 | **19** |
+| Felles | 5 | 2 | **7** |
+| **Sum** | **42** | **13** | **55** |
+
+> *Antall ADRs (designvalg) per person: U har 3 (002, 003, 004) + hardware-valg, F har 0 dedikerte, O har 1 (001).*
+
+---
+
 ## 📊 Visuell oversikt
 
 ```
@@ -181,28 +197,46 @@ presentasjoner:
                     │  Hovedløkke          │
                     └──┬────────┬──────┬───┘
                        │        │      │
-            ┌──────────▼──┐  ┌──▼───┐  │
-            │ vision/ (O) │  │ ik/  │  │
-            │  - camera   │  │ (U)  │  │
-            │  - detector │◄─┤      │  │
-            │  - classif. │  │ solver│  │
-            └─────────────┘  └──┬───┘  │
-                                │       │
-                    ┌───────────▼───┐  │
-                    │ visualizer (U)│  │
-                    │   3D + FK     │  │
-                    └───────────────┘  │
-                                       │
-                    ┌──────────────────▼──┐
-                    │  openrb_bridge (F)  │
-                    │  Arduino firmware   │
-                    └──────────┬──────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │  5× Dynamixel       │
-                    │  (XM430/XM540/XL430)│
-                    └─────────────────────┘
+            ┌──────────▼──┐  ┌──▼─────────┐
+            │ vision/ (O) │  │  ik/ (U)   │
+            │  - camera   │  │  - solver  │
+            │  - detector │◄─┤            │  ◄── config/arm.py (F)
+            │  - classif. │  └──┬─────────┘      (parametere)
+            └─────────────┘     │
+                                │
+                    ┌───────────▼────────────┐
+                    │  visualizer (U)        │
+                    │  3D + Forward Kinem.   │
+                    │  + tester (U)          │
+                    └────────────────────────┘
+                                │
+                    ┌───────────▼────────────┐
+                    │  openrb_bridge (F)     │
+                    │  Arduino firmware      │
+                    └───────────┬────────────┘
+                                │
+                    ┌───────────▼────────────┐
+                    │  5× Dynamixel motorer  │  ◄── diagnostics/ (U)
+                    │  (XM430/XM540/XL430)   │      hardware.md (U)
+                    │   ↑ termal-beskyttelse │      termal-tester (U)
+                    └────────────────────────┘
 ```
+
+### Domeneansvar i ett blikk
+
+| Lag | Eier |
+|-----|------|
+| Hardware-valg (motorer, link-lengder) | **U** |
+| Firmware (Arduino C++) | **F** |
+| Konfigurasjon (arm.py, vision.py) | F / O |
+| IK-matematikk (solver, FK, tester, visualizer) | **U** |
+| Vision-pipeline (kamera, deteksjon, klassifisering) | **O** |
+| System-integrasjon (main.py, hovedløkke) | **F** |
+| Kalibrering — IK-relatert (sag, scan-pose, touch) | **U** |
+| Kalibrering — motor (joints, claw) | **F** |
+| Kalibrering — vision (HSV, homografi-offset) | **O** |
+| Motor-diagnostikk & termal-beskyttelse | **U** |
+| Feilsøking & troubleshooting | **U** |
 
 ---
 
