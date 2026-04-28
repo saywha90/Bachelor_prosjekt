@@ -96,10 +96,16 @@ def prompt(msg: str):
 # ── Constants ───────────────────────────────────────────────────────
 NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
 
-# Default test parameters
-TEST_Z = 2.0  # cm — matches GRAB_HEIGHT in src/config/arm.py
+# Default test parameters — TEST_Z raised to 10 cm to avoid desk hits
+# at long reaches (previously 2.0 cm, which caused the arm to hit the
+# desk at reaches >= 24 cm, corrupting calibration data).
+TEST_Z = 10.0  # cm — high enough to avoid desk contact at all reaches
 TEST_REACHES = [6, 12, 18, 24, 30, 36]  # cm, along X axis (Y = 0); 6 cm for near-range coverage
 NUM_REPEATS = 3  # measurements per reach point (averaged to reduce ruler noise)
+
+# Desk-hit detection threshold (cm).  If measured_z is at or below this
+# value the arm likely hit the desk surface and the reading is censored.
+DESK_HIT_THRESHOLD = 0.3
 
 
 # ── Measurement helpers ─────────────────────────────────────────────
@@ -172,8 +178,36 @@ def collect_data(arm: ArmIK, test_z: float, reaches: list,
 def fit_models(data: list):
     """Fit linear and quadratic compensation models to the measurement data.
 
-    Returns (linear_coeffs, quad_coeffs, linear_rmse, quad_rmse).
+    ALL data points — including desk-hit points — are used for fitting.
+    Desk-hit points (measured_z <= DESK_HIT_THRESHOLD) are detected and
+    warned about, but they provide valuable information about the error
+    curve at longer reaches and are kept in the fit to prevent dangerous
+    over-extrapolation from a linear-only model.
+
+    Returns (linear_coeffs, quad_coeffs, linear_rmse, quad_rmse, desk_hit_indices).
     """
+    # ── Detect desk-hit points (for warnings / annotation only) ─────
+    desk_hit_indices: list[int] = []
+    for i, (r, cmd_z, meas_z) in enumerate(data):
+        if meas_z <= DESK_HIT_THRESHOLD:
+            desk_hit_indices.append(i)
+            print(f"  ⚠ Desk hit at reach={r}cm: measured_z={meas_z}cm "
+                  f"(included in fit — error assumed ≈ +{cmd_z:.1f}cm)")
+
+    # If ALL points are desk-hits, we can't get meaningful variation
+    if len(desk_hit_indices) == len(data):
+        print("\n  ❌ ERROR: ALL data points are desk hits.")
+        print("     Cannot fit a meaningful model — every point is censored.")
+        print("     Suggestion: re-run calibration with a higher TEST_Z "
+              f"(current: {TEST_Z} cm).")
+        raise ValueError("All data points are desk hits — "
+                         "re-run with higher TEST_Z")
+
+    if len(data) < 2:
+        raise ValueError("Too few data points for fitting "
+                         f"(need ≥2, got {len(data)})")
+
+    # Use ALL data points for fitting
     reaches = np.array([r for r, _, _ in data])
     errors = np.array([cmd_z - meas_z for _, cmd_z, meas_z in data])
 
@@ -181,39 +215,59 @@ def fit_models(data: list):
     linear_coeffs = np.polyfit(reaches, errors, 1)
 
     # Quadratic: error = a * reach^2 + b * reach + c
-    quad_coeffs = np.polyfit(reaches, errors, 2)
+    if len(data) >= 3:
+        quad_coeffs = np.polyfit(reaches, errors, 2)
+    else:
+        # With <3 points quadratic is under-determined; mirror the linear fit
+        quad_coeffs = np.array([0.0, linear_coeffs[0], linear_coeffs[1]])
 
-    # RMSE for each fit
-    linear_rmse = float(np.sqrt(np.mean((np.polyval(linear_coeffs, reaches) - errors) ** 2)))
-    quad_rmse = float(np.sqrt(np.mean((np.polyval(quad_coeffs, reaches) - errors) ** 2)))
+    # RMSE for each fit (computed on ALL points)
+    linear_rmse = float(np.sqrt(np.mean(
+        (np.polyval(linear_coeffs, reaches) - errors) ** 2)))
+    quad_rmse = float(np.sqrt(np.mean(
+        (np.polyval(quad_coeffs, reaches) - errors) ** 2)))
 
-    return linear_coeffs, quad_coeffs, linear_rmse, quad_rmse
+    return linear_coeffs, quad_coeffs, linear_rmse, quad_rmse, desk_hit_indices
 
 
-def print_results(data, linear_coeffs, quad_coeffs, linear_rmse, quad_rmse):
-    """Print a formatted results table and model comparison."""
-    reaches = np.array([r for r, _, _ in data])
-    errors = np.array([cmd_z - meas_z for _, cmd_z, meas_z in data])
-    linear_pred = np.polyval(linear_coeffs, reaches)
+def print_results(data, linear_coeffs, quad_coeffs, linear_rmse, quad_rmse,
+                  desk_hit_indices=None):
+    """Print a formatted results table and model comparison.
 
-    linear_multiplier = linear_coeffs[0]
+    Desk-hit rows are annotated with "(desk hit)" but ARE included in
+    the fit — they provide valuable information about the error curve.
+    """
+    if desk_hit_indices is None:
+        desk_hit_indices = []
+
+    all_reaches = np.array([r for r, _, _ in data])
+    linear_pred = np.polyval(linear_coeffs, all_reaches)
+    quad_pred = np.polyval(quad_coeffs, all_reaches)
 
     print()
-    print("┌─────────────────────────────────────────────────────────┐")
-    print("│                SAG CALIBRATION RESULTS                  │")
-    print("├─────────┬──────────┬──────────┬──────────┬──────────────┤")
-    print("│ Reach   │ Cmd Z    │ Meas Z   │ Error    │ Lin. Pred    │")
-    print("├─────────┼──────────┼──────────┼──────────┼──────────────┤")
+    print("┌────────────────────────────────────────────────────────────────────────────┐")
+    print("│                        SAG CALIBRATION RESULTS                             │")
+    print("├─────────┬──────────┬───────────────────┬──────────┬─────────────┬──────────┤")
+    print("│ Reach   │ Cmd Z    │ Meas Z            │ Error    │ Lin. Pred   │ Qd. Pred │")
+    print("├─────────┼──────────┼───────────────────┼──────────┼─────────────┼──────────┤")
 
     for i, (reach, cmd_z, meas_z) in enumerate(data):
         err = cmd_z - meas_z
         lp = linear_pred[i]
-        print(f"│ {reach:5.1f} cm │ {cmd_z:6.1f} cm │ {meas_z:6.1f} cm │ {err:6.2f} cm │ {lp:8.2f} cm   │")
+        qp = quad_pred[i]
+        if i in desk_hit_indices:
+            meas_str = f"{meas_z:5.1f} (desk hit)"
+        else:
+            meas_str = f"{meas_z:5.1f} cm        "
+        print(f"│ {reach:5.1f} cm │ {cmd_z:6.1f} cm │ {meas_str} │ {err:6.2f} cm │ {lp:7.2f} cm   │ {qp:6.2f} cm │")
 
-    print("└─────────┴──────────┴──────────┴──────────┴──────────────┘")
+    print("└─────────┴──────────┴───────────────────┴──────────┴─────────────┴──────────┘")
+
+    if desk_hit_indices:
+        print(f"\n  ℹ {len(desk_hit_indices)} desk-hit point(s) detected (included in fit).")
 
     print()
-    print(f"Linear fit:  z_offset_multiplier = {linear_multiplier:.4f}  "
+    print(f"Linear fit:  slope = {linear_coeffs[0]:.4f}, intercept = {linear_coeffs[1]:.4f}  "
           f"(RMSE: {linear_rmse:.3f} cm)")
     print(f"Quadratic:   a={quad_coeffs[0]:.6f}, b={quad_coeffs[1]:.4f}, "
           f"c={quad_coeffs[2]:.4f}   (RMSE: {quad_rmse:.3f} cm)")
@@ -230,26 +284,38 @@ def print_results(data, linear_coeffs, quad_coeffs, linear_rmse, quad_rmse):
     else:
         print(f"\nRecommendation: Use linear model "
               f"(quadratic does not improve fit by ≥20%)")
-        print(f"  z_offset_multiplier = {linear_multiplier:.4f}")
-        print(f"  z_offset_constant   = {linear_coeffs[1]:.4f}")
+        print(f"  slope (z_offset_multiplier) = {linear_coeffs[0]:.4f}")
+        print(f"  intercept (z_offset_constant) = {linear_coeffs[1]:.4f}")
         recommended = "linear"
 
     return recommended
 
 
 def save_calibration(data, test_z, linear_coeffs, quad_coeffs,
-                     linear_rmse, quad_rmse, recommended):
-    """Save calibration results to sag_calibration.json."""
-    linear_multiplier = float(linear_coeffs[0])
+                     linear_rmse, quad_rmse, recommended,
+                     desk_hit_indices=None):
+    """Save calibration results to sag_calibration.json.
+
+    ALL measurements (including desk-hit points) go in "measurements".
+    The "desk_hits" field is a simple list of reach values where desk
+    contact was detected — kept for informational purposes only.
+    """
+    if desk_hit_indices is None:
+        desk_hit_indices = []
+
+    all_measurements = []
+    desk_hit_reaches = []
+    for i, (r, cz, mz) in enumerate(data):
+        all_measurements.append({"reach_cm": r, "commanded_z_cm": cz, "measured_z_cm": mz})
+        if i in desk_hit_indices:
+            desk_hit_reaches.append(r)
 
     calibration = {
         "test_z_cm": test_z,
-        "measurements": [
-            {"reach": r, "commanded_z": cz, "measured_z": mz}
-            for r, cz, mz in data
-        ],
+        "measurements": all_measurements,
+        "desk_hits": desk_hit_reaches,
         "linear": {
-            "z_offset_multiplier": linear_multiplier,
+            "slope": float(linear_coeffs[0]),
             "intercept": float(linear_coeffs[1]),
             "rmse_cm": float(linear_rmse),
         },
@@ -317,25 +383,26 @@ def main():
             return
 
         # ── Fit models ─────────────────────────────────────────────
-        linear_coeffs, quad_coeffs, linear_rmse, quad_rmse = fit_models(data)
+        linear_coeffs, quad_coeffs, linear_rmse, quad_rmse, desk_hit_indices = fit_models(data)
 
         # ── Print results ──────────────────────────────────────────
         recommended = print_results(data, linear_coeffs, quad_coeffs,
-                                    linear_rmse, quad_rmse)
+                                    linear_rmse, quad_rmse, desk_hit_indices)
 
         # ── Save to JSON ───────────────────────────────────────────
         save_calibration(data, test_z, linear_coeffs, quad_coeffs,
-                         linear_rmse, quad_rmse, recommended)
+                         linear_rmse, quad_rmse, recommended, desk_hit_indices)
 
         # ── Print next steps ───────────────────────────────────────
-        linear_multiplier = float(linear_coeffs[0])
         print()
         print("=" * 60)
         print("NEXT STEPS")
         print("=" * 60)
         print()
+        print(f"Recommended model: {recommended}")
+        print()
         print(f"To apply the linear model, edit src/ik/solver.py:")
-        print(f"    z_offset_multiplier: float = {linear_multiplier:.4f}")
+        print(f"    z_offset_multiplier: float = {linear_coeffs[0]:.4f}")
         print(f"    z_offset_constant:   float = {linear_coeffs[1]:.4f}")
         print()
         print(f"To apply the quadratic model, edit src/ik/solver.py:")
@@ -343,7 +410,8 @@ def main():
         print(f"    z_offset_multiplier: float = {quad_coeffs[1]:.4f}")
         print(f"    z_offset_constant:   float = {quad_coeffs[2]:.4f}")
         print()
-        print(f"NOTE: ArmIK also auto-loads sag_calibration.json on startup.")
+        print(f"NOTE: ArmIK auto-loads sag_calibration.json on startup.")
+        print(f"      The JSON file has been saved — no manual edits needed.")
         print()
 
     except KeyboardInterrupt:

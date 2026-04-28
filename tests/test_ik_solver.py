@@ -96,9 +96,9 @@ class TestReachability:
         # With dynamic pitch the wrist tilts to change wrist position,
         # so we choose shoulder_height to make wrist_z_ik ≈ 0 at the
         # Z_MIN-clamped z, so d ≈ 0 < min_reach.
-        # wrist_z = Z_MIN + L3 = 1.5 + 20.5 = 22.0 (claw straight down)
-        # Set shoulder_height = 22.0 so wrist_z_ik ≈ 0
-        arm.shoulder_height = 22.0
+        # wrist_z = Z_MIN + L3 = 1.5 + 22.0 = 23.5 (claw straight down)
+        # Set shoulder_height = 23.5 so wrist_z_ik ≈ 0
+        arm.shoulder_height = 23.5
         with pytest.raises(ValueError, match="too close"):
             arm.solve(x=0.01, y=0.0, z=0.0)
 
@@ -320,7 +320,7 @@ class TestDynamicPitch:
         """For targets beyond normal reach, the wrist should tilt forward,
         resulting in a different m4 than straight-down would give."""
         # Use a target that's near-but-beyond the arm's reach
-        # L1 + L2 = 48.5, L3 = 20.5. A target at x=45, z=0 should be
+        # L1 + L2 = 48.5, L3 = 22.0. A target at x=45, z=0 should be
         # at the edge when accounting for L3 offset
         near_result = arm.solve(x=20.0, y=0.0, z=0.0)
         far_result = arm.solve(x=45.0, y=0.0, z=0.0)
@@ -351,7 +351,7 @@ class TestDynamicPitch:
         """
         # Use a clean arm with no sag so the geometry is predictable
         arm = ArmIK(
-            l1=25.5, l2=23.0, l3=20.5,
+            l1=25.5, l2=23.0, l3=22.0,
             z_offset_multiplier=0.0,
             z_offset_quadratic=0.0,
             shoulder_height=11.0,
@@ -359,11 +359,11 @@ class TestDynamicPitch:
 
         # With straight-down pitch (−π/2), the wrist lands at:
         #   wrist_x = x − L3·cos(−π/2) = x − 0 = x
-        #   wrist_z = z − L3·sin(−π/2) = z + L3 = z + 20.5
+        #   wrist_z = z − L3·sin(−π/2) = z + L3 = z + 22.0
         # After shoulder offset: wrist_z_ik = wrist_z − shoulder_height
         # Max 2-link reach: L1 + L2 = 48.5 cm
-        # Pick z = arm.Z_MIN (1.5) so wrist_z_ik = 1.5 + 20.5 − 11.0 = 11.0
-        # Then d = sqrt(x² + 11²) = 48.5 → x ≈ 47.24 cm
+        # Pick z = arm.Z_MIN (1.5) so wrist_z_ik = 1.5 + 22.0 − 11.0 = 12.5
+        # Then d = sqrt(x² + 12.5²) = 48.5 → x ≈ 46.86 cm
         # Use x = 48.5 — about 1.3 cm beyond straight-down reach.
         target_x = 48.5
         target_z = arm.Z_MIN  # will be clamped to Z_MIN anyway

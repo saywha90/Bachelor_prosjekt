@@ -37,7 +37,7 @@ class ArmIK:
     # Measured from the real robot on 2026-04-21
     L1: float = 25.5   # Shoulder → Elbow
     L2: float = 23.0   # Elbow   → Wrist pivot
-    L3: float = 20.5   # Wrist pivot → Claw tip (updated from 16.5 on 2026-04-25)
+    L3: float = 22.0   # Wrist pivot → Claw tip (updated from 20.5 on 2026-04-27)
 
     # ── Dynamixel constants ────────────────────────────────────────────
     STEPS_PER_REV: int = 4096
@@ -82,7 +82,7 @@ class ArmIK:
         "m1": (0, 4095),       # Base pan: full range
         "m2": (600, 3500),     # Shoulder: avoid extreme up/down
         "m3": (600, 3500),     # Elbow: avoid extreme fold-back
-        "m4": (600, 3500),     # Wrist: avoid extreme tilt
+        "m4": (500, 3500),     # Wrist: avoid extreme tilt (lowered from 600 on 2026-04-27 — Ball #1 needed ~530)
         "m5": (0, 4095),       # Claw: full range
     }
 
@@ -135,8 +135,10 @@ class ArmIK:
                 self.z_offset_constant = cal["quadratic"].get("c", 0.0)
             elif "linear" in cal:
                 self.sag_model = "linear"
-                self.z_offset_multiplier = cal["linear"]["z_offset_multiplier"]
-                self.z_offset_constant = cal["linear"].get("intercept", 0.0)
+                lin = cal["linear"]
+                # Support both key names: "slope" (new) and "z_offset_multiplier" (legacy)
+                self.z_offset_multiplier = lin.get("slope", lin.get("z_offset_multiplier", 0.0))
+                self.z_offset_constant = lin.get("intercept", 0.0)
             logger.info(
                 "[ArmIK] Loaded sag calibration: model=%s, mult=%.4f, quad=%.6f, const=%.4f",
                 self.sag_model, self.z_offset_multiplier, self.z_offset_quadratic, self.z_offset_constant,
@@ -163,13 +165,18 @@ class ArmIK:
     # ──────────────────────────────────────────────────────────────────
     #  Core IK solver
     # ──────────────────────────────────────────────────────────────────
-    def solve(self, x: float, y: float, z: float) -> dict:
+    def solve(self, x: float, y: float, z: float, skip_sag: bool = False) -> dict:
         """Compute motor step positions for the given (x, y, z) target.
 
         Parameters
         ----------
         x, y, z : float
             Target coordinates in centimetres, where *z* points up.
+        skip_sag : bool
+            If True, skip the internal sag/droop compensation (set
+            ``sag_correction = 0.0``).  Use this when the caller has
+            already accounted for real-world sag — e.g. via touch-
+            calibrated grab heights — to avoid double-compensation.
 
         Returns
         -------
@@ -198,10 +205,28 @@ class ArmIK:
 
         # Sag / droop compensation (compute once from original horiz_reach)
         horiz_reach = math.sqrt(x ** 2 + y ** 2)
-        if self.sag_model == "quadratic" and self.z_offset_quadratic != 0.0:
-            sag_correction = (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+        if skip_sag:
+            sag_correction = 0.0
         else:
-            sag_correction = horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+            if self.sag_model == "quadratic" and self.z_offset_quadratic != 0.0:
+                sag_correction = (horiz_reach ** 2) * self.z_offset_quadratic + horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+            else:
+                sag_correction = horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+
+            # ── Safety clamp on sag correction ─────────────────────────
+            #   Prevent the polynomial model from producing dangerously
+            #   large corrections outside the calibrated reach range.
+            SAG_CORRECTION_MIN = -15.0  # max downward correction (cm)
+            SAG_CORRECTION_MAX = 20.0   # max upward correction (cm)
+            raw_sag = sag_correction
+            sag_correction = max(SAG_CORRECTION_MIN, min(sag_correction, SAG_CORRECTION_MAX))
+            if sag_correction != raw_sag:
+                logger.warning(
+                    "[IK] Sag correction %.2f cm clamped to [%.1f, %.1f] → %.2f cm "
+                    "(horiz_reach=%.1f)",
+                    raw_sag, SAG_CORRECTION_MIN, SAG_CORRECTION_MAX,
+                    sag_correction, horiz_reach,
+                )
 
         max_reach = self.L1 + self.L2
         pitch_step = math.radians(1)  # 1° per iteration
@@ -213,6 +238,18 @@ class ArmIK:
 
             # Apply sag compensation and shoulder height offset
             wrist_z_ik = wrist_z + sag_correction - self.shoulder_height
+
+            # ── Floor safety clamp ─────────────────────────────────
+            #   Ensure the sag-corrected target doesn't drive the claw
+            #   below Z_MIN (accounting for shoulder height).
+            wrist_z_floor = self.Z_MIN - self.L3 * math.sin(theta_pitch) - self.shoulder_height
+            if wrist_z_ik < wrist_z_floor:
+                logger.warning(
+                    "[IK] Sag-corrected wrist_z_ik=%.2f would place claw below Z_MIN=%.1f — "
+                    "clamping wrist_z_ik to %.2f (target z=%.1f, sag_correction=%.2f)",
+                    wrist_z_ik, self.Z_MIN, wrist_z_floor, z, sag_correction,
+                )
+                wrist_z_ik = wrist_z_floor
 
             # Planar reach from shoulder to wrist in the arm's 2D plane
             r = math.sqrt(wrist_x ** 2 + y ** 2)

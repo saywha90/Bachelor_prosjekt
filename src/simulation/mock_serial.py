@@ -111,6 +111,39 @@ class MockSerial:
             elif cmd == "set_profile":
                 self._pending_response = '{"status":"profile_set"}\n'
                 return len(data)
+            elif cmd == "set_current_limit":
+                motor_id = parsed.get("id", 0)
+                value = parsed.get("value", 0)
+                self._pending_response = json.dumps({
+                    "status": "current_limit_set", "id": motor_id, "value": value
+                }) + "\n"
+                return len(data)
+            elif cmd == "set_torque":
+                motor_id = parsed.get("id", 0)
+                enable = parsed.get("enable", True)
+                self._pending_response = json.dumps({
+                    "status": f"torque_{'on' if enable else 'off'}", "id": motor_id
+                }) + "\n"
+                return len(data)
+            elif cmd == "read_current":
+                # Return simulated zero current for all motors
+                resp = {f"m{mid}": 0 for mid in [1, 2, 3, 4, 5]}
+                self._pending_response = json.dumps(resp) + "\n"
+                return len(data)
+            elif cmd == "enable_torque":
+                self._pending_response = "OK:TORQUE_ON\n"
+                return len(data)
+            elif cmd == "clear_errors":
+                self._pending_response = '{"cleared":0}\n'
+                return len(data)
+            elif cmd == "read_load":
+                resp = {f"m{mid}": 0 for mid in [1, 2, 3, 4, 5]}
+                self._pending_response = json.dumps(resp) + "\n"
+                return len(data)
+            elif cmd == "read_errors":
+                resp = {f"m{mid}": 0 for mid in [1, 2, 3, 4, 5]}
+                self._pending_response = json.dumps(resp) + "\n"
+                return len(data)
             else:
                 self._pending_response = f"ERR:Unknown cmd: {cmd}\n"
                 return len(data)
@@ -120,7 +153,10 @@ class MockSerial:
         # ── Animate or sleep ──────────────────────────────────────────
         if parsed and self.visualizer and all(k in parsed for k in ("m1", "m2", "m3", "m4", "m5")):
             target_steps = {k: parsed[k] for k in ("m1", "m2", "m3", "m4", "m5")}
-            self._animate_move(target_steps)
+            if target_steps != self._current_steps:
+                self._animate_move(target_steps)
+            else:
+                logger.debug("[MOCK SERIAL] Target pose already reached; skipping no-op animation")
         else:
             logger.debug("[MOCK SERIAL] Simulating motor movement (%.1fs)...", self.move_delay)
             time.sleep(self.move_delay)

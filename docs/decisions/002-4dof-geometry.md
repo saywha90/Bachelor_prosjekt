@@ -11,7 +11,7 @@ The robotic arm has four degrees of freedom (base pan, shoulder tilt, elbow tilt
 The arm's link lengths are:
 - L1 = 25.5 cm (shoulder → elbow)
 - L2 = 23.0 cm (elbow → wrist pivot)
-- L3 = 16.5 cm (wrist pivot → claw tip)
+- L3 = 22.0 cm (wrist pivot → claw tip)
 
 The shoulder joint is elevated 33.0 cm above the workspace surface. The arm needs to reach positions 10–28 cm forward and ±22 cm left/right, picking balls from the table (Z ≈ 6–13 cm) and placing them in bins (Z ≈ 10–12 cm).
 

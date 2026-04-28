@@ -11,9 +11,51 @@ All coordinates are in centimetres, relative to the shoulder joint origin.
 Author: Bachelor Project 2026 – Autonomia
 """
 
+import json
 import logging
+import math
+from pathlib import Path
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+# ── Height calibration cache ──────────────────────────────────────────
+_height_calibration_cache: Optional[List[dict]] = None
+_height_calibration_loaded: bool = False
+
+CALIBRATION_FILE = Path(__file__).resolve().parent.parent / "calibration" / "homography_calibration.json"
+
+
+def load_height_calibration() -> Optional[List[dict]]:
+    """Load height_calibration data from homography_calibration.json.
+
+    Returns a list of ``{"distance": float, "z": float}`` entries sorted
+    by distance, or ``None`` if the file doesn't exist or doesn't contain
+    height calibration data.  The result is cached so the file is only
+    read once per process.
+    """
+    global _height_calibration_cache, _height_calibration_loaded
+    if _height_calibration_loaded:
+        return _height_calibration_cache
+
+    _height_calibration_loaded = True
+    try:
+        with open(CALIBRATION_FILE, "r") as f:
+            data = json.load(f)
+        raw = data.get("height_calibration")
+        if raw and isinstance(raw, list) and len(raw) >= 2:
+            # Sort by distance for interpolation
+            _height_calibration_cache = sorted(raw, key=lambda p: p["distance"])
+            logger.info(
+                "[CONFIG] Loaded height calibration with %d points from %s",
+                len(_height_calibration_cache), CALIBRATION_FILE,
+            )
+        else:
+            logger.info("[CONFIG] No height_calibration in %s — using formula fallback.", CALIBRATION_FILE)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
+        logger.info("[CONFIG] Could not load height calibration (%s) — using formula fallback.", exc)
+
+    return _height_calibration_cache
 
 # ── Bin positions ─────────────────────────────────────────────────────
 #   Z is set high enough so the arm clears the bin walls before dropping.
@@ -34,6 +76,23 @@ HOME_POSITION = (20.0, 0.0, 30.0)
 # ── Grab / drop heights ──────────────────────────────────────────────
 GRAB_HEIGHT      = 2.0   # z when closing the claw (target center of ball on table)
 CLEARANCE_HEIGHT = 15.0  # Reduced from 28.0; 15 is plenty of room and prevents IK clamping at far reaches
+
+# ── Distance-based grab height adjustment ─────────────────────────────
+#   The arm sags/flexes at every reach distance — even close balls can
+#   clip the desk if the grab height doesn't account for the horizontal
+#   distance.  This linear model raises the grab height proportionally
+#   to distance so the claw maintains safe clearance everywhere.
+#
+#   grab_z = GRAB_HEIGHT + distance * GRAB_HEIGHT_SLOPE
+#
+#   Tuning:
+#     GRAB_HEIGHT_SLOPE — cm of extra Z per cm of horizontal distance.
+#                         Start with 0.05 and increase if the claw still
+#                         scrapes at any distance.
+#     GRAB_HEIGHT_MAX   — cap so the arm doesn't lift too high and miss
+#                         the ball entirely.
+GRAB_HEIGHT_SLOPE     = 0.05   # cm extra Z per cm of horizontal distance (applied everywhere)
+GRAB_HEIGHT_MAX       = 5.0    # cm – absolute maximum grab height
 
 # DEPRECATED: APPROACH_HEIGHT was used by the old 2-step approach
 # (descend to approach height, then to grab height). Replaced with a
@@ -59,7 +118,7 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
 # Use  python src/calibration/09_touch_calibration.py  to recalibrate.
-CAMERA_OFFSET_X = 0.0     # homography is shoulder-relative; no offset needed
+CAMERA_OFFSET_X = 2.0     # arm falls 2cm short; add to reach further forward (tuned 2026-04-27)
 CAMERA_OFFSET_Y = 1.5     # Offset to shift the arm to the left (tuned)
 CAMERA_HEIGHT   = 35.5   # cm – camera lens height above table surface (measured 2026-04-25)
 
@@ -89,6 +148,31 @@ SCAN_POSE = {
 # running vision (Dynamixel steps; ~1.8° at 4096 steps/360°)
 SCAN_POSE_TOLERANCE = 20
 
+# ── M3 thermal protection in SCAN_POSE ───────────────────────────────
+# Motor 3 (XM430-W350, elbow) bears a heavy static gravity load in
+# SCAN_POSE (forearm + camera folded back ~92°).  At 0.47 A continuous
+# draw, it reaches concerning temperatures after ~5 minutes.
+#
+# Mitigation 1 — Reduced hold current:
+#   Lower the Current Limit (Dynamixel register 38) on M3 when the arm
+#   is parked at SCAN_POSE.  The motor only needs to *hold* position,
+#   not accelerate, so a lower limit reduces heat with minimal position
+#   drift.  Value is in mA (XM430: 1 unit ≈ 1 mA; max stall ~1400 mA).
+#   0 = disabled (use default / max current).
+#   300 mA is only a cautious starting point; treat it as experimental
+#   until runtime current/drift checks have been validated on hardware.
+M3_SCAN_CURRENT_LIMIT = 300     # mA — experimental scan-hold current cap for M3
+M3_DEFAULT_CURRENT_LIMIT = 1193  # mA — XM430-W350 factory default current limit
+
+# Mitigation 2 — Periodic torque relaxation (disabled by default):
+#   Torque-off at SCAN_POSE is mechanically unsafe unless a validated rest
+#   pose and recovery path exist.  Keep this path disabled until such a
+#   pose has been proven on hardware.
+M3_TORQUE_RELAX_ENABLED = False
+M3_RELAX_REST_POSE = None
+M3_RELAX_INTERVAL = 45.0   # seconds — only used if torque relaxation is explicitly enabled
+M3_RELAX_DURATION = 3.0    # seconds — only used if torque relaxation is explicitly enabled
+
 # ── Motion profile for startup home move ─────────────────────────────
 # Dynamixel profile velocity (~0.229 rpm per unit) and acceleration
 # (~214 rev/min² per unit) used when moving to SCAN_POSE on startup.
@@ -110,6 +194,166 @@ GRIP_VERIFY_TOLERANCE = 30        # Dynamixel steps: if claw pos is within this 
 GRIP_LOAD_THRESHOLD   = 50        # Minimum absolute load value to confirm grip (from read_load)
 MAX_PICK_RETRIES      = 2         # Number of re-grab attempts before skipping a ball
 VERIFY_HEIGHT         = 8.0       # cm – height to lift to for grip verification (between GRAB_HEIGHT and CLEARANCE_HEIGHT)
+
+
+def _interpolate_height(distance: float, calibration: List[dict]) -> float:
+    """Linearly interpolate the grab Z from calibrated (distance, z) pairs.
+
+    If *distance* is outside the calibrated range the nearest endpoint value
+    is returned (i.e. clamped extrapolation).
+    """
+    # calibration is already sorted by distance
+    if distance <= calibration[0]["distance"]:
+        return calibration[0]["z"]
+    if distance >= calibration[-1]["distance"]:
+        return calibration[-1]["z"]
+
+    # Find the two surrounding points
+    for j in range(len(calibration) - 1):
+        d0, z0 = calibration[j]["distance"], calibration[j]["z"]
+        d1, z1 = calibration[j + 1]["distance"], calibration[j + 1]["z"]
+        if d0 <= distance <= d1:
+            t = (distance - d0) / (d1 - d0) if d1 != d0 else 0.0
+            return z0 + t * (z1 - z0)
+
+    # Fallback (should not happen)
+    return calibration[-1]["z"]
+
+
+def compute_grab_height(x: float, y: float) -> float:
+    """Return the optimal grab Z (cm) for a ball at position (x, y).
+
+    **Calibrated mode** (preferred): If ``height_calibration`` data exists
+    in ``homography_calibration.json``, uses linear interpolation between
+    the calibrated (distance, z) points recorded during touch calibration.
+
+    **Formula fallback**: ``grab_z = GRAB_HEIGHT + distance * GRAB_HEIGHT_SLOPE``,
+    capped at ``GRAB_HEIGHT_MAX``.
+
+    Parameters
+    ----------
+    x, y : float
+        Ball position in arm-frame centimetres (x = forward, y = left/right).
+
+    Returns
+    -------
+    float
+        The Z coordinate (cm above desk) the arm should descend to for
+        a clean grab at this distance.
+    """
+    distance = math.sqrt(x ** 2 + y ** 2)
+
+    calibration = load_height_calibration()
+    if calibration is not None:
+        grab_z = _interpolate_height(distance, calibration)
+        logger.info(
+            "[CONFIG] Grab height for distance %.1f cm: %.2f cm "
+            "(interpolated from %d calibration points)",
+            distance, grab_z, len(calibration),
+        )
+        return grab_z
+
+    # Formula fallback
+    extra = distance * GRAB_HEIGHT_SLOPE
+    grab_z = GRAB_HEIGHT + extra
+    grab_z = min(grab_z, GRAB_HEIGHT_MAX)
+    logger.info(
+        "[CONFIG] Grab height for distance %.1f cm: %.2f cm "
+        "(formula: base=%.1f + extra=%.2f, capped at %.1f)",
+        distance, grab_z, GRAB_HEIGHT, extra, GRAB_HEIGHT_MAX,
+    )
+    return grab_z
+
+
+# ── Wrist calibration cache ───────────────────────────────────────────
+_wrist_calibration_cache: Optional[List[dict]] = None
+_wrist_calibration_loaded: bool = False
+
+
+def load_wrist_calibration() -> Optional[List[dict]]:
+    """Load wrist_calibration data from homography_calibration.json.
+
+    Returns a list of ``{"distance": float, "m4_offset": int}`` entries
+    sorted by distance, or ``None`` if the file doesn't exist or doesn't
+    contain wrist calibration data.  The result is cached so the file is
+    only read once per process.
+    """
+    global _wrist_calibration_cache, _wrist_calibration_loaded
+    if _wrist_calibration_loaded:
+        return _wrist_calibration_cache
+
+    _wrist_calibration_loaded = True
+    try:
+        with open(CALIBRATION_FILE, "r") as f:
+            data = json.load(f)
+        raw = data.get("wrist_calibration")
+        if raw and isinstance(raw, list) and len(raw) >= 2:
+            _wrist_calibration_cache = sorted(raw, key=lambda p: p["distance"])
+            logger.info(
+                "[CONFIG] Loaded wrist calibration with %d points from %s",
+                len(_wrist_calibration_cache), CALIBRATION_FILE,
+            )
+        else:
+            logger.info("[CONFIG] No wrist_calibration in %s — wrist correction disabled.", CALIBRATION_FILE)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
+        logger.info("[CONFIG] Could not load wrist calibration (%s) — wrist correction disabled.", exc)
+
+    return _wrist_calibration_cache
+
+
+def _interpolate_wrist(distance: float, calibration: List[dict]) -> int:
+    """Linearly interpolate the m4 offset from calibrated (distance, m4_offset) pairs.
+
+    If *distance* is outside the calibrated range the nearest endpoint value
+    is returned (i.e. clamped extrapolation).
+    """
+    if distance <= calibration[0]["distance"]:
+        return int(calibration[0]["m4_offset"])
+    if distance >= calibration[-1]["distance"]:
+        return int(calibration[-1]["m4_offset"])
+
+    for j in range(len(calibration) - 1):
+        d0 = calibration[j]["distance"]
+        o0 = calibration[j]["m4_offset"]
+        d1 = calibration[j + 1]["distance"]
+        o1 = calibration[j + 1]["m4_offset"]
+        if d0 <= distance <= d1:
+            t = (distance - d0) / (d1 - d0) if d1 != d0 else 0.0
+            return int(round(o0 + t * (o1 - o0)))
+
+    return int(calibration[-1]["m4_offset"])
+
+
+def compute_wrist_correction(x: float, y: float) -> int:
+    """Return the m4 step offset for a ball at (x, y) using calibrated data.
+
+    Uses linear interpolation between calibrated (distance, m4_offset)
+    points recorded during touch calibration.
+
+    Parameters
+    ----------
+    x, y : float
+        Ball position in arm-frame centimetres.
+
+    Returns
+    -------
+    int
+        Dynamixel step offset to add to the IK-computed m4.
+        Returns 0 if no calibration data is available.
+    """
+    distance = math.sqrt(x ** 2 + y ** 2)
+
+    calibration = load_wrist_calibration()
+    if calibration is None:
+        return 0
+
+    offset = _interpolate_wrist(distance, calibration)
+    logger.info(
+        "[CONFIG] Wrist correction for distance %.1f cm: %+d steps "
+        "(interpolated from %d calibration points)",
+        distance, offset, len(calibration),
+    )
+    return offset
 
 
 def get_bin_coords(color_string: str) -> tuple:

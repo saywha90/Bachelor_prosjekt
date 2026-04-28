@@ -112,6 +112,44 @@ for the flag definitions.
 3. Review [`JOINT_LIMITS`](../src/ik/solver.py:78) — tightening them prevents
    the solver from requesting positions that cause overload.
 
+### 1.4b  M3 runs hot or the arm droops while waiting at `SCAN_POSE`
+
+**Symptom:** The elbow slowly sags while the arm is parked for vision,
+`[M3 THERMAL]` warnings appear repeatedly, or ball coordinates become less
+repeatable after the arm has been holding `SCAN_POSE`.
+
+**What the runtime is doing:** While the arm is stationary at `SCAN_POSE`,
+the runtime lowers M3's current limit using
+[`M3_SCAN_CURRENT_LIMIT`](../src/config/arm.py:164) and logs present-current
+telemetry via [`read_current()`](../src/main.py:310).
+
+**Interpret the logs as follows:**
+
+| Log / warning | Meaning | Operator action |
+|---|---|---|
+| `Reducing M3 current limit to ... for scan hold (experimental / unvalidated setting)` | The arm is entering reduced-current scan hold. The configured value is only a starting point, not a proven safe number. | Treat the value as provisional and validate on hardware. |
+| `M3 present current is near the scan hold limit` | M3 is spending most of its allowed hold margin just to resist gravity. | Watch for elbow droop or camera-view shift. If either appears, raise [`M3_SCAN_CURRENT_LIMIT`](../src/config/arm.py:164) and re-test. |
+| `M3 present current is at/above the scan hold limit` | The current cap is actively constraining holding torque. | Stop assuming the pose is stable. Increase the limit and repeat an empirical hold test before relying on vision coordinates. |
+
+**Why this matters:** A limit such as 300 mA may reduce heating but can also
+be too low to hold the real arm/camera assembly. If M3 droops at `SCAN_POSE`,
+the wrist camera moves with it, which can invalidate the calibration used to
+map detections into workspace coordinates.
+
+**Fix:**
+
+1. Hold the arm at `SCAN_POSE` for several minutes under normal camera/payload
+   conditions.
+2. Watch for any elbow sag, frame shift, or repeated `[M3 THERMAL]` warnings.
+3. If the arm sags or M3 remains near-saturated, increase
+   [`M3_SCAN_CURRENT_LIMIT`](../src/config/arm.py:164) in small steps and
+   repeat the hold test.
+4. If the motor is still overheating even with a higher limit, stop and solve
+   the mechanical/pose problem before continuing operation.
+
+> ⚠️ Reduced current at `SCAN_POSE` is a thermal mitigation, not a guarantee
+> of pose stability. Operators must validate the hold behavior empirically.
+
 ### 1.5  Serial communication: no `OK` response
 
 **Symptom:** `ser.readline()` returns empty or `ERR`.
@@ -376,12 +414,16 @@ The wrist-mounted camera's homography is only valid at the exact joint
 configuration where it was calibrated.
 
 **Fix:**
-1. Check logs for the `verify_pose` warning — this indicates the arm was
-   not at `SCAN_POSE` when scanning began.
+1. Check logs for the warning from [`VisionBridge.verify_pose()`](../src/ik/vision_bridge.py:182)
+   — this means the runtime detected `SCAN_POSE` drift before scanning.
+   The warning surfaces the problem; it does **not** correct the pose.
 2. If `SCAN_POSE` was changed without recalibrating homography, redo
    Step 06 (`python src/calibration/09_touch_calibration.py`).
 3. Verify the arm consistently reaches `SCAN_POSE` before scanning by
    watching the state machine transitions.
+4. If M3 was held at too low a current and the elbow drooped, raise
+   [`M3_SCAN_CURRENT_LIMIT`](../src/config/arm.py:164), confirm the pose is
+   stable, then recalibrate.
 
 ### 4b.2  Claw appears in camera view during scanning
 
@@ -424,6 +466,23 @@ operations due to loose belts, slipped gears, or hardware errors.
 2. Use `python src/diagnostics/diagnose_motors.py` to check for motor errors.
 3. If positions have drifted, re-calibrate `SCAN_POSE` (Step 02c) and then
    re-run the homography calibration (Step 06).
+
+### 4b.5  Torque-relax was enabled and the arm shifted or dropped
+
+**Symptom:** The arm moves unexpectedly, loses pose, or cannot reliably return
+to the same scan view after M3 torque was briefly disabled.
+
+**Root cause:** Torque-off thermal relief is mechanically unsafe unless the arm
+first moves into a validated rest pose and has a proven recovery sequence.
+The default configuration keeps this disabled via
+[`M3_TORQUE_RELAX_ENABLED`](../src/config/arm.py:171) for that reason.
+
+**Fix:**
+1. Leave torque-relax disabled unless a dedicated rest pose has been tested on
+   hardware and shown to be mechanically stable.
+2. Do **not** enable torque-relax while relying on `SCAN_POSE` calibration.
+3. If torque-relax was enabled and the arm shifted, re-establish a known
+   `SCAN_POSE` and re-run Step 06 before trusting vision coordinates again.
 
 ---
 

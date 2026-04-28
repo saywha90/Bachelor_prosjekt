@@ -247,6 +247,38 @@ void processCommand(const char* json) {
             return;
         }
 
+        if (strcmp(cmd, "set_torque") == 0) {
+            // Enable or disable torque on a single motor.
+            // Expects: {"cmd":"set_torque","id":3,"enable":false}
+            // Used for periodic thermal relaxation on M3 (elbow).
+            uint8_t target_id = doc["id"].as<uint8_t>();
+            bool enable = doc["enable"].as<bool>();
+
+            // Validate motor ID
+            bool valid_id = false;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                if (MOTOR_IDS[i] == target_id) { valid_id = true; break; }
+            }
+            if (!valid_id) {
+                PI_SERIAL.print("ERR:Invalid motor ID ");
+                PI_SERIAL.println(target_id);
+                return;
+            }
+
+            if (enable) {
+                dxl.torqueOn(target_id);
+            } else {
+                dxl.torqueOff(target_id);
+            }
+
+            PI_SERIAL.print("{\"status\":\"torque_");
+            PI_SERIAL.print(enable ? "on" : "off");
+            PI_SERIAL.print("\",\"id\":");
+            PI_SERIAL.print(target_id);
+            PI_SERIAL.println("}");
+            return;
+        }
+
         if (strcmp(cmd, "clear_errors") == 0) {
             // Reboot any motor that has a latched hardware error, then
             // re-configure it (position mode, profile, torque on).
@@ -271,6 +303,60 @@ void processCommand(const char* json) {
             PI_SERIAL.print("{\"cleared\":");
             PI_SERIAL.print(cleared);
             PI_SERIAL.println("}");
+            return;
+        }
+
+        if (strcmp(cmd, "set_current_limit") == 0) {
+            // Set Goal Current on a specific motor to reduce heat during
+            // static holds.  Expects: {"cmd":"set_current_limit","id":3,"value":300}
+            // "value" is in mA for XM-series (raw Dynamixel units; 1 unit ≈ 1 mA
+            // on XM430/XM540).  Use 0 to restore the default (no limit / max).
+            //
+            // IMPORTANT: Goal Current (addr 102) only works when the motor is in
+            // Current-based Position Control mode (mode 5) or Current Control mode (mode 0).
+            // For Position Control (mode 3), we use the Current Limit register (addr 38)
+            // instead, which caps the maximum current the PID controller can command.
+            uint8_t target_id = doc["id"].as<uint8_t>();
+            uint16_t current_val = doc["value"].as<uint16_t>();
+
+            // Validate motor ID
+            bool valid_id = false;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                if (MOTOR_IDS[i] == target_id) { valid_id = true; break; }
+            }
+            if (!valid_id) {
+                PI_SERIAL.print("ERR:Invalid motor ID ");
+                PI_SERIAL.println(target_id);
+                return;
+            }
+
+            // Current Limit (addr 38) requires torque OFF to write
+            dxl.torqueOff(target_id);
+            dxl.writeControlTableItem(CURRENT_LIMIT, target_id, current_val);
+
+            // Re-enable torque and restore position mode
+            dxl.torqueOn(target_id);
+
+            PI_SERIAL.print("{\"status\":\"current_limit_set\",\"id\":");
+            PI_SERIAL.print(target_id);
+            PI_SERIAL.print(",\"value\":");
+            PI_SERIAL.print(current_val);
+            PI_SERIAL.println("}");
+            return;
+        }
+
+        if (strcmp(cmd, "read_current") == 0) {
+            // Read Present Current of all 5 motors and send back as JSON
+            // Present Current (addr 126, 2 bytes) reports current in mA
+            // (1 unit ≈ 1 mA on XM430/XM540; 1 unit ≈ 1 mA on XL430).
+            JsonDocument resp;
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                char key[4];
+                snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
+                resp[key] = (int16_t)dxl.readControlTableItem(PRESENT_CURRENT, MOTOR_IDS[i]);
+            }
+            serializeJson(resp, PI_SERIAL);
+            PI_SERIAL.println();
             return;
         }
 
