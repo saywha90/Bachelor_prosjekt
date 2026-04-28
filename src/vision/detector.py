@@ -275,7 +275,7 @@ class SimpleBallDetector:
     Rørledning per frame:
       1. Lysanalyse — klassifiser som low / medium / high
       2. CLAHE-kompensasjon ved lavt lys
-      3. Multi-range HSV deteksjon (6 red, 3 blue ranges)
+      3. Multi-range HSV deteksjon (3 red, 2 blue ranges)
       4. Hough Circle Transform (geometrisk validering, cachet)
       5. Ensemble merge + NMS
       6. SVM fargeverifisering (sekundær)
@@ -324,9 +324,11 @@ class SimpleBallDetector:
         # Ballen er LYS og mettet — IKKE mørk som tidligere antatt.
         self.red_ranges = [
             # Rød høy side (H wraparound nær 180) — primær range
-            (np.array([165, 120, 130]), np.array([179, 255, 255])),
-            # Rød lav side (H wraparound fra 0) — sikrer at H=0-5 fanges
-            (np.array([0,   120, 130]), np.array([6,   255, 255])),
+            (np.array([160, 100, 100]), np.array([179, 255, 255])),  # H: 160-179 (high red)
+            # Rød lav side (H wraparound fra 0) — utvida for oransje-rødt
+            (np.array([0,   100, 100]), np.array([15,  255, 255])),  # H: 0-15 (low red/orange-red)
+            # Mørk rød (skygge / lavt lys) — tilsvarende mørk navy for blå
+            (np.array([0,    50,  40]), np.array([15,  255, 180])),  # dark red (shadows/low light)
         ]
 
         # Multi-range HSV thresholds for BLUE
@@ -743,8 +745,8 @@ class SimpleBallDetector:
         if valid_pixels < roi.shape[0] * roi.shape[1] * 0.50:
             return BallColor.UNKNOWN
         
-        # Rød: Hue 0-20 ELLER 160-179 (wraparound)
-        red_mask = valid_mask & ((hue_ch <= 20) | (hue_ch >= 160))
+        # Rød: Hue 0-15 ELLER 160-179 (wraparound) — matcher mask-ranges
+        red_mask = valid_mask & ((hue_ch <= 15) | (hue_ch >= 160))
         red_pixels = int(np.sum(red_mask))
         
         # Blå: Hue 95-135
@@ -804,11 +806,13 @@ class SimpleBallDetector:
             return None
         circularity = (4 * np.pi * area) / (perimeter ** 2)
 
-        # Sirkulæritet: ≥0.82.
+        # Sirkulæritet: ≥0.72.
         # En perfekt sirkel har 1.0, en perfekt firkant har π/4 ≈ 0.785.
-        # Terskel 0.82 avviser kuber/firkanter (typisk 0.75-0.80) mens ekte
-        # baller sett fra litt ovenfor fortsatt har sirkulæritet >0.85.
-        if circularity < 0.82:
+        # Senket fra 0.82 → 0.72 (2026-04-27) for å godta baller som er
+        # delvis klippet av rammen eller kontaminert av nærliggende farger
+        # (f.eks. røde kabler). Kuber/firkanter fanges fortsatt av
+        # n_vertices ≤ 6 sjekken lenger ned.
+        if circularity < 0.72:
             return None
 
         # Corner detection — reject polygons with few vertices (squares/cubes).
@@ -856,7 +860,7 @@ class SimpleBallDetector:
         # Confidence: 90 % gulv for alle baller som passerer gate-filtrene,
         # + opptil 10 % bonus for eksepsjonell form/farge-kvalitet.
         # Normalisert: 0.0 ved ny terskelverdi, 1.0 ved perfekt verdi.
-        cir_bonus = float(np.clip((circularity  - 0.82) / 0.18, 0.0, 1.0))
+        cir_bonus = float(np.clip((circularity  - 0.72) / 0.28, 0.0, 1.0))
         asp_bonus = float(np.clip((aspect_ratio - 0.80) / 0.20, 0.0, 1.0))
         sol_bonus = float(np.clip((solidity     - 0.75) / 0.25, 0.0, 1.0))
         col_bonus = float(np.clip((sat_score    - 0.40) / 0.60, 0.0, 1.0))

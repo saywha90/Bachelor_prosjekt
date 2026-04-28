@@ -222,6 +222,23 @@ The script:
 **Goal:** adjust until the camera looks straight down and the entire
 workspace is visible in the frame with the claw out of view.
 
+**Required hold validation after tuning:**
+
+1. Save the pose, then leave the arm at `SCAN_POSE` for several minutes under
+   normal camera/payload conditions.
+2. Confirm the elbow does **not** visibly sag and the camera view does not
+   drift while holding still.
+3. Treat [`M3_SCAN_CURRENT_LIMIT`](../src/config/arm.py:164) as an
+   experimental starting value only. If the arm sags, the frame shifts, or
+   runtime logs show M3 repeatedly near/at the hold limit, raise the limit in
+   small steps and re-test.
+4. Do not enable torque-relax unless you have separately validated a safe rest
+   pose and a recovery sequence. It is disabled by default.
+
+> ⚠️ A `SCAN_POSE` that looks correct for one frame is not enough. If the arm
+> cannot hold that pose repeatably, any later vision calibration done from it
+> can be invalid.
+
 **Time:** ~5–10 min. Re-run if you change the camera mount.
 
 ---
@@ -327,7 +344,9 @@ confirm detection still works.
 **What it does:** Maps camera pixel coordinates to physical centimetres on
 the workspace plane using a 4-point perspective transform. The arm physically
 touches each corner to capture IK coordinates as ground truth — no ruler
-measurements needed.
+measurements needed. Additionally, the step records the **grab height (Z)**
+and **wrist tilt offset (m4)** at each calibration point, enabling
+distance-dependent compensation at runtime.
 
 > **Note:** This step was previously done with `06_homography.py` which required
 > manual ruler measurements. The new `09_touch_calibration.py` is more accurate
@@ -344,10 +363,30 @@ python src/calibration/09_touch_calibration.py
 1. The arm moves to `SCAN_POSE` and the script shows the live camera feed.
 2. Click the 4 corners of your workspace (top-left, top-right, bottom-right,
    bottom-left as seen in the camera).
-3. For each corner, use WASD to drive the arm's claw to physically touch the
-   corner — the IK (x, y) coordinates are captured automatically.
-4. The script computes `cv2.getPerspectiveTransform` and saves the result to
+3. For each corner, use the following controls to drive the arm's claw so it
+   physically touches the corner:
+   - **W / S** — move forward / backward (X axis)
+   - **A / D** — move left / right (Y axis)
+   - **I / K** — adjust wrist tilt (m4 offset) up / down
+4. At each point the script records the IK (x, y) coordinates, the Z height
+   the claw needed to reach the surface, and the m4 wrist offset used.
+5. The script computes `cv2.getPerspectiveTransform` and saves the result —
+   along with the height and wrist arrays — to
    `homography_calibration.json`.
+
+**Before running this step:** confirm Step 02c passed a real hold test.
+If `SCAN_POSE` drifts while parked, the camera calibration will be tied to a
+pose the runtime cannot reliably reproduce.
+
+**Keyboard controls summary:**
+
+| Key | Action |
+|-----|--------|
+| W / S | Arm forward / backward |
+| A / D | Arm left / right |
+| I / K | Wrist tilt up / down (m4 offset) |
+| Enter | Confirm point |
+| Q | Quit without saving |
 
 **Expected output:**
 
@@ -355,6 +394,8 @@ python src/calibration/09_touch_calibration.py
 [TOUCH-CAL] Saved calibration to homography_calibration.json
   Pixel corners: [[9, 17], [619, 16], [618, 381], [23, 378]]
   CM corners:    [[28.0, 22.0], [28.0, -22.0], [10.0, -22.0], [10.0, 22.0]]
+  Heights:       [2.1, 2.3, 1.8, 1.9]
+  Wrist offsets: [0.05, 0.02, -0.03, 0.01]
 ```
 
 **How to verify:** Place a ball at a known position (e.g., 20 cm forward,
@@ -366,7 +407,37 @@ python src/calibration/09_touch_calibration.py
 [`vision_bridge.py`](../src/ik/vision_bridge.py:90) are only used when no
 calibration file exists.
 
-> ⚠️ This calibration is pose-dependent. If you change `SCAN_POSE` at any point, you must re-run Step 06.
+#### Height and wrist calibration data
+
+The JSON file contains two additional arrays alongside the pixel/cm corners:
+
+| JSON Field | Type | Description |
+|------------|------|-------------|
+| `height_calibration` | `[{x, y, z}, …]` | Per-point grab height (Z in cm) recorded when the claw touched the surface |
+| `wrist_calibration` | `[{x, y, m4_offset}, …]` | Per-point m4 servo offset needed for the wrist to be level at that reach |
+
+At runtime, [`compute_grab_height(x, y)`](../src/config/arm.py) and
+[`compute_wrist_correction(x, y)`](../src/config/arm.py) perform **linear
+interpolation** over these arrays to determine the correct Z and m4 values
+for any given ball position. When calibration data is missing, both
+functions fall back to formula-based defaults.
+
+#### Relationship with sag calibration (Step 3)
+
+Touch calibration inherently captures the arm's real droop at each point
+because the operator drives the claw to the physical surface. This means
+the recorded Z values already include any sag that would otherwise need
+correction. To avoid double-compensating, the IK solver's
+[`solve()`](../src/ik/solver.py) accepts a `skip_sag` parameter — when
+touch calibration data exists, grab moves are solved with `skip_sag=True`
+so the sag model from Step 3 is bypassed. Sag calibration remains active
+for all other move types (e.g., scanning, binning) where touch data does
+not apply.
+
+> ⚠️ This calibration is pose-dependent. If you change `SCAN_POSE`, see a
+> warning from [`VisionBridge.verify_pose()`](../src/ik/vision_bridge.py:182),
+> or observe scan-pose droop during runtime, you must re-establish a stable
+> `SCAN_POSE` and re-run Step 06 before trusting ball coordinates.
 
 ---
 
@@ -459,7 +530,7 @@ diagnostic table below.
 |---------|-------------|-----|
 | Consistent X/Y offset | Residual camera offset | Adjust `CAMERA_OFFSET_X/Y` in [`config/arm.py`](../src/config/arm.py) or redo Step 7 |
 | Off in different directions each time | Bad homography | Redo Step 6 |
-| Claw too high or too low | Sag calibration off | Redo Step 3, or nudge `z_offset_multiplier` ± 0.01 |
+| Claw too high or too low | Sag calibration off, or touch cal heights stale | Redo Step 6 (touch calibration records grab height per point); if no touch cal, redo Step 3 |
 | Ball squirts out when grabbed | Claw positions wrong | Redo Step 2b |
 | Arm can't reach detected balls | Scan region mismatch | Re-run touch calibration (Step 6) with corners within arm reach |
 | Wrong bin | Colour detection error | Redo Steps 4–5 |
@@ -497,7 +568,7 @@ If the system was working and accuracy has degraded:
 | File | Created By | Loaded By |
 |------|-----------|-----------|
 | `sag_calibration.json` | Step 3 — [`03_sag.py`](../src/calibration/03_sag.py) | [`ArmIK.__init__()`](../src/ik/solver.py:115) |
-| `homography_calibration.json` | Step 6 — [`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py) | [`VisionBridge`](../src/ik/vision_bridge.py:108) |
+| `homography_calibration.json` | Step 6 — [`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py) | [`VisionBridge`](../src/ik/vision_bridge.py:108), [`compute_grab_height()`](../src/config/arm.py), [`compute_wrist_correction()`](../src/config/arm.py) |
 | `claw_calibration.json` | Step 2b — [`02b_claw.py`](../src/calibration/02b_claw.py) | Manual — update [`config/arm.py`](../src/config/arm.py) |
 | `pick_test_results.json` | Step 8 — [`08_pick_test.py`](../src/calibration/08_pick_test.py) | Reference only |
 

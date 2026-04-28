@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 main.py
 =======
@@ -42,6 +44,9 @@ import cv2
 from ik.solver import ArmIK
 from config.arm import (
     get_bin_coords,
+    compute_grab_height,
+    compute_wrist_correction,
+    load_height_calibration,
     HOME_POSITION,
     GRAB_HEIGHT,
     CLEARANCE_HEIGHT,
@@ -56,12 +61,20 @@ from config.arm import (
     GRIP_LOAD_THRESHOLD,
     MAX_PICK_RETRIES,
     VERIFY_HEIGHT,
+    M3_SCAN_CURRENT_LIMIT,
+    M3_DEFAULT_CURRENT_LIMIT,
+    M3_TORQUE_RELAX_ENABLED,
+    M3_RELAX_REST_POSE,
+    M3_RELAX_INTERVAL,
+    M3_RELAX_DURATION,
 )
 from simulation.mock_serial import MockSerial
-from simulation.visualizer import ArmVisualizer
 from ik.vision_bridge import VisionBridge
 
 logger = logging.getLogger(__name__)
+
+USE_REAL_SERIAL = False
+USE_REAL_CAMERA = False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -186,18 +199,29 @@ def log_state(state: State, msg: str = ""):
 
 
 def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
-                 viz=None, claw_override=None):
+                 viz=None, claw_override=None, m4_offset: int = 0,
+                 skip_sag: bool = False):
     """Solve IK, send JSON over serial, wait for ACK, and update visualizer.
 
     Parameters
     ----------
     viz : ArmVisualizer or None
         If provided, update the 3-D plot with the new motor positions.
+    m4_offset : int
+        Dynamixel step offset to add to the IK-computed m4 (wrist tilt).
+        Used for runtime wrist correction learned during touch calibration.
+        Clamped to [500, 3500] after application.
+    skip_sag : bool
+        If True, bypass the IK solver's internal sag compensation.
+        Use when the target Z already accounts for real-world sag
+        (e.g. touch-calibrated grab heights).
     """
     if label:
         print(f"\n  📍 {label}: target=({x:.1f}, {y:.1f}, {z:.1f}) cm")
 
-    solution = arm.solve(x, y, z)
+    solution = arm.solve(x, y, z, skip_sag=skip_sag)
+    if m4_offset:
+        solution["m4"] = max(500, min(3500, solution["m4"] + m4_offset))
     if claw_override is not None:
         solution["m5"] = claw_override
     
@@ -280,6 +304,158 @@ def read_load(ser) -> dict | None:
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         print(f"  ⚠️  Failed to read load: {e}")
         return None
+
+
+def read_current(ser) -> dict | None:
+    """Read present current from all motors via firmware."""
+    if ser is None:
+        return None
+    cmd = json.dumps({"cmd": "read_current"}) + "\n"
+    ser.write(cmd.encode())
+    try:
+        raw = ser.readline().decode().strip()
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"  ⚠️  Failed to read current: {e}")
+        return None
+
+
+# ── M3 thermal protection helpers ─────────────────────────────────────
+#   Motor 3 (XM430, elbow) bears a heavy static gravity load in SCAN_POSE.
+#   These helpers reduce current draw and periodically relax torque to
+#   prevent overheating during extended holds.
+
+def _coerce_full_motor_pose(positions: dict | None) -> dict | None:
+    """Return an int-only m1..m5 pose dict if all joints are present."""
+    if not positions:
+        return None
+
+    pose = {}
+    for motor_key in ("m1", "m2", "m3", "m4", "m5"):
+        if motor_key not in positions:
+            return None
+        pose[motor_key] = int(positions[motor_key])
+    return pose
+
+
+def log_m3_scan_hold_status(ser, context: str) -> int | None:
+    """Log lightweight M3 current visibility while SCAN_POSE current limiting is active."""
+    currents = read_current(ser)
+    if not currents or "m3" not in currents:
+        return None
+
+    m3_current = abs(int(currents["m3"]))
+    logger.info("[M3 THERMAL] %s: M3 present current=%d mA", context, m3_current)
+
+    if M3_SCAN_CURRENT_LIMIT > 0:
+        near_limit_margin = min(50, max(20, M3_SCAN_CURRENT_LIMIT // 10))
+        if m3_current >= M3_SCAN_CURRENT_LIMIT:
+            print(
+                "  ⚠️  [M3 THERMAL] M3 present current is at/above the "
+                f"scan hold limit ({m3_current} mA / {M3_SCAN_CURRENT_LIMIT} mA)"
+            )
+        elif m3_current >= (M3_SCAN_CURRENT_LIMIT - near_limit_margin):
+            print(
+                "  ⚠️  [M3 THERMAL] M3 present current is near the "
+                f"scan hold limit ({m3_current} mA / {M3_SCAN_CURRENT_LIMIT} mA)"
+            )
+
+    return m3_current
+
+
+def sync_goal_to_present_pose_before_restore(ser, viz=None) -> dict | None:
+    """Re-command the current arm pose before restoring full M3 current."""
+    pose = _coerce_full_motor_pose(read_positions(ser))
+    if pose is None:
+        print("  ⚠️  [M3 THERMAL] Could not read a full arm pose before restoring M3 current limit")
+        return None
+
+    print("  🌡️  [M3 THERMAL] Syncing goal pose to the present arm pose before restoring M3 current")
+    ser.write((json.dumps(pose) + "\n").encode())
+    response = ser.readline().decode().strip()
+    if response != "OK":
+        print(f"  ⚠️  [M3 THERMAL] Pose sync response: {response}")
+
+    if viz is not None:
+        viz.update_plot(pose)
+
+    return pose
+
+
+def verify_scan_pose_before_scan(ser, vision: VisionBridge) -> bool | None:
+    """Surface SCAN_POSE drift before vision capture."""
+    positions = read_positions(ser)
+    if not positions:
+        print("  ⚠️  [VISION] Could not verify SCAN_POSE before scan (position read unavailable)")
+        return None
+
+    ok = vision.verify_pose(positions)
+    if not ok:
+        print("  ⚠️  [VISION] SCAN_POSE drift detected before scanning; continuing so the issue is visible")
+    return ok
+
+def set_m3_current_limit(ser, milliamps: int):
+    """Set Current Limit (register 38) on motor 3 to reduce heat.
+
+    Parameters
+    ----------
+    ser : serial port
+        The (mock or real) serial connection.
+    milliamps : int
+        Current limit in mA.  Use 0 for no limit (max current).
+    """
+    if not USE_REAL_SERIAL:
+        return  # no-op in simulation mode
+    cmd = json.dumps({"cmd": "set_current_limit", "id": 3, "value": milliamps})
+    ser.write((cmd + "\n").encode())
+    resp = ser.readline().decode(errors="replace").strip()
+    logger.info("[M3 THERMAL] Current limit → %d mA  (response: %s)", milliamps, resp)
+
+
+def m3_apply_scan_current(ser):
+    """Reduce M3 current limit for SCAN_POSE hold (thermal protection)."""
+    if M3_SCAN_CURRENT_LIMIT > 0:
+        print(
+            f"  🌡️  [M3 THERMAL] Reducing M3 current limit to {M3_SCAN_CURRENT_LIMIT} mA "
+            "for scan hold (experimental / unvalidated setting)"
+        )
+        set_m3_current_limit(ser, M3_SCAN_CURRENT_LIMIT)
+        log_m3_scan_hold_status(ser, "SCAN_POSE hold")
+
+
+def m3_restore_current(ser, viz=None):
+    """Restore M3 current limit to factory default before active motion."""
+    if M3_SCAN_CURRENT_LIMIT > 0:
+        sync_goal_to_present_pose_before_restore(ser, viz=viz)
+        log_m3_scan_hold_status(ser, "Before motion restore")
+        print(f"  🌡️  [M3 THERMAL] Restoring M3 current limit to {M3_DEFAULT_CURRENT_LIMIT} mA for motion")
+        set_m3_current_limit(ser, M3_DEFAULT_CURRENT_LIMIT)
+
+
+def m3_torque_relax(ser):
+    """Briefly disable torque on M3 to let it cool, then re-enable.
+
+    Disabled by default unless a validated rest pose is configured.
+    """
+    if not M3_TORQUE_RELAX_ENABLED or not M3_RELAX_REST_POSE:
+        return False
+    if not USE_REAL_SERIAL:
+        return False
+    print(f"  🌡️  [M3 THERMAL] Relaxing M3 torque for {M3_RELAX_DURATION:.1f}s to cool...")
+
+    # Disable torque on M3 only (the other motors hold the arm)
+    cmd = json.dumps({"cmd": "set_torque", "id": 3, "enable": False})
+    ser.write((cmd + "\n").encode())
+    ser.readline()  # consume response
+
+    time.sleep(M3_RELAX_DURATION)
+
+    # Re-enable torque on M3
+    cmd = json.dumps({"cmd": "set_torque", "id": 3, "enable": True})
+    ser.write((cmd + "\n").encode())
+    ser.readline()  # consume response
+    print("  🌡️  [M3 THERMAL] M3 torque re-enabled")
+    return True
 
 
 def verify_grip(ser, claw_closed_pos: int) -> bool:
@@ -458,11 +634,25 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     # Ensure claw is open before approaching
     send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="Ensuring claw is OPEN")
 
+    # Compute distance-adjusted grab height so the claw doesn't scrape
+    # the desk at far reaches (see config/arm.py for tuning constants)
+    grab_z = compute_grab_height(obj_x, obj_y)
+
+    # Compute wrist correction learned during touch calibration
+    m4_correction = compute_wrist_correction(obj_x, obj_y)
+
+    # Determine whether touch calibration data exists — if so, grab_z
+    # already accounts for real-world sag and the IK solver should NOT
+    # apply its own sag compensation (avoids double-compensation).
+    has_touch_cal = load_height_calibration() is not None
+
     # Single full move — descend to grab height in one motion
     last_ik = send_command(
-        ser, arm, obj_x, obj_y, GRAB_HEIGHT,
+        ser, arm, obj_x, obj_y, grab_z,
         label="Full approach to grab position",
         viz=viz,
+        m4_offset=m4_correction,
+        skip_sag=has_touch_cal,
     )
 
     # ── 3. GRABBING ──────────────────────────────────────────────────
@@ -470,8 +660,8 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     if timer:
         timer.start_phase("grab")
 
-    # (debug input() removed — was a measurement artifact)
-    print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {GRAB_HEIGHT:.1f} cm")
+    print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {grab_z:.1f} cm (distance-adjusted)")
+    input("  ⏸️   Press ENTER to close claw (check accuracy now)...")
 
     print(f"  ✊  [CLAW] Closing... (dwell {GRAB_DWELL}s)")
     send_claw(ser, last_ik, CLAW_CLOSED_POS, label="CLOSE grip")
@@ -566,6 +756,8 @@ def main():
     print(f"[INIT] IK solver ready  (L1={arm.L1}, L2={arm.L2}, L3={arm.L3} cm)")
 
     # ── Initialise 3-D visualiser ─────────────────────────────────────
+    from simulation.visualizer import ArmVisualizer
+
     viz = ArmVisualizer()
     print("[INIT] 3-D visualiser ready")
 
@@ -606,11 +798,15 @@ def main():
     print("\n[INIT] Moving to SCAN_POSE (home position) on startup...")
     smooth_startup(ser, viz=viz)
 
+    # Apply M3 thermal protection now that we're at SCAN_POSE
+    m3_apply_scan_current(ser)
+
     # ── Continuous scan → sort → rescan loop ──────────────────────────
     IDLE_RESCAN_DELAY = 3       # seconds to wait between idle rescans
     scan_round = 0
     timer = CycleTimer()
     pick_fail_count = 0         # consecutive pick failures for retry logic
+    m3_last_relax = time.time()  # track when M3 was last relaxed for thermal management
 
     try:
         while True:
@@ -620,9 +816,14 @@ def main():
             log_state(State.MOVE_TO_SCAN_POSE, f"Preparing for scan round {scan_round}")
             send_scan_pose(ser, viz=viz)
 
+            # Apply reduced M3 current for the static SCAN_POSE hold
+            m3_apply_scan_current(ser)
+            m3_last_relax = time.time()
+
             # ── SCANNING ──────────────────────────────────────────────
             log_state(State.SCANNING, f"Scan round {scan_round}")
             time.sleep(SCAN_INTERVAL)   # wait SCAN_INTERVAL seconds before capturing frame
+            verify_scan_pose_before_scan(ser, vision)
 
             timer.start_cycle()
             timer.start_phase("scan")
@@ -637,9 +838,19 @@ def main():
                 print(f"  ⏳ Waiting for balls... (rescanning in {IDLE_RESCAN_DELAY}s)")
 
                 # Idle loop: keep camera feed + visualiser responsive
+                # Also periodically relax M3 torque for thermal relief
                 wait_end = time.time() + IDLE_RESCAN_DELAY
                 quit_requested = False
                 while time.time() < wait_end:
+                    # ── M3 thermal relaxation during idle ──────────────
+                    if (
+                        M3_TORQUE_RELAX_ENABLED
+                        and M3_RELAX_REST_POSE
+                        and (time.time() - m3_last_relax) >= M3_RELAX_INTERVAL
+                    ):
+                        m3_torque_relax(ser)
+                        m3_last_relax = time.time()
+
                     # Update the OpenCV window so the user sees a live feed
                     key = cv2.waitKey(100) & 0xFF   # ~10 fps refresh, also pumps GUI events
                     if key == ord('q'):
@@ -657,6 +868,9 @@ def main():
             detection = detections[0]
             print(f"\n[SCAN] Found {len(detections)} object(s). Processing the first: "
                   f"{detection['colour'].upper()} at ({detection['x']:.1f}, {detection['y']:.1f})")
+
+            # Restore full M3 current before active motion
+            m3_restore_current(ser, viz=viz)
 
             success = run_sorting_cycle(ser, arm, detection, vision, viz=viz, timer=timer)
 

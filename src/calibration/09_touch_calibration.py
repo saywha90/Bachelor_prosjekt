@@ -12,13 +12,16 @@ Accuracy Features
   mouse clicks.
 - **Frame averaging**: Averages detected centroids across 30+ frames to
   eliminate single-frame jitter (±1–3 px noise).
-- **N-point overdetermined calibration**: Supports 4–9+ calibration points.
+- **N-point overdetermined calibration**: Supports 4–12 calibration points.
   With >4 points, ``cv2.findHomography(RANSAC)`` is used instead of the
   minimum-fit ``cv2.getPerspectiveTransform``, providing least-squares
   averaging and outlier rejection.
 - **Reprojection error report**: After computing the homography, the script
   reports per-point and mean reprojection error so you can see how accurate
   the calibration is.
+
+Alternative approaches considered: ArUco markers (rejected due to print/placement
+requirements), ruler-based measurement (replaced by this touch method). See ADR-004.
 
 Workflow
 --------
@@ -40,6 +43,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import json
+import math
 import time
 from datetime import date
 from pathlib import Path
@@ -65,8 +69,6 @@ CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.jso
 SERIAL_PORT = "/dev/cu.usbmodem2101"
 SERIAL_BAUD = 115200
 
-_ser = None
-
 # ── Manual-click state (fallback) ─────────────────────────────────────
 _clicked_points: List[Tuple[int, int]] = []
 _current_mouse = (0, 0)
@@ -77,42 +79,48 @@ _click_limit = 4
 #  Serial / Arm helpers
 # ══════════════════════════════════════════════════════════════════════
 
-def _get_serial():
-    global _ser
-    if _ser is None:
-        import serial
-        print(f"[SERIAL] Opening {SERIAL_PORT} @ {SERIAL_BAUD} …")
-        _ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
-        time.sleep(3)
-        boot_msg = ""
-        while _ser.in_waiting:
-            boot_msg += _ser.readline().decode(errors="replace").strip() + " "
-        if not boot_msg.strip():
-            boot_msg = _ser.readline().decode(errors="replace").strip()
-        print(f"[SERIAL] OpenRB says: {boot_msg.strip()}")
+def _open_serial():
+    """Open a new serial connection to the arm and return it.
 
-        cmd = json.dumps({"cmd": "enable_torque"})
-        _ser.write((cmd + "\n").encode())
-        _ser.readline()
+    This is called once in ``main()``; the returned object is passed as a
+    parameter to every function that needs to talk to hardware.  Importing
+    this module does **not** open a serial port.
+    """
+    import serial
+    print(f"[SERIAL] Opening {SERIAL_PORT} @ {SERIAL_BAUD} …")
+    ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
+    time.sleep(3)
+    boot_msg = ""
+    while ser.in_waiting:
+        boot_msg += ser.readline().decode(errors="replace").strip() + " "
+    if not boot_msg.strip():
+        boot_msg = ser.readline().decode(errors="replace").strip()
+    print(f"[SERIAL] OpenRB says: {boot_msg.strip()}")
 
-        cmd = json.dumps({"cmd": "set_profile", "vel": 40, "acc": 10})
-        _ser.write((cmd + "\n").encode())
-        _ser.readline()
-    return _ser
+    cmd = json.dumps({"cmd": "enable_torque"})
+    ser.write((cmd + "\n").encode())
+    ser.readline()
+
+    cmd = json.dumps({"cmd": "set_profile", "vel": 40, "acc": 10})
+    ser.write((cmd + "\n").encode())
+    ser.readline()
+    return ser
 
 
-def send_raw_command(positions: dict):
-    ser = _get_serial()
+def send_raw_command(ser, positions: dict):
     cmd_json = json.dumps(positions)
     ser.write((cmd_json + "\n").encode())
     resp = ser.readline().decode(errors="replace").strip()
     return resp
 
 
-def send_ik_command(arm: ArmIK, x: float, y: float, z: float,
+def send_ik_command(ser, arm: ArmIK, x: float, y: float, z: float,
                     claw_override: int = 2048):
-    ser = _get_serial()
-    solution = arm.solve(x, y, z)
+    try:
+        solution = arm.solve(x, y, z)
+    except ValueError as e:
+        print(f"  ⚠️  Target unreachable: {e}")
+        return None
     solution["m5"] = claw_override
     cmd_json = json.dumps(solution)
     ser.write((cmd_json + "\n").encode())
@@ -120,9 +128,44 @@ def send_ik_command(arm: ArmIK, x: float, y: float, z: float,
     return resp
 
 
-def _move_to_scan_pose():
+def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
+                           m4_offset: int = 0, claw_override: int = 2048):
+    """Solve IK, apply an m4 offset, clamp, send command, and return (solution, response).
+
+    Parameters
+    ----------
+    ser
+        Open serial connection to the arm.
+    arm : ArmIK
+        The IK solver instance.
+    x, y, z : float
+        Target position in arm-frame centimetres.
+    m4_offset : int
+        Dynamixel step offset to add to the IK-computed m4.
+    claw_override : int
+        Claw position (m5) override.
+
+    Returns
+    -------
+    tuple[dict, str]
+        (solution_dict, firmware_response)
+    """
+    try:
+        solution = arm.solve(x, y, z)
+    except ValueError as e:
+        print(f"  ⚠️  Target unreachable: {e}")
+        return None, None
+    solution["m4"] = max(500, min(3500, solution["m4"] + m4_offset))
+    solution["m5"] = claw_override
+    cmd_json = json.dumps(solution)
+    ser.write((cmd_json + "\n").encode())
+    resp = ser.readline().decode(errors="replace").strip()
+    return solution, resp
+
+
+def _move_to_scan_pose(ser):
     print("[ARM] Moving arm to SCAN_POSE for calibration...")
-    send_raw_command(SCAN_POSE)
+    send_raw_command(ser, SCAN_POSE)
     time.sleep(2)
     print("[ARM] ✅ Arm is at SCAN_POSE.\n")
 
@@ -166,11 +209,16 @@ def _auto_detect_balls(cam: OAKCamera) -> List[Tuple[float, float]]:
                 continue
             cx, cy = ball.center
             # Assign to nearest existing cluster or create new one
+            cluster_threshold = 2 * vcfg.BALL_MAX_RADIUS
             matched = False
             for cid, centroid_list in all_centroids.items():
                 avg_x = np.mean([c[0] for c in centroid_list])
                 avg_y = np.mean([c[1] for c in centroid_list])
-                if abs(cx - avg_x) < 40 and abs(cy - avg_y) < 40:
+                dist = math.hypot(cx - avg_x, cy - avg_y)
+                if dist < cluster_threshold:
+                    if dist > 0.7 * cluster_threshold:
+                        print(f"  ⚠️  Ball at ({cx:.0f}, {cy:.0f}) absorbed into "
+                              f"cluster at ({avg_x:.0f}, {avg_y:.0f}) — check ball spacing")
                     centroid_list.append((float(cx), float(cy)))
                     matched = True
                     break
@@ -330,10 +378,24 @@ def _manual_click_phase(cam: OAKCamera, n_target: int) -> List[Tuple[float, floa
 #  Phase 2 — Physical touch
 # ══════════════════════════════════════════════════════════════════════
 
-def _touch_phase(arm: ArmIK,
-                 pixel_points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
-    """Drive the arm to each ball and record IK coordinates."""
-    cm_points: List[Tuple[float, float]] = []
+def _touch_phase(ser, arm: ArmIK,
+                 pixel_points: List[Tuple[float, float]]) -> List[Tuple[float, float, float, int]]:
+    """Drive the arm to each ball and record IK coordinates (x, y, z, m4_offset).
+
+    Parameters
+    ----------
+    ser
+        Open serial connection to the arm.
+    arm : ArmIK
+        The IK solver instance.
+    pixel_points : list
+        Detected ball positions in pixel coordinates.
+
+    The user can fine-tune the wrist tilt (m4) with I/K keys in addition to
+    the standard WASD/UJ movement.  The learned m4 offset is saved per point
+    and later used for runtime wrist correction.
+    """
+    cm_points: List[Tuple[float, float, float, int]] = []
     n = len(pixel_points)
 
     cv2.namedWindow(WINDOW_NAME)
@@ -343,6 +405,8 @@ def _touch_phase(arm: ArmIK,
     target_y = 0.0
     target_z = float(GRAB_HEIGHT)
     step = 1.0
+    step_m4 = 10          # Dynamixel steps per I/K press (~0.88°)
+    m4_offset = 0         # cumulative wrist offset (resets per ball)
 
     print(f"\n{'─'*60}")
     print("  🕹️  PHYSICAL TOUCH PHASE")
@@ -351,6 +415,7 @@ def _touch_phase(arm: ArmIK,
     print("       W / S = Move Forward / Back (X)")
     print("       A / D = Move Left / Right (Y)")
     print("       U / J = Move Up / Down (Z)")
+    print("       I / K = Tilt Wrist Forward / Back (m4)")
     print("       [ / ] = Change Step Size (currently 1.0 cm)")
     print("       ENTER = Save Point")
     print(f"{'─'*60}")
@@ -358,17 +423,18 @@ def _touch_phase(arm: ArmIK,
     for i in range(n):
         label = f"Ball #{i+1}/{n}"
         px, py = pixel_points[i]
+        m4_offset = 0     # reset wrist offset for each new ball
         print(f"\n  👉  Target: {label}  (pixel {px:.0f}, {py:.0f})")
 
         # Lift to clearance, then down to target_z
-        send_ik_command(arm, target_x, target_y, CLEARANCE_HEIGHT)
+        send_ik_command(ser, arm, target_x, target_y, CLEARANCE_HEIGHT)
         time.sleep(0.5)
-        send_ik_command(arm, target_x, target_y, target_z)
+        send_ik_with_m4_offset(ser, arm, target_x, target_y, target_z, m4_offset)
         time.sleep(0.5)
 
         while True:
             # Create a black HUD screen for controls
-            hud = np.zeros((400, 600, 3), dtype=np.uint8)
+            hud = np.zeros((450, 600, 3), dtype=np.uint8)
             cv2.putText(hud, f"Target: {label}", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
             cv2.putText(hud, f"X = {target_x:.1f} cm  (forward/back)",
@@ -377,19 +443,22 @@ def _touch_phase(arm: ArmIK,
                         (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
             cv2.putText(hud, f"Z = {target_z:.1f} cm  (up/down)",
                         (20, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+            cv2.putText(hud, f"m4 offset = {m4_offset:+d} steps  (wrist tilt)",
+                        (20, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 1)
             cv2.putText(hud, f"Step Size = {step:.2f} cm",
-                        (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
-            cv2.putText(hud, "W/S: X   A/D: Y   U/J: Z",
-                        (20, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-            cv2.putText(hud, "[/]: Step   ENTER: Save",
+                        (20, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
+            cv2.putText(hud, "W/S: X   A/D: Y   U/J: Z   I/K: Wrist",
                         (20, 320), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-            cv2.putText(hud, "TIP: Use [ to reduce step to 0.10 cm for fine alignment",
-                        (20, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 100, 100), 1)
+            cv2.putText(hud, "[/]: Step   ENTER: Save",
+                        (20, 360), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+            cv2.putText(hud, "TIP: Use I/K to fine-tune wrist tilt at far distances",
+                        (20, 420), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 100, 100), 1)
 
             cv2.imshow(WINDOW_NAME, hud)
             key = cv2.waitKey(0) & 0xFF
 
             moved = False
+            wrist_moved = False
             if key in (ord('w'), ord('W')):
                 target_x += step; moved = True
             elif key in (ord('s'), ord('S')):
@@ -402,6 +471,12 @@ def _touch_phase(arm: ArmIK,
                 target_z += step; moved = True
             elif key in (ord('j'), ord('J')):
                 target_z -= step; moved = True
+            elif key in (ord('i'), ord('I')):
+                m4_offset += step_m4; wrist_moved = True
+                print(f"       m4 offset → {m4_offset:+d}")
+            elif key in (ord('k'), ord('K')):
+                m4_offset -= step_m4; wrist_moved = True
+                print(f"       m4 offset → {m4_offset:+d}")
             elif key == ord('['):
                 step = max(0.10, step / 2)
                 print(f"       Step → {step:.2f} cm")
@@ -409,18 +484,19 @@ def _touch_phase(arm: ArmIK,
                 step = min(5.0, step * 2)
                 print(f"       Step → {step:.2f} cm")
             elif key == 13:  # ENTER
-                print(f"       ✅ Saved {label} at ({target_x:.1f}, {target_y:.1f}) cm")
-                cm_points.append((target_x, target_y))
+                print(f"       ✅ Saved {label} at ({target_x:.1f}, {target_y:.1f}, "
+                      f"z={target_z:.1f}) cm, m4_offset={m4_offset:+d}")
+                cm_points.append((target_x, target_y, target_z, m4_offset))
                 break
             elif key in (ord('q'), ord('Q')):
                 print("\n  ⛔ Quit requested.")
                 sys.exit(0)
 
-            if moved:
-                send_ik_command(arm, target_x, target_y, target_z)
+            if moved or wrist_moved:
+                send_ik_with_m4_offset(ser, arm, target_x, target_y, target_z, m4_offset)
 
         # Lift before going to next
-        send_ik_command(arm, target_x, target_y, CLEARANCE_HEIGHT)
+        send_ik_command(ser, arm, target_x, target_y, CLEARANCE_HEIGHT)
         time.sleep(0.5)
 
     cv2.destroyAllWindows()
@@ -432,14 +508,20 @@ def _touch_phase(arm: ArmIK,
 # ══════════════════════════════════════════════════════════════════════
 
 def _compute_homography(pixel_points: List[Tuple[float, float]],
-                        cm_points: List[Tuple[float, float]]):
+                        cm_points: List[Tuple[float, float, float, int]]):
     """Compute the homography and print a reprojection error report.
 
     Uses ``cv2.getPerspectiveTransform`` for exactly 4 points, or
     ``cv2.findHomography(RANSAC)`` for 5+ points.
+
+    Only the (x, y) components of *cm_points* are used for the homography;
+    the Z and m4_offset components are recorded separately for height and
+    wrist calibration.
     """
+    # Extract only (x, y) for homography — Z and m4_offset are used separately
+    cm_xy = [(x, y) for x, y, _z, _m4 in cm_points]
     px_array = np.float32(pixel_points)
-    cm_array = np.float32(cm_points)
+    cm_array = np.float32(cm_xy)
     n = len(pixel_points)
 
     if n == 4:
@@ -464,23 +546,26 @@ def _compute_homography(pixel_points: List[Tuple[float, float]],
         px_h = np.float64([[pixel_points[i][0], pixel_points[i][1], 1.0]])
         projected = (homography @ px_h.T).T
         projected = projected[0, :2] / projected[0, 2]
-        actual = np.float64([cm_points[i][0], cm_points[i][1]])
+        actual = np.float64([cm_xy[i][0], cm_xy[i][1]])
         err = float(np.linalg.norm(projected - actual))
         errors.append(err)
 
         status = "✅" if inlier_mask[i] else "❌ outlier"
         print(f"    Point #{i+1}: pixel ({pixel_points[i][0]:.0f}, {pixel_points[i][1]:.0f}) "
-              f"→ expected ({cm_points[i][0]:.1f}, {cm_points[i][1]:.1f}) cm "
+              f"→ expected ({cm_xy[i][0]:.1f}, {cm_xy[i][1]:.1f}) cm "
               f"→ got ({projected[0]:.1f}, {projected[1]:.1f}) cm "
               f"→ error {err:.2f} cm  {status}")
 
     mean_err = float(np.mean(errors))
     max_err = float(np.max(errors))
-    print(f"\n    Mean reprojection error: {mean_err:.3f} cm")
-    print(f"    Max  reprojection error: {max_err:.3f} cm")
+    if n == 4:
+        print(f"\n    Mean reprojection error: {mean_err:.3f} cm  (always 0 for exact 4-point fit)")
+        print(f"    Max  reprojection error: {max_err:.3f} cm  (always 0 for exact 4-point fit)")
+    else:
+        print(f"\n    Mean reprojection error: {mean_err:.3f} cm")
+        print(f"    Max  reprojection error: {max_err:.3f} cm")
 
     if n == 4:
-        print("    ℹ️  With exactly 4 points, error is always ~0 (exact fit).")
         print("    💡 Use 6+ balls for a robust calibration with error averaging.")
     elif mean_err < 0.5:
         print("    ✅ Excellent calibration!")
@@ -500,18 +585,37 @@ def _compute_homography(pixel_points: List[Tuple[float, float]],
 # ══════════════════════════════════════════════════════════════════════
 
 def _save_calibration(pixel_points, cm_points, homography):
+    # Build height_calibration and wrist_calibration from (x, y, z, m4_offset) tuples
+    height_calibration = []
+    wrist_calibration = []
+    for x, y, z, m4_off in cm_points:
+        distance = math.sqrt(x ** 2 + y ** 2)
+        height_calibration.append({
+            "distance": round(distance, 2),
+            "z": round(z, 2),
+        })
+        wrist_calibration.append({
+            "distance": round(distance, 2),
+            "m4_offset": int(m4_off),
+        })
+
     data = {
         "calibrated_at_scan_pose": {k: int(v) for k, v in SCAN_POSE.items()},
         "tolerance": int(SCAN_POSE_TOLERANCE),
         "workspace_px": [[round(x, 1), round(y, 1)] for x, y in pixel_points],
-        "workspace_cm": [[round(x, 2), round(y, 2)] for x, y in cm_points],
+        # workspace_cm stays (x, y) only for backward compatibility with homography
+        "workspace_cm": [[round(x, 2), round(y, 2)] for x, y, _z, _m4 in cm_points],
         "homography": homography.tolist(),
+        "height_calibration": height_calibration,
+        "wrist_calibration": wrist_calibration,
         "calibration_date": date.today().isoformat(),
         "n_calibration_points": len(pixel_points),
     }
     with open(CALIBRATION_FILE, "w") as f:
         json.dump(data, f, indent=2)
     print(f"\n  💾  Calibration saved to {CALIBRATION_FILE}")
+    print(f"       Height calibration: {len(height_calibration)} points saved.")
+    print(f"       Wrist calibration:  {len(wrist_calibration)} points saved.")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -519,103 +623,114 @@ def _save_calibration(pixel_points, cm_points, homography):
 # ══════════════════════════════════════════════════════════════════════
 
 def main():
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║     TOUCH CALIBRATION v2 — Auto-Detect + Multi-Point        ║")
-    print("╠══════════════════════════════════════════════════════════════╣")
-    print("║  Place 4–9 balls on the workspace, spread as wide as        ║")
-    print("║  possible. More balls = more accurate calibration.          ║")
-    print("║                                                              ║")
-    print("║  Step 1: Arm moves to SCAN_POSE.                            ║")
-    print("║  Step 2: Balls are auto-detected (or click manually).       ║")
-    print("║  Step 3: Drive the arm to touch each ball (WASD + ENTER).   ║")
-    print("║  Step 4: Homography computed with error report.             ║")
-    print("╚══════════════════════════════════════════════════════════════╝\n")
-
-    # Ask how many balls
-    while True:
-        n_input = input(f"How many balls are on the desk? [{MIN_POINTS}–{MAX_POINTS}] (default 6): ").strip()
-        if not n_input:
-            n_balls = 6
-            break
-        try:
-            n_balls = int(n_input)
-            if MIN_POINTS <= n_balls <= MAX_POINTS:
-                break
-            print(f"  ⚠️  Must be between {MIN_POINTS} and {MAX_POINTS}.")
-        except ValueError:
-            print("  ⚠️  Enter a number.")
-
-    input(f"\nPress ENTER when {n_balls} balls are placed on the desk...")
-
-    # ── Connect arm and move to SCAN_POSE ─────────────────────────────
+    ser = None
     try:
-        _move_to_scan_pose()
-    except Exception as e:
-        print(f"❌ Could not connect: {e}")
-        return
+        print("╔══════════════════════════════════════════════════════════════╗")
+        print("║     TOUCH CALIBRATION v2 — Auto-Detect + Multi-Point        ║")
+        print("╠══════════════════════════════════════════════════════════════╣")
+        print("║  Place 4–12 balls on the workspace, spread as wide as       ║")
+        print("║  possible. More balls = more accurate calibration.          ║")
+        print("║                                                              ║")
+        print("║  Step 1: Arm moves to SCAN_POSE.                            ║")
+        print("║  Step 2: Balls are auto-detected (or click manually).       ║")
+        print("║  Step 3: Drive the arm to touch each ball (WASD + ENTER).   ║")
+        print("║  Step 4: Homography computed with error report.             ║")
+        print("╚══════════════════════════════════════════════════════════════╝\n")
 
-    arm = ArmIK()
+        # Ask how many balls
+        while True:
+            n_input = input(f"How many balls are on the desk? [{MIN_POINTS}–{MAX_POINTS}] (default 6): ").strip()
+            if not n_input:
+                n_balls = 6
+                break
+            try:
+                n_balls = int(n_input)
+                if MIN_POINTS <= n_balls <= MAX_POINTS:
+                    break
+                print(f"  ⚠️  Must be between {MIN_POINTS} and {MAX_POINTS}.")
+            except ValueError:
+                print("  ⚠️  Enter a number.")
 
-    # ── Open camera ───────────────────────────────────────────────────
-    print("[INIT] Opening OAK-D camera...")
-    cam = OAKCamera(resolution=vcfg.CAMERA_RESOLUTION)
-    if not cam.open():
-        print("❌ Could not open camera.")
-        return
+        input(f"\nPress ENTER when {n_balls} balls are placed on the desk...")
 
-    # ── Phase 1: Detect ball positions ────────────────────────────────
-    pixel_points: Optional[List[Tuple[float, float]]] = None
-    use_auto = True
+        # ── Connect arm and move to SCAN_POSE ─────────────────────────────
+        try:
+            ser = _open_serial()
+            _move_to_scan_pose(ser)
+        except Exception as e:
+            print(f"❌ Could not connect: {e}")
+            return
 
-    while pixel_points is None:
-        if use_auto:
-            print(f"\n  🔍  Auto-detecting {n_balls} balls...")
-            detected, last_frame = _auto_detect_balls(cam)
+        arm = ArmIK()
 
-            if len(detected) < MIN_POINTS:
-                print(f"  ⚠️  Only found {len(detected)} balls (need at least {MIN_POINTS}).")
-                print("       Falling back to manual clicking.\n")
-                use_auto = False
-                continue
+        # ── Open camera ───────────────────────────────────────────────────
+        print("[INIT] Opening OAK-D camera...")
+        cam = OAKCamera(resolution=vcfg.CAMERA_RESOLUTION)
+        if not cam.open():
+            print("❌ Could not open camera.")
+            return
 
-            if len(detected) != n_balls:
-                print(f"  ⚠️  Found {len(detected)} balls but expected {n_balls}.")
-                print(f"       Proceeding with {len(detected)} detected balls.\n")
+        # ── Phase 1: Detect ball positions ────────────────────────────────
+        pixel_points: Optional[List[Tuple[float, float]]] = None
+        use_auto = True
 
-            # Show preview for confirmation
-            if last_frame is not None:
-                result = _preview_detections(last_frame, detected)
-                if result is True:
-                    pixel_points = detected
-                elif result is False:
+        while pixel_points is None:
+            if use_auto:
+                print(f"\n  🔍  Auto-detecting {n_balls} balls...")
+                detected, last_frame = _auto_detect_balls(cam)
+
+                if len(detected) < MIN_POINTS:
+                    print(f"  ⚠️  Only found {len(detected)} balls (need at least {MIN_POINTS}).")
+                    print("       Falling back to manual clicking.\n")
                     use_auto = False
                     continue
+
+                if len(detected) != n_balls:
+                    print(f"  ⚠️  Found {len(detected)} balls but expected {n_balls}.")
+                    print(f"       Proceeding with {len(detected)} detected balls.\n")
+
+                # Show preview for confirmation
+                if last_frame is not None:
+                    result = _preview_detections(last_frame, detected)
+                    if result is True:
+                        pixel_points = detected
+                    elif result is False:
+                        use_auto = False
+                        continue
+                    else:
+                        # Retry
+                        continue
                 else:
-                    # Retry
-                    continue
+                    pixel_points = detected
             else:
-                pixel_points = detected
-        else:
-            pixel_points = _manual_click_phase(cam, n_balls)
+                pixel_points = _manual_click_phase(cam, n_balls)
 
-    cam.release()
-    time.sleep(0.5)
+        cam.release()
+        time.sleep(0.5)
 
-    n_actual = len(pixel_points)
-    print(f"\n  ✅  {n_actual} pixel positions captured.")
+        n_actual = len(pixel_points)
+        print(f"\n  ✅  {n_actual} pixel positions captured.")
 
-    # ── Phase 2: Touch Phase ──────────────────────────────────────────
-    cm_points = _touch_phase(arm, pixel_points)
+        # ── Phase 2: Touch Phase ──────────────────────────────────────────
+        cm_points = _touch_phase(ser, arm, pixel_points)
 
-    # ── Phase 3: Compute Homography ───────────────────────────────────
-    homography = _compute_homography(pixel_points, cm_points)
+        # ── Phase 3: Compute Homography ───────────────────────────────────
+        homography = _compute_homography(pixel_points, cm_points)
 
-    # ── Save ──────────────────────────────────────────────────────────
-    _save_calibration(pixel_points, cm_points, homography)
+        # ── Save ──────────────────────────────────────────────────────────
+        _save_calibration(pixel_points, cm_points, homography)
 
-    # Return to scan pose when done
-    _move_to_scan_pose()
-    print("\n  Done. You can now run main.py! ✅\n")
+        # Return to scan pose when done
+        _move_to_scan_pose(ser)
+        print("\n  Done. You can now run main.py! ✅\n")
+
+    finally:
+        if ser is not None:
+            try:
+                ser.close()
+                print("\n🔌 Serial connection closed.")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

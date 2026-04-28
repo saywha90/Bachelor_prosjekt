@@ -24,7 +24,7 @@ Replace the ruler-based `06_homography.py` with `09_touch_calibration.py`. The n
 
 1. Moves the arm to `SCAN_POSE` and opens the camera feed.
 2. The user clicks 4 corners in the camera image (same as before).
-3. For each corner, the user drives the arm with WASD keys until the claw physically touches the corner point.
+3. For each corner, the user drives the arm with keyboard controls (W/S for X, A/D for Y, U/J for Z height, I/K for wrist angle, and bracket keys for step size) until the claw physically touches the corner point.
 4. The script reads the arm's IK-frame (x, y) coordinates directly — these are the same coordinates the IK solver uses for motion planning.
 5. Computes `cv2.getPerspectiveTransform()` and saves the result to `homography_calibration.json` with an identical JSON schema.
 
@@ -60,4 +60,21 @@ Place ArUco markers at the 4 corners and detect them automatically — no clicki
 
 Drive the arm to predefined corners programmatically rather than having the user manually steer with WASD.
 
-**Rejected because:** The workspace boundary is not known a priori — the user defines it by choosing where to click. The WASD steering also lets the user fine-tune the exact touch point, which is important for non-rectangular workspaces.
+**Rejected because:** The workspace boundary is not known a priori — the user defines it by choosing where to click.
+
+## Extension: Height and Wrist Calibration (2026-04)
+
+The touch calibration was extended to also record **grab height (Z)** and **wrist tilt offset (m4)** at each calibration point. Since the operator is already driving the claw to touch the surface, capturing these values adds zero extra effort.
+
+### What changed
+
+1. **New controls during calibration:** I/K keys adjust wrist tilt (m4 offset) so the operator can level the claw at each point.
+2. **New JSON fields:** `homography_calibration.json` now includes `height_calibration` (array of `{x, y, z}`) and `wrist_calibration` (array of `{x, y, m4_offset}`).
+3. **Runtime interpolation:** [`compute_grab_height(x, y)`](../../src/config/arm.py) and [`compute_wrist_correction(x, y)`](../../src/config/arm.py) linearly interpolate over the calibration arrays to determine the correct Z and m4 values for any given ball position. When no touch calibration data exists, they fall back to formula-based defaults (`GRAB_HEIGHT` constant and 0.0 respectively).
+4. **`skip_sag` in IK solver:** [`solve()`](../../src/ik/solver.py) accepts a `skip_sag` parameter. When touch calibration data is available, grab moves use `skip_sag=True` because the touch-calibrated Z already includes real arm droop — applying sag compensation on top would double-compensate.
+
+### Why this supersedes sag calibration for grabs
+
+Sag calibration (Step 03) fits a global linear or quadratic model of droop vs. reach distance. This model is approximate: it assumes droop depends only on reach and ignores the effect of base angle, load, and mechanical variation across the workspace. In contrast, touch calibration captures the *actual* surface height at specific workspace positions — it implicitly accounts for sag, table tilt, and any other height variation. For grab moves, the touch-calibrated Z is therefore more accurate than the sag model.
+
+Sag calibration is **not removed** — it remains active for all non-grab moves (scanning, binning, clearance) where the arm moves to heights above the surface and touch calibration does not apply.

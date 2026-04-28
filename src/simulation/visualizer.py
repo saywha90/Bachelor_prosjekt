@@ -45,7 +45,7 @@ from config.arm import BINS, HOME_POSITION, SCAN_POSE
 # ─── Constants (must match solver.py) ──────────────────────────────
 L1 = 25.5          # shoulder → elbow  (cm)
 L2 = 23.0          # elbow   → wrist   (cm)
-L3 = 20.5          # wrist   → claw tip (cm)
+L3 = 22.0          # wrist   → claw tip (cm)
 
 STEP_CENTRE   = 2048
 RAD_PER_STEP  = (2.0 * math.pi) / 4096.0

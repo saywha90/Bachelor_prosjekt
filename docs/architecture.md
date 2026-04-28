@@ -28,12 +28,12 @@ flowchart TD
 
     subgraph IK ["IK & Servoing (src/ik/)"]
         HOM["vision_bridge.py\nHomography: px → cm"]
-        SOLVER["solver.py\nGeometric IK + sag compensation"]
+        SOLVER["solver.py\nGeometric IK + sag compensation\n(skip_sag for touch-cal grabs)"]
         SERVO_LOOP["vision_bridge.py\nScan-pose servoing"]
     end
 
     subgraph Config ["Config (src/config/)"]
-        ARMCFG["arm.py\nL1=25.5 L2=23.0 L3=16.5 cm"]
+        ARMCFG["arm.py\nL1=25.5 L2=23.0 L3=22.0 cm"]
         VISCFG["vision.py\nHSV ranges, camera params"]
     end
 
@@ -186,8 +186,9 @@ The master control loop in `main.py` implements a state machine that orchestrate
 `ArmIK` computes closed-form geometric inverse kinematics for the 4-DOF arm (base pan, shoulder tilt, elbow tilt, wrist tilt) plus a pass-through for the claw motor. Given a target `(x, y, z)` in centimetres, it returns Dynamixel step values (0–4095) for all five motors.
 
 Key features:
-- **End-effector offset**: adds `L3` (16.5 cm) to Z so the wrist hovers correctly while the claw points straight down
+- **End-effector offset**: adds `L3` (22.0 cm) to Z so the wrist hovers correctly while the claw points straight down
 - **Sag compensation**: corrects for gravity droop using a linear or quadratic model loaded from `sag_calibration.json`
+- **`skip_sag` parameter**: when touch calibration data exists, grab moves call [`solve()`](../src/ik/solver.py) with `skip_sag=True` to avoid double-compensating (the touch-calibrated Z already includes real droop). All other move types use sag compensation normally.
 - **Shoulder height**: subtracts `shoulder_height` (33.0 cm) to convert workspace Z to the shoulder-relative frame
 - **Joint limits**: clamps motor positions to safe ranges to prevent hardware overload errors
 - **Partial-move interpolation**: `calculate_partial_move()` interpolates in Cartesian space (utility for tests/demos; production uses a single direct move — see ADR-003)
@@ -196,7 +197,7 @@ Key features:
 |---|---|
 | **Input** | `(x, y, z)` target in cm, relative to shoulder joint |
 | **Output** | `{"m1": int, "m2": int, "m3": int, "m4": int, "m5": int}` — Dynamixel steps |
-| **Link lengths** | L1 = 25.5 cm, L2 = 23.0 cm, L3 = 16.5 cm |
+| **Link lengths** | L1 = 25.5 cm, L2 = 23.0 cm, L3 = 22.0 cm |
 | **Method** | Law of Cosines for shoulder and elbow; `atan2` for base; wrist compensates to point straight down |
 | **File** | [`src/ik/solver.py`](../src/ik/solver.py) |
 
@@ -211,6 +212,7 @@ The OpenRB-150 microcontroller runs firmware written in the Arduino framework (`
 | `{"m1":N,"m2":N,"m3":N,"m4":N,"m5":N}` | Set goal positions for all 5 motors | `OK` |
 | `{"cmd":"read_pos"}` | Read current positions of all motors | `{"m1":N,...,"m5":N}` |
 | `{"cmd":"read_load"}` | Read Present Load from all motors (address 126) | `{"m1":N,...,"m5":N}` |
+| `{"cmd":"read_current"}` | Read Present Current from all motors for runtime telemetry | `{"m1":N,...,"m5":N}` |
 | `{"cmd":"set_profile","vel":V,"acc":A}` | Set motion profile (velocity, acceleration) | `{"status":"profile_set"}` |
 | `{"cmd":"enable_torque"}` | Enable torque on all motors | `OK:TORQUE_ON` |
 | `{"cmd":"clear_errors"}` | Reboot motors with latched hardware errors | `{"cleared":N}` |
@@ -232,13 +234,15 @@ Configuration is split into two modules:
 
 **`src/config/arm.py`** — Physical arm parameters:
 - `HOME_POSITION` = (20.0, 0.0, 30.0) cm — safe resting position
-- `GRAB_HEIGHT` = 13.0 cm — Z when closing the claw
+- `GRAB_HEIGHT` = 13.0 cm — Z when closing the claw (formula fallback)
 - `CLEARANCE_HEIGHT` = 28.0 cm — Z to lift to before traversing
 - `VERIFY_HEIGHT` = 8.0 cm — Z to lift to for grip verification
 - `CAMERA_OFFSET_X/Y` = 0.0 cm — fine-tuning offset (homography maps directly to shoulder frame)
 - `BINS` — colour-to-position mapping: `RED_BIN` (20, 8, 10), `BLUE_BIN` (20, −8, 10), `REJECT_BIN` (25, 0, 12)
 - Timing: `GRAB_DWELL` = 0.8 s, `RELEASE_DWELL` = 0.5 s
 - Grip verification: `GRIP_VERIFY_TOLERANCE` = 30 steps, `GRIP_LOAD_THRESHOLD` = 50, `MAX_PICK_RETRIES` = 2
+- [`compute_grab_height(x, y)`](../src/config/arm.py) — returns the correct grab Z for a given ball position by linearly interpolating over `height_calibration` data from `homography_calibration.json`. Falls back to the formula-based `GRAB_HEIGHT` constant when no touch calibration data exists.
+- [`compute_wrist_correction(x, y)`](../src/config/arm.py) — returns the m4 wrist-tilt offset for a given ball position by linearly interpolating over `wrist_calibration` data from `homography_calibration.json`. Falls back to 0.0 when no touch calibration data exists.
 
 **`src/config/vision.py`** — Vision subsystem constants:
 - `CAMERA_RESOLUTION` = (640, 400)
@@ -332,6 +336,8 @@ Vision is only valid when the arm is at `SCAN_POSE`. The camera moves with the w
 
 The state machine enforces this by always transitioning through `MOVE_TO_SCAN_POSE` before entering `SCANNING`, and again after `DONE` before the next scan cycle. The flow is: `MOVE_TO_SCAN_POSE → SCANNING → IDLE → APPROACHING → GRABBING → VERIFY_GRIP → SORTING → DROPPING → DONE → MOVE_TO_SCAN_POSE → ...`
 
+Before each scan, the runtime reads present positions and calls [`VisionBridge.verify_pose()`](../src/ik/vision_bridge.py:182) so scan-pose drift is surfaced in logs. While parked at `SCAN_POSE`, the runtime also applies the experimental reduced-current hold limit from [`M3_SCAN_CURRENT_LIMIT`](../src/config/arm.py:164) and uses `read_current` telemetry to warn when M3 is near or at saturation. The optional torque-relax path exists for future work but remains disabled by default because releasing torque at `SCAN_POSE` is unsafe without a validated rest pose and recovery sequence.
+
 ### 3.6 Timing Instrumentation
 
 The `CycleTimer` class in [`src/main.py`](../src/main.py) tracks the wall-clock duration of each phase within a pick-and-place cycle: **scan**, **approach**, **grab**, **sort**, and **drop**. Phase transitions are recorded by calling `timer.start_phase(name)` at the beginning of each state.
@@ -390,10 +396,10 @@ The `OAKCamera` captures frames at 640 × 400 resolution using the DepthAI v3 pi
 
 ### Step 5 — IK Computation
 
-`ArmIK.solve(x, y, z)` computes motor positions:
+`ArmIK.solve(x, y, z, skip_sag=False)` computes motor positions:
 1. Clamp Z to `Z_MIN` (6.0 cm) — floor collision prevention
-2. Add `L3` (16.5 cm) to Z — end-effector offset so claw tip reaches target
-3. Add sag compensation: `z_ik += reach × z_offset_multiplier` (linear model, loaded from `sag_calibration.json`)
+2. Add `L3` (22.0 cm) to Z — end-effector offset so claw tip reaches target
+3. Add sag compensation: `z_ik += reach × z_offset_multiplier` (linear model, loaded from `sag_calibration.json`). **Skipped when `skip_sag=True`** — used for grab moves when touch calibration data is available, because the touch-calibrated Z already accounts for droop.
 4. Subtract `shoulder_height` (33.0 cm) to convert to the shoulder-relative frame
 5. Base angle: `θ_base = atan2(y, x)`
 6. Planar distance: `d = sqrt(r² + z_ik²)`, with reachability clamping
@@ -428,6 +434,7 @@ The five Dynamixel servos (XM430 × 2, XM540 × 1, XL430 × 2) execute the goal 
 | Classical HSV vision over CNN | HSV + Hough + SVM ensemble chosen for deterministic behaviour, no training data requirement, and real-time performance. Three prior attempts (CNN, complex pipeline) failed. | [ADR-001](decisions/001-hsv-over-cnn.md) |
 | Geometric 4-DOF IK | Closed-form solution using Law of Cosines chosen for exact results, fast computation, and predictable behaviour. Sag compensation added as post-processing. | [ADR-002](decisions/002-4dof-geometry.md) |
 | Fixed scan pose over continuous visual servoing | Camera is wrist-mounted; vision only works from a fixed `SCAN_POSE`. The arm moves to this known joint configuration before every scan. Homography is calibrated once at this pose. Mid-approach visual correction was removed because the claw occludes the target ball during approach. | [ADR-003](decisions/003-fixed-scan-pose.md) |
+| Touch calibration replaces homography + sag for grabs | Touch-based calibration replaces manual ruler measurements for homography and also captures per-point grab height (Z) and wrist tilt (m4 offset). At runtime, `compute_grab_height()` and `compute_wrist_correction()` interpolate these values, and `skip_sag` prevents double-compensation with the sag model. | [ADR-004](decisions/004-touch-calibration-replaces-homography.md) |
 
 ---
 
@@ -452,7 +459,7 @@ The system requires a 10-step calibration pipeline before autonomous operation. 
 |:---:|---|---|
 | **4** | `src/calibration/04_hsv_tuner.py` | Interactive live HSV range tuning with trackbars under actual lighting conditions |
 | **5** | `src/calibration/05_hsv_refine.py` | Statistical refinement of HSV ranges from captured training images |
-| **6** | `src/calibration/09_touch_calibration.py` | Click 4 workspace corners in the camera feed, drive the arm to touch each corner → compute the pixel-to-cm perspective transform |
+| **6** | `src/calibration/09_touch_calibration.py` | Click 4 workspace corners in the camera feed, drive the arm to touch each corner → compute the pixel-to-cm perspective transform. Also records grab height (Z) and wrist tilt (m4 offset) per point for distance-based interpolation at runtime. |
 
 
 ### Phase C — Integration (arm + camera together)

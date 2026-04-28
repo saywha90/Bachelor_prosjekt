@@ -24,7 +24,7 @@ See [`docs/calibration.md`](../../docs/calibration.md) for full instructions for
 | `06_homography.py` | 06 | Camera-to-workspace homography _(legacy — see `09_touch_calibration.py`)_ |
 | `07_vision_offset.py` | 07 | Vision-to-arm offset calibration |
 | `08_pick_test.py` | 08 | End-to-end pick success validation |
-| `09_touch_calibration.py` | 09 | **Touch-based homography** — arm physically touches corners for accurate calibration (replaces Step 06) |
+| `09_touch_calibration.py` | 09 | **Touch-based homography + height/wrist calibration** — arm physically touches corners for accurate px→cm calibration (replaces Step 06). Also records grab height (Z) and wrist tilt (m4 offset) per point; used at runtime by `compute_grab_height()` and `compute_wrist_correction()` to interpolate distance-dependent corrections. Supersedes sag calibration (Step 03) for grab moves. |
 
 Run each script with the arm and camera connected:
 

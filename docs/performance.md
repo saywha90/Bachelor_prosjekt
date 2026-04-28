@@ -142,7 +142,7 @@ The geometric 4-DOF IK solver in [`ArmIK`](../src/ik/solver.py:29) uses:
 |-----------|-------|
 | L1 (Shoulder → Elbow) | 25.5 cm |
 | L2 (Elbow → Wrist) | 23.0 cm |
-| L3 (Wrist → Claw tip) | 16.5 cm |
+| L3 (Wrist → Claw tip) | 22.0 cm |
 | Shoulder height | 33.0 cm |
 | Max reach (L1 + L2) | 48.5 cm |
 | Min reach (L1 − L2) | 2.5 cm |

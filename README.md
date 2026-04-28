@@ -188,7 +188,7 @@ The system uses a Dynamixel-based 4-DOF arm (XM430 + XM540 + XL430 servos) contr
 |-----------|-------|
 | L1 (Shoulder → Elbow) | 25.5 cm |
 | L2 (Elbow → Wrist) | 23.0 cm |
-| L3 (Wrist → Claw tip) | 16.5 cm |
+| L3 (Wrist → Claw tip) | 22.0 cm |
 | Max reach (theoretical) | 48.5 cm (L1 + L2) |
 | Practical workspace radius | ~40 cm¹ |
 
