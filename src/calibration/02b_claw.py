@@ -8,12 +8,18 @@ Interactively tunes the m5 motor positions for fully open and
 firmly gripping a 50 mm ball.  Tests jaw symmetry and runs
 open/close cycles.  Saves results to claw_calibration.json.
 
+Includes adaptive grip testing: after calibration values are found,
+you can verify grip behaviour with current-limit safety, load
+polling, and stall detection — identical to production main.py.
+
 Usage:
     python calibrate_claw.py
 
 Author: Bachelor Project 2026 – Autonomia
 """
 
+
+from __future__ import annotations
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -23,14 +29,24 @@ import time
 from pathlib import Path
 
 from ik.solver import ArmIK
+from config.arm import (
+    GRIP_CURRENT_LIMIT, GRIP_PROFILE_VEL, GRIP_PROFILE_ACC,
+    GRIP_POLL_INTERVAL, GRIP_TIMEOUT, GRIP_LOAD_DETECT,
+    GRIP_POSITION_STALL, GRIP_EXTRA_CLOSE, GRIP_VERIFY_TOLERANCE,
+    M5_DEFAULT_CURRENT_LIMIT,
+)
 
 # ── Serial wrapper ──────────────────────────────────────────────────
 # Identical lazy-singleton pattern used by calibrate_joints.py and
 # calibrate_sag.py.  Change SERIAL_PORT / SERIAL_BAUD to match your
 # setup.
 
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
+
+# Calibration-safe motion profile (slower than production defaults)
+CAL_PROFILE_VEL = 40
+CAL_PROFILE_ACC = 10
 
 _ser = None  # lazily initialised on first call
 
@@ -100,8 +116,150 @@ def read_positions() -> dict:
         return None
 
 
+def send_raw_command(cmd_dict: dict) -> str:
+    """Send an arbitrary JSON command and return the firmware response.
+
+    Unlike ``send_command()`` (which sends motor goal positions), this
+    sends firmware meta-commands such as ``set_current_limit``,
+    ``set_profile``, ``read_load``, etc.
+    """
+    ser = _get_serial()
+    ser.write((json.dumps(cmd_dict) + "\n").encode())
+    try:
+        return ser.readline().decode(errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def read_load() -> dict | None:
+    """Read present load from all motors.
+
+    Returns a dict like {"m1": …, "m5": …} or ``None`` on failure.
+    """
+    ser = _get_serial()
+    ser.write((json.dumps({"cmd": "read_load"}) + "\n").encode())
+    try:
+        return json.loads(ser.readline().decode(errors="replace").strip())
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+# ── Adaptive grip ───────────────────────────────────────────────────
+
+def adaptive_grip(claw_closed: int) -> bool:
+    """Attempt an adaptive grip toward *claw_closed* with current-limit
+    safety, load polling, and stall detection — identical logic to
+    main.py's ``adaptive_grip()`` but wired into the calibration helpers.
+
+    Returns ``True`` if an object was gripped, ``False`` if closed on air.
+    """
+    print("  🤏 Starting adaptive grip sequence…")
+    try:
+        # 1. Set M5 current limit to safe value
+        print(f"  🤏 Setting M5 current limit to {GRIP_CURRENT_LIMIT} mA")
+        send_raw_command({"cmd": "set_current_limit", "id": 5, "value": GRIP_CURRENT_LIMIT})
+
+        # 2. Set slow motion profile
+        print(f"  🤏 Setting slow profile (vel={GRIP_PROFILE_VEL}, acc={GRIP_PROFILE_ACC})")
+        send_raw_command({"cmd": "set_profile", "vel": GRIP_PROFILE_VEL, "acc": GRIP_PROFILE_ACC})
+
+        # 3. Read current positions, command M5 to close
+        positions = read_positions()
+        if positions is None:
+            print("  ⚠️  Cannot read positions — aborting adaptive grip")
+            return False
+
+        prev_pos = int(positions.get("m5", 0))
+        goal = {k: int(v) for k, v in positions.items() if k.startswith("m")}
+        goal["m5"] = claw_closed
+        send_command(goal)
+
+        # 4. Poll loop — detect contact via load or stall
+        contact = False
+        contact_position = None
+        start = time.time()
+
+        while True:
+            time.sleep(GRIP_POLL_INTERVAL)
+            elapsed = time.time() - start
+            if elapsed > GRIP_TIMEOUT:
+                print(f"  ⏱ Grip timeout after {GRIP_TIMEOUT}s")
+                break
+
+            loads = read_load()
+            cur_positions = read_positions()
+            if loads is None or cur_positions is None:
+                continue
+
+            m5_load = abs(int(loads.get("m5", 0)))
+            m5_pos = int(cur_positions.get("m5", 0))
+
+            # Contact via load
+            if m5_load >= GRIP_LOAD_DETECT:
+                print(f"  ✅ Contact detected via load ({m5_load} ≥ {GRIP_LOAD_DETECT})")
+                contact = True
+                contact_position = m5_pos
+                break
+
+            # Stall detection
+            if abs(m5_pos - prev_pos) <= GRIP_POSITION_STALL:
+                print(f"  ✅ Stall detected (Δpos={abs(m5_pos - prev_pos)} ≤ {GRIP_POSITION_STALL})")
+                contact = True
+                contact_position = m5_pos
+                break
+
+            prev_pos = m5_pos
+
+        # 5. If contact, close extra steps for secure hold
+        #    Higher step values = more closed (matches main.py direction)
+        if contact and contact_position is not None:
+            extra_target = min(contact_position + GRIP_EXTRA_CLOSE, claw_closed)
+            cur_positions = read_positions()
+            if cur_positions is not None:
+                extra_goal = {k: int(v) for k, v in cur_positions.items() if k.startswith("m")}
+                extra_goal["m5"] = extra_target
+                send_command(extra_goal)
+                time.sleep(0.3)
+            print(f"  🔧 Extra close: {contact_position} → {extra_target}")
+
+        # 6. Final position check — closed on air?
+        final_positions = read_positions()
+        if final_positions and "m5" in final_positions:
+            final_m5 = int(final_positions["m5"])
+            if abs(final_m5 - claw_closed) <= GRIP_VERIFY_TOLERANCE:
+                print(f"  ⚠️ Closed on air (final pos {final_m5} ≈ target {claw_closed})")
+                return False
+            print(f"  ✅ Object gripped at position {final_m5}")
+            return True
+
+        print("  ⚠️  Cannot read final position — assuming no grip")
+        return False
+
+    finally:
+        # 7. ALWAYS restore defaults
+        # Flush any partial serial data left by an interrupted I/O (e.g. Ctrl+C)
+        try:
+            ser = _get_serial()
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
+        try:
+            send_raw_command({"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT})
+        except Exception as e:
+            print(f"  ⚠️  Failed to restore M5 current limit: {e}")
+        # Restore the calibration-safe profile (vel=40, acc=10), NOT the
+        # production defaults (vel=80, acc=20) — the operator's hands may
+        # be near the mechanism during calibration.
+        try:
+            send_raw_command({"cmd": "set_profile", "vel": CAL_PROFILE_VEL, "acc": CAL_PROFILE_ACC})
+        except Exception as e:
+            print(f"  ⚠️  Failed to restore profile: {e}")
+        print("  🔄 Restored default current limit and calibration profile")
+
+
 # ── Constants ───────────────────────────────────────────────────────
-NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
+NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911, "m5": 2048}
 
 M5_MIN = 500
 M5_MAX = 3500
@@ -202,19 +360,48 @@ def main():
         print(f"\n  ✅ CLAW_OPEN = {claw_open}")
 
         # ════════════════════════════════════════════════════════════
-        # Phase 2 — Find CLAW_CLOSED position
+        # Phase 2 — Find CLAW_CLOSED position (EMPTY)
         # ════════════════════════════════════════════════════════════
         print("\n" + "=" * 60)
-        print("PHASE 2 — Find CLAW_CLOSED position")
+        print("PHASE 2 — Find CLAW_CLOSED position (EMPTY)")
         print("=" * 60)
-        print("Place the ball between the claw jaws now.")
-        input("Press ENTER when the ball is in position... ")
+        print("Make sure the claw is EMPTY (remove the ball).")
+        input("Press ENTER when the claw is empty... ")
 
-        print("\nAdjust m5 to close on the ball. It should grip firmly")
-        print("but not stall the motor.")
+        print("\nAdjust m5 to close the claw until the jaws just touch each other.")
+        print("This is the 'closed on air' position used to detect if a pick failed.")
 
         claw_closed = tune_m5({**safe_pos, "m5": claw_open}, claw_open, "CLAW_CLOSED")
         print(f"\n  ✅ CLAW_CLOSED = {claw_closed}")
+
+        # ════════════════════════════════════════════════════════════
+        # Phase 2b — Adaptive grip test (optional)
+        # ════════════════════════════════════════════════════════════
+        print("\n" + "=" * 60)
+        print("PHASE 2b — Adaptive grip test")
+        print("=" * 60)
+        print("Test the adaptive grip with your calibrated closed position.")
+        print("This uses current-limit safety, load polling, and stall")
+        print("detection — identical to production main.py.")
+
+        while True:
+            answer = input("\nPlace a ball in the gripper and press ENTER to test "
+                           "(or type 'skip' to skip)… ").strip().lower()
+            if answer == "skip":
+                print("  ⏭️  Skipping adaptive grip test")
+                break
+
+            # Open claw first
+            print("  Opening claw…")
+            goto({**safe_pos, "m5": claw_open}, pause_s=1.0)
+
+            print("  Running adaptive grip…")
+            grip_ok = adaptive_grip(claw_closed)
+            print(f"  Result: gripped={grip_ok}")
+
+            again = input("  Try again? (y/n): ").strip().lower()
+            if again not in ("y", "yes"):
+                break
 
         # ════════════════════════════════════════════════════════════
         # Phase 3 — Symmetry check
@@ -241,18 +428,21 @@ def main():
             print("  src/ik/solver.py or adding a small Y offset in src/config/arm.py.")
 
         # ════════════════════════════════════════════════════════════
-        # Phase 4 — Cycle test
+        # Phase 4 — Cycle test (with adaptive grip)
         # ════════════════════════════════════════════════════════════
         print("\n" + "=" * 60)
-        print("PHASE 4 — Cycle test (3 open/close cycles)")
+        print("PHASE 4 — Cycle test (3 open/close cycles with adaptive grip)")
         print("=" * 60)
-        print("Running 3 open/close cycles to verify…")
+        print("Running 3 open/close cycles with adaptive grip to verify…")
+        print("Place a ball in the gripper before starting.")
+        input("Press ENTER when ready… ")
 
         for i in range(1, 4):
-            print(f"  Cycle {i}/3 — opening…")
+            print(f"\n  Cycle {i}/3 — opening…")
             goto({**safe_pos, "m5": claw_open}, pause_s=1.0)
-            print(f"  Cycle {i}/3 — closing…")
-            goto({**safe_pos, "m5": claw_closed}, pause_s=1.0)
+            print(f"  Cycle {i}/3 — adaptive grip closing…")
+            grip_ok = adaptive_grip(claw_closed)
+            print(f"  Cycle {i}: grip_ok={grip_ok}")
 
         answer = input("\nDid all 3 cycles work cleanly? (y/n): ").strip().lower()
         cycle_test_passed = answer in ("y", "yes")

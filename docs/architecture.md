@@ -98,7 +98,7 @@ flowchart TD
                                        ┌──▼──┐  ┌──▼──┐  ┌───▼──┐  ┌──▼──┐  ┌──▼──┐
                                        │ m1  │  │ m2  │  │  m3  │  │ m4  │  │ m5  │
                                        │Base │  │Shldr│  │Elbow │  │Wrist│  │Claw │
-                                       │XM430│  │XM540│  │XM430 │  │XL430│  │XL430│
+                                       │XM430│  │XM540│  │XM430 │  │XL430│  │XM430│
                                        └─────┘  └─────┘  └──────┘  └─────┘  └─────┘
 
    Dual-output PSU
@@ -423,7 +423,7 @@ The OpenRB-150 firmware (`openrb_bridge.ino`) receives the JSON, deserialises it
 
 ### Step 8 — Motor Actuation
 
-The five Dynamixel servos (XM430 × 2, XM540 × 1, XL430 × 2) execute the goal positions using their internal PID controllers with the configured trapezoidal velocity profile. The motors are daisy-chained on a TTL bus at 115200 baud, using Dynamixel Protocol 2.0.
+The five Dynamixel servos (XM430 × 3, XM540 × 1, XL430 × 1) execute the goal positions using their internal PID controllers with the configured trapezoidal velocity profile. The motors are daisy-chained on a TTL bus at 115200 baud, using Dynamixel Protocol 2.0.
 
 ---
 

@@ -29,7 +29,7 @@ except ImportError:
     print("ERROR: pyserial is not installed.")
     sys.exit(1)
 
-PORT = "/dev/cu.usbmodem2101"
+PORT = "/dev/cu.usbmodem101"
 BAUD = 115200
 
 def parse_error_status(status_byte: int) -> list:

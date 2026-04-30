@@ -64,121 +64,44 @@ class DiagnosticDetector(SimpleBallDetector):
 
     def _validate_contour(self, contour, color, method, hsv=None):
         """
-        Identisk logikk som original SimpleBallDetector._validate_contour,
-        men logger årsak til avvisning + alle scores for godkjente konturer.
+        Delegates to parent SimpleBallDetector._validate_contour and logs
+        the result (accepted or rejected) for diagnostic visualization.
         """
         color_name = "RØD" if color == BallColor.RED else "BLÅ"
-        area = cv2.contourArea(contour)
         (enc_x, enc_y), radius = cv2.minEnclosingCircle(contour)
         approx_center = (int(enc_x), int(enc_y))
 
-        def reject(reason):
+        # Call parent implementation
+        result = super()._validate_contour(contour, color, method, hsv)
+
+        if result is None:
+            # Rejected — log why (simplified: parent doesn't expose reason,
+            # so we just log the key metrics for the debug panel)
+            area = cv2.contourArea(contour)
+            perimeter = cv2.arcLength(contour, True)
+            circularity = (4 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            aspect = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
             with self._diag_lock:
                 self.rejections.append({
-                    "reason": f"{color_name}: {reason}",
-                    "center": approx_center,   # halvskala-koordinater
+                    "reason": f"{color_name}: cir={circularity:.2f} asp={aspect:.2f} r={radius:.0f}",
+                    "center": approx_center,
                     "radius": float(radius),
                     "color":  color,
                 })
-
-        # ── 1. Area ──────────────────────────────────────────────────────
-        min_area = np.pi * (self.min_radius ** 2)
-        if area < min_area:
-            reject(f"area {area:.0f} < {min_area:.0f}  (min_r={self.min_radius}px)")
-            return None
-
-        # ── 2. Radius ─────────────────────────────────────────────────────
-        if radius < self.min_radius or radius > self.max_radius:
-            reject(f"radius {radius:.1f}px utenfor [{self.min_radius}, {self.max_radius}]")
-            return None
-
-        # ── 3. Moments-senter ─────────────────────────────────────────────
-        M = cv2.moments(contour)
-        if M['m00'] > 1.0:
-            cx = M['m10'] / M['m00']
-            cy = M['m01'] / M['m00']
         else:
-            cx, cy = enc_x, enc_y
-        center = (int(round(cx)), int(round(cy)))
+            # Accepted — log scores
+            with self._diag_lock:
+                self.accepted_raw.append({
+                    "color":  color,
+                    "center": result.center,
+                    "radius": result.radius,
+                    "conf":   result.confidence,
+                    "shape":  result.shape_confidence,
+                    "color_c": result.color_confidence,
+                })
 
-        # ── 4. Perimeter ──────────────────────────────────────────────────
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter == 0:
-            reject("perimeter=0")
-            return None
-
-        # ── 5. Sirkulæritet ───────────────────────────────────────────────
-        circularity = (4 * np.pi * area) / (perimeter ** 2)
-        if circularity < 0.60:
-            reject(f"sirkulæritet {circularity:.3f} < 0.60")
-            return None
-
-        # ── 6. Aspektforhold ──────────────────────────────────────────────
-        bx, by, bw, bh = cv2.boundingRect(contour)
-        aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0.0
-        if aspect_ratio < 0.70:
-            reject(f"aspekt {aspect_ratio:.3f} < 0.70  ({bw}×{bh}px)")
-            return None
-
-        # ── 7. Soliditet ──────────────────────────────────────────────────
-        hull      = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
-        solidity  = (area / hull_area) if hull_area > 0 else 0.0
-        if solidity < 0.75:
-            reject(f"soliditet {solidity:.3f} < 0.75")
-            return None
-
-        # ── 8. Fargemetningstning (kontur-maske, ikke bounding box) ────────
-        sat_score = 0.0
-        if hsv is not None:
-            _cmask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-            cv2.drawContours(_cmask, [contour], -1, 255, cv2.FILLED)
-            _sat_flat = hsv[:, :, 1][_cmask > 0]
-            _val_flat = hsv[:, :, 2][_cmask > 0]
-            if _sat_flat.size > 0:
-                _not_glare = ~((_sat_flat < 30) & (_val_flat > 210))
-                if np.sum(_not_glare) > 5:
-                    sat_score = float(np.mean(_sat_flat[_not_glare])) / 255.0
-                else:
-                    sat_score = float(np.mean(_sat_flat)) / 255.0
-
-        # ── Confidence-beregning (identisk med original) ──────────────────
-        cir_bonus = float(np.clip((circularity  - 0.60) / 0.40, 0.0, 1.0))
-        asp_bonus = float(np.clip((aspect_ratio - 0.70) / 0.30, 0.0, 1.0))
-        sol_bonus = float(np.clip((solidity     - 0.75) / 0.25, 0.0, 1.0))
-        col_bonus = float(np.clip((sat_score    - 0.40) / 0.60, 0.0, 1.0))
-        quality   = cir_bonus * 0.40 + asp_bonus * 0.20 + sol_bonus * 0.20 + col_bonus * 0.20
-        confidence  = 0.90 + float(np.clip(quality * 0.10, 0.0, 0.10))
-        shape_conf  = cir_bonus * 0.50 + asp_bonus * 0.25 + sol_bonus * 0.25
-        color_conf  = sat_score
-
-        distance_cm = (
-            self.focal_length_px * self.BALL_DIAMETER_MM / (radius * 2 * 10.0)
-        )
-
-        # ── Logger godkjent (med alle scores) ─────────────────────────────
-        with self._diag_lock:
-            self.accepted_raw.append({
-                "color":  color,
-                "center": center,
-                "radius": float(radius),
-                "cir":    circularity,
-                "asp":    aspect_ratio,
-                "sol":    solidity,
-                "sat":    sat_score,
-                "conf":   confidence,
-            })
-
-        return DetectedBall(
-            color=color,
-            center=center,
-            radius=float(radius),
-            confidence=float(confidence),
-            detection_method=method,
-            distance_cm=round(distance_cm, 1),
-            shape_confidence=float(shape_conf),
-            color_confidence=float(color_conf),
-        )
+        return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -450,7 +373,7 @@ def main():
         max_radius=config.BALL_MAX_RADIUS,
         confidence_threshold=config.BALL_CONFIDENCE_THRESHOLD,
         focal_length_px=focal_px,
-        max_balls_per_color=4,
+        max_balls_per_color=10,
     )
 
     camera_loop(detector, cam)

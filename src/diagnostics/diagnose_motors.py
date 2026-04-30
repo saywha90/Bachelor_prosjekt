@@ -10,7 +10,7 @@ which pings each motor (IDs 1-5) at multiple Dynamixel baud rates
 user exactly which motors respond, at what baud rate, and what to fix.
 
 Usage:
-    python diagnose_motors.py [--port /dev/cu.usbmodem2101]
+    python diagnose_motors.py [--port /dev/cu.usbmodem101]
 
 Author: Bachelor Project 2026 – Autonomia
 """
@@ -31,7 +31,7 @@ except ImportError:
     sys.exit(1)
 
 # ── Defaults ──────────────────────────────────────────────────────────
-DEFAULT_PORT = "/dev/cu.usbmodem2101"
+DEFAULT_PORT = "/dev/cu.usbmodem101"
 USB_BAUD     = 115200          # must match PI_BAUDRATE in the firmware
 TIMEOUT      = 8               # seconds – diagnose scans 3 baud rates × 5 motors
 
@@ -49,7 +49,7 @@ MOTOR_LABELS = {
     2: "Shoulder Tilt (XM540)",
     3: "Elbow Tilt    (XM430)",
     4: "Wrist Tilt    (XL430)",
-    5: "Claw          (XL430)",
+    5: "Claw          (XM430)",
 }
 
 # Known Dynamixel model numbers

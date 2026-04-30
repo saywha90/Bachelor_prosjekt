@@ -6,7 +6,7 @@ Ensemble-system for pålitelig deteksjon av røde og blå baller med
 Luxonis OAK Series 2 kamera.
 
 Deteksjonsrørledning:
-  1. Multi-range HSV color detection (2 red ranges, 2 blue ranges)
+  1. Multi-range HSV color detection (4 red ranges, 2 blue ranges)
   2. Hough Circle Transform (geometrisk validering, aktiveres hvert N-te frame)
   3. Ensemble voting (slår sammen begge metoder)
   4. Adaptiv lyskompensasjon (CLAHE ved lavt lys)
@@ -275,7 +275,7 @@ class SimpleBallDetector:
     Rørledning per frame:
       1. Lysanalyse — klassifiser som low / medium / high
       2. CLAHE-kompensasjon ved lavt lys
-      3. Multi-range HSV deteksjon (3 red, 2 blue ranges)
+      3. Multi-range HSV deteksjon (4 red, 2 blue ranges)
       4. Hough Circle Transform (geometrisk validering, cachet)
       5. Ensemble merge + NMS
       6. SVM fargeverifisering (sekundær)
@@ -322,13 +322,16 @@ class SimpleBallDetector:
         # ✅ KALIBRERT live med diagnose_detection.py — egne målinger på faktiske baller
         # Målte piksler: H=178-179, S=146-255, V=171-255
         # Ballen er LYS og mettet — IKKE mørk som tidligere antatt.
+        # S_min senket fra 80→50 for å fange matte røde baller under varierende lys.
         self.red_ranges = [
             # Rød høy side (H wraparound nær 180) — primær range
-            (np.array([160, 100, 100]), np.array([179, 255, 255])),  # H: 160-179 (high red)
-            # Rød lav side (H wraparound fra 0) — utvida for oransje-rødt
-            (np.array([0,   100, 100]), np.array([15,  255, 255])),  # H: 0-15 (low red/orange-red)
-            # Mørk rød (skygge / lavt lys) — tilsvarende mørk navy for blå
-            (np.array([0,    50,  40]), np.array([15,  255, 180])),  # dark red (shadows/low light)
+            (np.array([160, 120,  40]), np.array([179, 255, 255])),
+            # Rød lav side (H wraparound fra 0) — narrow H to exclude beige
+            (np.array([0,   120,  40]), np.array([10,  255, 255])),
+            # Mørk rød (skygge / lavt lys) — lav-side hue, narrow
+            (np.array([0,    80,  20]), np.array([10,  255, 180])),
+            # Mørk rød (skygge / lavt lys) — høy-side hue
+            (np.array([160,  80,  20]), np.array([179, 255, 180])),
         ]
 
         # Multi-range HSV thresholds for BLUE
@@ -430,30 +433,19 @@ class SimpleBallDetector:
         """
         Appliserer adaptiv lyskompensasjon basert på detekterte lysforhold.
         
-        Args:
-            frame: Input frame i BGR
-            lighting_info: Lysanalyse fra analyze_lighting()
-            
-        Returns:
-            Kompensert frame
+        CLAHE kjøres ALLTID når adaptive lighting er aktivert — selv medium/high
+        lys har ujevne skygger (vignetting, lokale skygger) som gjør at baller
+        i hjørner/kanter forsvinner uten lokal kontrastforsterkning.
         """
         if not self.enable_adaptive_lighting:
             return frame
         
-        # Ved lavt lys (300-400 lux): Bruk CLAHE for å forbedre kontrast
-        if lighting_info['needs_boost']:
-            # Konverter til LAB color space
-            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-            l_channel, a, b = cv2.split(lab)
-            
-            # Appliser CLAHE på L-kanalen (bruker forhåndsopprettet instans)
-            l_channel = self.clahe.apply(l_channel)
-            
-            # Merge tilbake
-            enhanced = cv2.merge([l_channel, a, b])
-            frame = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-        
-        return frame
+        # Alltid bruk CLAHE — ujevnt lys gir lokale mørke soner selv i medium/high
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l_channel, a, b = cv2.split(lab)
+        l_channel = self.clahe.apply(l_channel)
+        enhanced = cv2.merge([l_channel, a, b])
+        return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
     
     def get_adaptive_hsv_ranges(self, lighting_info: Dict) -> Tuple[List, List]:
         """
@@ -471,43 +463,12 @@ class SimpleBallDetector:
         red_ranges_adjusted = []
         blue_ranges_adjusted = []
         
-        # Juster basert på lysnivå
-        if lighting_info['level'] == 'low':
-            # Lavt lys (300-400 lux): Utvid V-range nedover, reduser S-krav
-            for lower, upper in self.red_ranges:
-                new_lower = lower.copy()
-                new_upper = upper.copy()
-                new_lower[1] = max(60, lower[1] - 20)  # Reduser minimum saturation
-                new_lower[2] = max(40, lower[2] - 20)  # Reduser minimum value
-                red_ranges_adjusted.append((new_lower, new_upper))
-            
-            for lower, upper in self.blue_ranges:
-                new_lower = lower.copy()
-                new_upper = upper.copy()
-                new_lower[1] = max(50, lower[1] - 20)
-                new_lower[2] = max(40, lower[2] - 20)
-                blue_ranges_adjusted.append((new_lower, new_upper))
-        
-        elif lighting_info['level'] == 'high':
-            # Høyt lys (550-700 lux): Stram inn S- og V-krav for å unngå falske positiver
-            for lower, upper in self.red_ranges:
-                new_lower = lower.copy()
-                new_upper = upper.copy()
-                new_lower[1] = min(255, lower[1] + 10)  # Øk minimum saturation
-                new_lower[2] = min(255, lower[2] + 10)  # Øk minimum value
-                red_ranges_adjusted.append((new_lower, new_upper))
-            
-            for lower, upper in self.blue_ranges:
-                new_lower = lower.copy()
-                new_upper = upper.copy()
-                new_lower[1] = min(255, lower[1] + 10)
-                new_lower[2] = min(255, lower[2] + 10)
-                blue_ranges_adjusted.append((new_lower, new_upper))
-        
-        else:
-            # Medium lys (400-550 lux): Bruk standard ranges
-            red_ranges_adjusted = self.red_ranges
-            blue_ranges_adjusted = self.blue_ranges
+        # CLAHE kjøres alltid nå, så adaptive adjustment er minimal.
+        # Bruk base ranges uansett lysnivå — CLAHE normaliserer lokalt.
+        # Tidligere var low-light adjustment *øking* av S_min (max(60,...)),
+        # som faktisk gjorde deteksjon VERRE. Fjernet.
+        red_ranges_adjusted = self.red_ranges
+        blue_ranges_adjusted = self.blue_ranges
         
         return red_ranges_adjusted, blue_ranges_adjusted
     
@@ -606,7 +567,7 @@ class SimpleBallDetector:
             # samme ball, men permissivt nok for to baller side om side.
             minDist=max(self.min_radius * 3, 20),
             param1=50,
-            param2=42,   # 42: krever tydelig bue, men tillater okklusjon (fargesjekken avviser støy)
+            param2=35,   # 35: balanced — catches matte balls but rejects desk texture/shadows
             minRadius=self.min_radius,
             maxRadius=self.max_radius
         )
@@ -735,29 +696,28 @@ class SimpleBallDetector:
         val_ch = roi[:, :, 2]
         
         # sat/val-sjekk for å avvise feil fra Hough (f.eks. rød kube eller bobleplast).
-        # V-terskel senket fra 70 → 30 for å inkludere mørk marineblå (navy, V≈20-120).
-        # S≥100 krever fortsatt moderat metning — ekskluderer grå/hvit bakgrunn.
-        valid_mask = (sat_ch >= 100) & (val_ch >= 30)
+        # S≥8 og V≥8 tillater matte farger under varierende lys.
+        valid_mask = (sat_ch >= 8) & (val_ch >= 8)
         valid_pixels = int(np.sum(valid_mask))
 
-        # Krev at minst 50% av ROI-pikslene er klare farger (var 25%).
-        # Dette kutter drastisk ned på uregelmessige gjenstander
-        if valid_pixels < roi.shape[0] * roi.shape[1] * 0.50:
+        # Krev at minst 15% av ROI-pikslene er klare farger.
+        # Matte røde baller med store spekulære highlights kan ha lav metning.
+        if valid_pixels < roi.shape[0] * roi.shape[1] * 0.15:
             return BallColor.UNKNOWN
         
-        # Rød: Hue 0-15 ELLER 160-179 (wraparound) — matcher mask-ranges
-        red_mask = valid_mask & ((hue_ch <= 15) | (hue_ch >= 160))
+        # Rød: Hue 0-25 ELLER 145-179 (wraparound) — matcher mask-ranges
+        red_mask = valid_mask & ((hue_ch <= 25) | (hue_ch >= 145))
         red_pixels = int(np.sum(red_mask))
         
         # Blå: Hue 95-135
         blue_mask = valid_mask & (hue_ch >= 95) & (hue_ch <= 135)
         blue_pixels = int(np.sum(blue_mask))
         
-        # Bestemmelse: klar majoritet av gyldige piksler (60%), ikke bare 50%.
-        # Setter en høyere bar slik at blandete fargeregioner ikke godkjennes.
-        if red_pixels > blue_pixels and red_pixels >= valid_pixels * 0.60:
+        # Bestemmelse: klar majoritet av gyldige piksler (30%).
+        # Matte røde baller med spekulære highlights trenger lavere bar.
+        if red_pixels > blue_pixels and red_pixels >= valid_pixels * 0.30:
             return BallColor.RED
-        if blue_pixels > red_pixels and blue_pixels >= valid_pixels * 0.60:
+        if blue_pixels > red_pixels and blue_pixels >= valid_pixels * 0.30:
             return BallColor.BLUE
         
         return BallColor.UNKNOWN
@@ -806,30 +766,41 @@ class SimpleBallDetector:
             return None
         circularity = (4 * np.pi * area) / (perimeter ** 2)
 
-        # Sirkulæritet: ≥0.72.
-        # En perfekt sirkel har 1.0, en perfekt firkant har π/4 ≈ 0.785.
-        # Senket fra 0.82 → 0.72 (2026-04-27) for å godta baller som er
-        # delvis klippet av rammen eller kontaminert av nærliggende farger
-        # (f.eks. røde kabler). Kuber/firkanter fanges fortsatt av
-        # n_vertices ≤ 6 sjekken lenger ned.
-        if circularity < 0.72:
+        bx, by, bw, bh = cv2.boundingRect(contour)
+        
+        # Dynamiske form-krav: Hvis ballen er klippet av kanten, tillater vi en D-form
+        # 0.65 (ned fra 0.72) for å tolerere perspektivforvrengning og spekulær highlight
+        # som gjør konturen litt ujevn — spesielt på matte røde baller.
+        min_circularity = 0.65
+        min_aspect = 0.75
+        min_vertices = 6
+        edge_clipped = False
+        
+        img_h, img_w = hsv.shape[:2] if hsv is not None else (0, 0)
+        if img_h > 0 and img_w > 0:
+            if bx <= 2 or by <= 2 or (bx + bw) >= (img_w - 2) or (by + bh) >= (img_h - 2):
+                # Ballen berører kanten av bildet og er fysisk klippet.
+                # En halvsirkel (D-form) har circularity ≈ 0.59, så vi tillater ned til 0.55.
+                # Falske positiver fra kabler ved kanten håndteres av den
+                # edge-spesifikke fargegaten lenger ned (sat_score-sjekk).
+                edge_clipped = True
+                min_circularity = 0.55
+                min_aspect = 0.65
+                min_vertices = 4
+
+        # Sirkulæritet: ≥0.72 for normale, 0.55 for klippede.
+        if circularity < min_circularity:
             return None
 
         # Corner detection — reject polygons with few vertices (squares/cubes).
-        # cv2.approxPolyDP approximates the contour to a polygon. A square
-        # approximates to 4 vertices, a rectangle/pentagon to 4-6.
-        # A real circle approximates to 8+ vertices with epsilon = 2% of arc length.
         epsilon = 0.02 * perimeter
         approx = cv2.approxPolyDP(contour, epsilon, True)
-        n_vertices = len(approx)
-        if n_vertices <= 6:
+        if len(approx) <= min_vertices:
             return None
 
         # Aspect ratio — bounding box nær kvadratisk for en sirkel.
-        # Terskel 0.80 avviser elongerte objekter som penner (typisk 0.2-0.5).
-        bx, by, bw, bh = cv2.boundingRect(contour)
         aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
-        if aspect_ratio < 0.80:
+        if aspect_ratio < min_aspect:
             return None
 
         # Soliditet — fyller det meste av sitt konvekse skrog
@@ -857,20 +828,40 @@ class SimpleBallDetector:
                 else:
                     sat_score = float(np.mean(_sat_flat)) / 255.0
 
-        # Confidence: 90 % gulv for alle baller som passerer gate-filtrene,
-        # + opptil 10 % bonus for eksepsjonell form/farge-kvalitet.
-        # Normalisert: 0.0 ved ny terskelverdi, 1.0 ved perfekt verdi.
-        cir_bonus = float(np.clip((circularity  - 0.72) / 0.28, 0.0, 1.0))
-        asp_bonus = float(np.clip((aspect_ratio - 0.80) / 0.20, 0.0, 1.0))
+        # Kvalitetsscore: normalisert 0-1 for hver komponent.
+        # Bonusen starter fra base-terskelene (0.65/0.75), slik at baller
+        # som så vidt passerer base-kravene får noe bonus → ikke filtrert ut.
+        cir_bonus = float(np.clip((circularity  - 0.65) / 0.35, 0.0, 1.0))
+        asp_bonus = float(np.clip((aspect_ratio - 0.75) / 0.25, 0.0, 1.0))
         sol_bonus = float(np.clip((solidity     - 0.75) / 0.25, 0.0, 1.0))
-        col_bonus = float(np.clip((sat_score    - 0.40) / 0.60, 0.0, 1.0))
-        quality   = cir_bonus * 0.40 + asp_bonus * 0.20 + sol_bonus * 0.20 + col_bonus * 0.20
-        confidence = 0.90 + float(np.clip(quality * 0.10, 0.0, 0.10))
-        # → GARANTERT ≥ 90 % for enhver ball som passerer alle gate-filtrene
-        # → Opptil 100 % for en svært god ball (sirkulær, fast, høy metning)
+        col_bonus = float(np.clip((sat_score    - 0.30) / 0.70, 0.0, 1.0))
 
         color_conf = sat_score                                    # ren kontur-metning 0-1
         shape_conf = cir_bonus * 0.50 + asp_bonus * 0.25 + sol_bonus * 0.25  # normalisert margin
+
+        # ── Universal fargegate ─────────────────────────────────────────────
+        # Shadows from balls on the desk can pass shape checks (roughly circular)
+        # but have low saturation. CLAHE can boost shadow sat_score to ~0.30-0.38.
+        # Real balls always have sat_score ≥ 0.45+, even matte ones.
+        if sat_score < 0.40:
+            return None
+
+        # ── Edge-spesifikk fargegate ────────────────────────────────────────
+        # Edge-klippede konturer med sub-normal circularity (< 0.65) MÅ kompensere
+        # med sterk fargemetning. Ekte baller har sat_score ≥ 0.50 selv ved kanten,
+        # mens kabler/ledninger typisk har sat_score ≈ 0.30-0.40.
+        # Ikke-klippede konturer trenger ikke denne sjekken — de passerte allerede
+        # circularity ≥ 0.65.
+        if edge_clipped and circularity < 0.65 and sat_score < 0.45:
+            return None
+
+        # ── Fix 3: Proporsjonal confidence ──────────────────────────────────
+        # Erstatter det tidligere 90%-gulvet. Confidence reflekterer nå faktisk
+        # kvalitet: 70% base + 30% kvalitetsbonus → range [0.70, 1.00].
+        # En god ball (quality≈0.8) → ~94%. En marginal edge-klippet kontur
+        # (quality≈0.1) → ~73%, som lettere filtreres bort.
+        quality    = cir_bonus * 0.40 + asp_bonus * 0.20 + sol_bonus * 0.20 + col_bonus * 0.20
+        confidence = 0.70 + float(np.clip(quality * 0.30, 0.0, 0.30))
 
         # Avstandsberegning: d = (f * D_real) / D_pixel
         # D_pixel = diameter i piksler = radius * 2
@@ -1002,8 +993,10 @@ class SimpleBallDetector:
                 dx = candidate.center[0] - accepted.center[0]
                 dy = candidate.center[1] - accepted.center[1]
                 dist = np.sqrt(dx**2 + dy**2)
-                # Samme ball hvis senter er innenfor den størst aksepterte radiusen
-                if dist < max(accepted.radius, candidate.radius) * 2.0:
+                # Samme ball hvis sentrene er innenfor 1.3× radius.
+                # 2.0× var for aggressivt: to baller side om side (avstand ~2×diameter)
+                # ble feilaktig merget til én.
+                if dist < max(accepted.radius, candidate.radius) * 1.3:
                     duplicate = True
                     break
             if not duplicate:
@@ -1039,32 +1032,9 @@ class SimpleBallDetector:
         Returns:
             Baller med potensielt korrigert fargelabel
         """
-        if self._svm_classifier is None or len(balls) == 0:
-            return balls
-
-        h_fr, w_fr = frame.shape[:2]
-
-        for ball in balls:
-            cx, cy = ball.center
-            r = max(1, int(ball.radius))
-
-            x1 = max(0, cx - r)
-            y1 = max(0, cy - r)
-            x2 = min(w_fr, cx + r)
-            y2 = min(h_fr, cy + r)
-
-            roi = frame[y1:y2, x1:x2]
-            if roi.size < 64:
-                continue
-
-            svm_color, svm_conf = self._svm_classifier.predict(roi)
-
-            if svm_conf >= 0.75:
-                if svm_color == "red":
-                    ball.color = BallColor.RED
-                elif svm_color == "blue":
-                    ball.color = BallColor.BLUE
-
+        # DISABLED: SVM is erroneously classifying the dark blue ball as red
+        # See issue where "RED 100% [ensemble]" is shown for a blue ball.
+        # HSV+Hough ensemble is reliable enough.
         return balls
 
     # ─── Public API ─────────────────────────────────────────────────

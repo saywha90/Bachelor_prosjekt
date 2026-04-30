@@ -151,3 +151,20 @@ Display size constants centralized in `DISPLAY_W, DISPLAY_H`.
    - **Reject:** Objects with ≤ 6 vertices (Squares, Rectangles, Cubes).
 2. **Intersection over Union (IoU)**: Superimposes a mathematical "ideal circle" over the actual red mask found in the camera view. 
    - **Reject:** If the real red color spills massively outside the circle (IoU < 45%). This eliminates the tops of the milk cartons, graphics, and random textured cow ears, as their actual paint doesn't follow a spherical boundary.
+
+---
+
+## Fix 11: Red Mask Leakage (Desk Background Noise)
+
+**File:** `src/vision/detector.py`
+
+**Problem:** The red mask was "leaking" into the beige/gray wood grain of the desk, causing large, irregular blobs that merged balls together and created massive false-positive shapes.
+
+**Root cause:** The HSV saturation threshold for red was set too low (minimum 35–50). The neutral desk color had enough red/orange hue components to be picked up as "red" at that low saturation level, especially under the adaptive CLAHE lighting boost.
+
+**Fix:** Tightened the red saturation gates to match the strictness of the blue detector:
+- **Regular Red:** Minimum saturation increased from `50` to **`120`**.
+- **Dark/Shadow Red:** Minimum saturation increased from `35` to **`80`**.
+- **Value (Brightness):** Increased minimum V from `10` to **`20`** to ignore deep shadows.
+
+This forces the detector to ignore the desaturated background colors of the desk and only identify the vibrant, highly-saturated red balls.

@@ -118,9 +118,9 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
 # Use  python src/calibration/09_touch_calibration.py  to recalibrate.
-CAMERA_OFFSET_X = 2.0     # arm falls 2cm short; add to reach further forward (tuned 2026-04-27)
-CAMERA_OFFSET_Y = 1.5     # Offset to shift the arm to the left (tuned)
-CAMERA_HEIGHT   = 35.5   # cm – camera lens height above table surface (measured 2026-04-25)
+CAMERA_OFFSET_X = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
+CAMERA_OFFSET_Y = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
+CAMERA_HEIGHT   = 56.5   # cm – camera lens height above table surface
 
 # ── Wrist-mounted camera scan pose ──────────────────────────────────
 # Joint positions (Dynamixel steps) where the arm parks the
@@ -138,9 +138,9 @@ CAMERA_HEIGHT   = 35.5   # cm – camera lens height above table surface (measur
 # See docs/calibration.md → Step 02c.
 SCAN_POSE = {
     "m1": 2048,
-    "m2": 2750,   # shoulder raised — wrist ~35 cm above desk
-    "m3": 1000,    # elbow folded — forearm angled down toward desk
-    "m4": 850,   # wrist tilted — camera optical axis points at workspace
+    "m2": 2800,   # shoulder raised — wrist ~35 cm above desk
+    "m3": 950,    # elbow folded — forearm angled down toward desk
+    "m4": 800,   # wrist tilted — camera optical axis points at workspace
     "m5": 2048,   # claw open and out of camera view
 }
 
@@ -161,7 +161,7 @@ SCAN_POSE_TOLERANCE = 20
 #   0 = disabled (use default / max current).
 #   300 mA is only a cautious starting point; treat it as experimental
 #   until runtime current/drift checks have been validated on hardware.
-M3_SCAN_CURRENT_LIMIT = 300     # mA — experimental scan-hold current cap for M3
+M3_SCAN_CURRENT_LIMIT = 400       # mA — scan-hold current cap for M3 to prevent overheating
 M3_DEFAULT_CURRENT_LIMIT = 1193  # mA — XM430-W350 factory default current limit
 
 # Mitigation 2 — Periodic torque relaxation (disabled by default):
@@ -194,6 +194,19 @@ GRIP_VERIFY_TOLERANCE = 30        # Dynamixel steps: if claw pos is within this 
 GRIP_LOAD_THRESHOLD   = 50        # Minimum absolute load value to confirm grip (from read_load)
 MAX_PICK_RETRIES      = 2         # Number of re-grab attempts before skipping a ball
 VERIFY_HEIGHT         = 8.0       # cm – height to lift to for grip verification (between GRAB_HEIGHT and CLEARANCE_HEIGHT)
+
+# ── Adaptive grip settings ──────────────────────────────────────────
+GRIP_CURRENT_LIMIT    = 200       # mA – max current for M5 during grip (protects 3D-printed claw)
+GRIP_PROFILE_VEL      = 30        # slow closing velocity (normal is 80)
+GRIP_PROFILE_ACC      = 10        # slow closing acceleration (normal is 20)
+GRIP_POLL_INTERVAL    = 0.05      # seconds between load readings during adaptive grip
+GRIP_TIMEOUT          = 3.0       # max seconds to wait for grip to complete
+GRIP_LOAD_DETECT      = 40        # load threshold to detect object contact (lower than GRIP_LOAD_THRESHOLD)
+GRIP_POSITION_STALL   = 5         # if position changes less than this over 2 readings, consider stalled
+GRIP_EXTRA_CLOSE      = 30        # extra steps to close past contact point for secure hold
+DEFAULT_PROFILE_VEL   = 80        # normal operating velocity
+DEFAULT_PROFILE_ACC   = 20        # normal operating acceleration
+M5_DEFAULT_CURRENT_LIMIT = 1193   # XM430-W350 factory default current limit in mA
 
 
 def _interpolate_height(distance: float, calibration: List[dict]) -> float:

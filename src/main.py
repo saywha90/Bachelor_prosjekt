@@ -67,6 +67,17 @@ from config.arm import (
     M3_RELAX_REST_POSE,
     M3_RELAX_INTERVAL,
     M3_RELAX_DURATION,
+    GRIP_CURRENT_LIMIT,
+    GRIP_PROFILE_VEL,
+    GRIP_PROFILE_ACC,
+    GRIP_POLL_INTERVAL,
+    GRIP_TIMEOUT,
+    GRIP_LOAD_DETECT,
+    GRIP_POSITION_STALL,
+    GRIP_EXTRA_CLOSE,
+    DEFAULT_PROFILE_VEL,
+    DEFAULT_PROFILE_ACC,
+    M5_DEFAULT_CURRENT_LIMIT,
 )
 from simulation.mock_serial import MockSerial
 from ik.vision_bridge import VisionBridge
@@ -151,12 +162,12 @@ class CycleTimer:
 
 
 # ─── Serial / connection settings ─────────────────────────────────────
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD     = 115200
 
 # ─── Claw motor positions (Dynamixel steps) ───────────────────────────
-CLAW_OPEN_POS   = 2048    # open/neutral position for gripper
-CLAW_CLOSED_POS = 2700    # closed/grip position (tune on real hardware)
+CLAW_OPEN_POS = 2016    # open/neutral position for gripper
+CLAW_CLOSED_POS = 2890    # closed/grip position (tune on real hardware — must be the EMPTY jaws-touching position)
 
 # ─── Movement settling time (seconds) ────────────────────────────────
 #   After sending a position command, wait this long for the arm to
@@ -200,7 +211,7 @@ def log_state(state: State, msg: str = ""):
 
 def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
                  viz=None, claw_override=None, m4_offset: int = 0,
-                 skip_sag: bool = False):
+                 skip_sag: bool = False, settle_time: float | None = None):
     """Solve IK, send JSON over serial, wait for ACK, and update visualizer.
 
     Parameters
@@ -238,7 +249,10 @@ def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
 
     # Wait for the physical arm to reach the target position
     if USE_REAL_SERIAL:
-        time.sleep(MOVE_SETTLE_TIME)
+        if settle_time is not None:
+            time.sleep(settle_time)
+        else:
+            time.sleep(MOVE_SETTLE_TIME)
 
     return solution
 
@@ -267,7 +281,7 @@ def send_claw(ser, last_solution: dict, position: int, label: str = ""):
         print(f"  🦀  [CLAW] {label} (m5 → {position})")
 
     # Use the last known positions to prevent sudden jerks
-    current = last_solution.copy() if last_solution else {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048}
+    current = last_solution.copy() if last_solution else {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911}
 
     # Override only the claw motor
     current["m5"] = position
@@ -458,30 +472,162 @@ def m3_torque_relax(ser):
     return True
 
 
+def send_raw_command(ser, cmd_dict: dict) -> str:
+    """Send a raw JSON command dict over serial and return the response.
+
+    Unlike ``send_command()`` (which is IK-aware), this sends an arbitrary
+    JSON object — used for firmware meta-commands like ``set_current_limit``,
+    ``set_profile``, ``read_load``, etc.
+    """
+    payload = json.dumps(cmd_dict) + "\n"
+    ser.write(payload.encode())
+    try:
+        resp = ser.readline().decode(errors="replace").strip()
+    except Exception:
+        resp = ""
+    return resp
+
+
+def adaptive_grip(ser, last_solution: dict) -> bool:
+    """Gradually close the claw until resistance is detected.
+
+    Returns True if an object was gripped, False if closed on air.
+
+    Strategy:
+      1. Set a low current limit on M5 to protect the 3D-printed claw
+      2. Set slow profile velocity for gentle closing
+      3. Command CLAW_CLOSED_POS as goal position
+      4. Poll read_load every GRIP_POLL_INTERVAL
+      5. When load exceeds GRIP_LOAD_DETECT, object is contacted
+      6. Close GRIP_EXTRA_CLOSE steps past contact for secure hold
+      7. Restore normal current limit and profile velocity
+    """
+    print("  🤏  [ADAPTIVE GRIP] Starting adaptive grip sequence")
+    gripped = False
+    try:
+        # 1. Cap M5 current to protect the claw
+        print(f"  🤏  [ADAPTIVE GRIP] Setting M5 current limit to {GRIP_CURRENT_LIMIT} mA")
+        send_raw_command(ser, {"cmd": "set_current_limit", "id": 5, "value": GRIP_CURRENT_LIMIT})
+
+        # 2. Slow down the closing motion
+        print(f"  🤏  [ADAPTIVE GRIP] Setting slow profile (vel={GRIP_PROFILE_VEL}, acc={GRIP_PROFILE_ACC})")
+        send_raw_command(ser, {"cmd": "set_profile", "vel": GRIP_PROFILE_VEL, "acc": GRIP_PROFILE_ACC})
+
+        # 3. Command m5 to CLAW_CLOSED_POS while maintaining previous goal positions for m1-m4
+        # to prevent the arm from springing up if it was pushing against the desk
+        if not last_solution:
+            print("  ⚠️  [ADAPTIVE GRIP] No last_solution provided — falling back to verify_grip()")
+            return verify_grip(ser, CLAW_CLOSED_POS)
+
+        goal = last_solution.copy()
+        goal["m5"] = CLAW_CLOSED_POS
+        ser.write((json.dumps(goal) + "\n").encode())
+        ser.readline()  # consume ACK
+
+        # 4. Polling loop — watch load + position for contact detection
+        start_time = time.time()
+        
+        # Read initial position for stall detection baseline
+        positions = read_positions(ser)
+        prev_pos = int(positions.get("m5", last_solution.get("m5", 0))) if positions else int(last_solution.get("m5", 0))
+        contact_detected = False
+        contact_position = None
+
+        while True:
+            time.sleep(GRIP_POLL_INTERVAL)
+            elapsed = time.time() - start_time
+
+            # Timeout guard
+            if elapsed > GRIP_TIMEOUT:
+                print(f"  ⚠️  [ADAPTIVE GRIP] Timeout after {GRIP_TIMEOUT:.1f}s")
+                break
+
+            # Read load
+            loads = read_load(ser)
+            cur_positions = read_positions(ser)
+
+            if loads is None or cur_positions is None:
+                continue  # skip this poll cycle on read failure
+
+            m5_load = abs(int(loads.get("m5", 0)))
+            m5_pos = int(cur_positions.get("m5", 0))
+
+            # Check for object contact via load
+            if m5_load >= GRIP_LOAD_DETECT:
+                print(f"  🤏  [ADAPTIVE GRIP] Contact detected! load={m5_load}, pos={m5_pos}")
+                contact_detected = True
+                contact_position = m5_pos
+                break
+
+            # Check for stall (position not changing)
+            # Only check after 0.4s to allow the motor to accelerate from a dead stop
+            if elapsed > 0.4 and abs(m5_pos - prev_pos) <= GRIP_POSITION_STALL:
+                # Could be stalled against object or at end of travel
+                print(f"  🤏  [ADAPTIVE GRIP] Stall detected at pos={m5_pos} (prev={prev_pos})")
+                contact_detected = True
+                contact_position = m5_pos
+                break
+
+            prev_pos = m5_pos
+
+        # 5. If contact was detected, close a bit more for a secure hold
+        if contact_detected and contact_position is not None:
+            secure_pos = min(contact_position + GRIP_EXTRA_CLOSE, CLAW_CLOSED_POS)
+            print(f"  🤏  [ADAPTIVE GRIP] Securing grip: closing to {secure_pos} "
+                  f"(contact at {contact_position} + {GRIP_EXTRA_CLOSE} extra)")
+            goal["m5"] = secure_pos
+            ser.write((json.dumps(goal) + "\n").encode())
+            ser.readline()  # consume ACK
+            time.sleep(0.3)  # brief dwell for the extra close
+
+        # 6. Check final position to determine if we actually gripped something
+        final_positions = read_positions(ser)
+        if final_positions and "m5" in final_positions:
+            final_m5 = int(final_positions["m5"])
+            if abs(final_m5 - CLAW_CLOSED_POS) <= GRIP_VERIFY_TOLERANCE:
+                print(f"  ❌  [ADAPTIVE GRIP] Claw closed on air (pos={final_m5}, "
+                      f"target={CLAW_CLOSED_POS}, tol={GRIP_VERIFY_TOLERANCE})")
+                gripped = False
+            else:
+                print(f"  ✅  [ADAPTIVE GRIP] Object gripped! (pos={final_m5}, "
+                      f"blocked {abs(CLAW_CLOSED_POS - final_m5)} steps from closed)")
+                gripped = True
+        else:
+            # Can't read position — fall back to verify_grip
+            print("  ⚠️  [ADAPTIVE GRIP] Cannot read final position — falling back to verify_grip()")
+            gripped = verify_grip(ser, CLAW_CLOSED_POS)
+
+    except Exception as e:
+        print(f"  ⚠️  [ADAPTIVE GRIP] Error during adaptive grip: {e}")
+        print("  ⚠️  [ADAPTIVE GRIP] Falling back to verify_grip()")
+        try:
+            gripped = verify_grip(ser, CLAW_CLOSED_POS)
+        except Exception:
+            gripped = False
+
+    finally:
+        # Restoring profile velocity/acceleration, but keeping M5 current limit low to maintain gentle grip
+        print(f"  🤏  [ADAPTIVE GRIP] Restoring profile (vel={DEFAULT_PROFILE_VEL}, acc={DEFAULT_PROFILE_ACC})")
+        try:
+            send_raw_command(ser, {"cmd": "set_profile", "vel": DEFAULT_PROFILE_VEL, "acc": DEFAULT_PROFILE_ACC})
+        except Exception as e:
+            print(f"  ⚠️  [ADAPTIVE GRIP] Failed to restore profile: {e}")
+
+    return gripped
+
+
 def verify_grip(ser, claw_closed_pos: int) -> bool:
     """
     Check if the claw actually gripped something.
 
     Two checks:
-    1. Position check: if claw reached CLAW_CLOSED_POS (within tolerance),
+    1. Load check: if claw motor shows significant load, something is resisting → grip confirmed
+    2. Position check: if claw reached CLAW_CLOSED_POS (within tolerance),
        it closed on empty air → no grip
-    2. Load check: if claw motor shows significant load, something is resisting → grip confirmed
 
     Returns True if grip is confirmed, False if grip failed.
     """
-    # Check 1: Position-based verification
-    positions = read_positions(ser)
-    if positions and "m5" in positions:
-        claw_pos = positions["m5"]
-        if abs(claw_pos - claw_closed_pos) <= GRIP_VERIFY_TOLERANCE:
-            print(f"  ❌ Grip check FAILED (position): claw at {claw_pos}, "
-                  f"target was {claw_closed_pos} (within {GRIP_VERIFY_TOLERANCE} tolerance)")
-            return False
-        else:
-            print(f"  ✅ Grip check passed (position): claw at {claw_pos}, "
-                  f"blocked {claw_closed_pos - claw_pos} steps from closed")
-
-    # Check 2: Load-based verification (supplementary)
+    # Check 1: Load-based verification (Primary)
     loads = read_load(ser)
     if loads and "m5" in loads:
         claw_load = abs(loads["m5"])
@@ -492,16 +638,25 @@ def verify_grip(ser, claw_closed_pos: int) -> bool:
             print(f"  ⚠️  Grip check warning (load): claw load = {claw_load} "
                   f"(below threshold {GRIP_LOAD_THRESHOLD})")
 
-    # If position check passed but load is low/unavailable, trust position
+    # Check 2: Position-based verification (Fallback)
+    positions = read_positions(ser)
     if positions and "m5" in positions:
-        return abs(positions["m5"] - claw_closed_pos) > GRIP_VERIFY_TOLERANCE
+        claw_pos = positions["m5"]
+        if abs(claw_pos - claw_closed_pos) <= GRIP_VERIFY_TOLERANCE:
+            print(f"  ❌ Grip check FAILED (position): claw at {claw_pos}, "
+                  f"target was {claw_closed_pos} (within {GRIP_VERIFY_TOLERANCE} tolerance)")
+            return False
+        else:
+            print(f"  ✅ Grip check passed (position): claw at {claw_pos}, "
+                  f"blocked {abs(claw_closed_pos - claw_pos)} steps from closed")
+            return True
 
     # Fallback: assume grip succeeded if we can't read anything
     print("  ⚠️  Grip verification unavailable (no sensor data), assuming success")
     return True
 
 
-def send_scan_pose(ser, viz=None, claw_override=None):
+def send_scan_pose(ser, viz=None, claw_override=None, settle_time: float | None = None):
     """Drive all five motors directly to SCAN_POSE step values.
 
     Uses raw joint positions (NOT IK) because SCAN_POSE is defined in
@@ -537,7 +692,11 @@ def send_scan_pose(ser, viz=None, claw_override=None):
         viz.update_plot(pose)
 
     # Allow motion to settle before capturing images
-    time.sleep(max(1.0, MOVE_SETTLE_TIME))
+    if settle_time is not None:
+        if settle_time > 0:
+            time.sleep(settle_time)
+    else:
+        time.sleep(max(1.0, MOVE_SETTLE_TIME))
 
 
 def smooth_startup(ser, viz=None):
@@ -634,6 +793,9 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     # Ensure claw is open before approaching
     send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="Ensuring claw is OPEN")
 
+    # Ensure fast profile is active for the approach
+    send_raw_command(ser, {"cmd": "set_profile", "vel": DEFAULT_PROFILE_VEL, "acc": DEFAULT_PROFILE_ACC})
+
     # Compute distance-adjusted grab height so the claw doesn't scrape
     # the desk at far reaches (see config/arm.py for tuning constants)
     grab_z = compute_grab_height(obj_x, obj_y)
@@ -655,7 +817,7 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
         skip_sag=has_touch_cal,
     )
 
-    # ── 3. GRABBING ──────────────────────────────────────────────────
+    # ── 3. GRABBING (adaptive grip) ──────────────────────────────────
     log_state(State.GRABBING, f"Closing claw on {colour.upper()} ball")
     if timer:
         timer.start_phase("grab")
@@ -663,38 +825,49 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {grab_z:.1f} cm (distance-adjusted)")
     input("  ⏸️   Press ENTER to close claw (check accuracy now)...")
 
-    print(f"  ✊  [CLAW] Closing... (dwell {GRAB_DWELL}s)")
-    send_claw(ser, last_ik, CLAW_CLOSED_POS, label="CLOSE grip")
-    time.sleep(GRAB_DWELL)
-    print("  ✊  [CLAW] Object secured")
+    # Adaptive grip — gradually close until resistance detected
+    grip_ok = adaptive_grip(ser, last_ik)
 
     # ── 3b. VERIFY_GRIP ──────────────────────────────────────────────
-    log_state(State.VERIFY_GRIP, "Lifting to verify height and checking grip")
+    log_state(State.VERIFY_GRIP, "Checking grip instantly")
 
-    # Lift to VERIFY_HEIGHT (partial lift for grip check)
-    last_ik = send_command(
-        ser, arm, obj_x, obj_y, VERIFY_HEIGHT,
-        label="Lifting to verify height",
-        viz=viz,
-        claw_override=CLAW_CLOSED_POS
-    )
-
+    # Verify grip immediately before lifting
+    print(f"  🔍  Verifying grip...")
     grip_ok = verify_grip(ser, CLAW_CLOSED_POS)
+
     if not grip_ok:
         print(f"  ❌  PICK FAILED — grip verification failed for {colour.upper()} ball")
+        # Restore normal current limit before opening to ensure it can overcome any jams
+        send_raw_command(ser, {"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT})
         # Open claw to release any partial grip
         send_claw(ser, last_ik, CLAW_OPEN_POS, label="OPEN grip (pick failed recovery)")
-        time.sleep(RELEASE_DWELL)
+        
+        # Slow down profile for a smooth sweep back to SCAN_POSE
+        send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
+        
+        # Lift quickly to cut the corner while sweeping back smoothly
+        send_command(
+            ser, arm, obj_x, obj_y, CLEARANCE_HEIGHT,
+            label="Lifting clear after failed pick",
+            viz=viz,
+            claw_override=CLAW_OPEN_POS,
+            settle_time=0.5
+        )
         return False
 
     print(f"  ✅  Grip verified — proceeding with {colour.upper()} ball")
 
-    # Lift to clearance height before traversing
+    # Slow down profile for a smooth, continuous sweep back to SCAN_POSE
+    send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
+
+    # Wait only 0.5s so the arm blends the lift and the SCAN_POSE moves
+    # into a single, smooth arc.
     last_ik = send_command(
         ser, arm, obj_x, obj_y, CLEARANCE_HEIGHT,
         label="Lifting to clearance height",
         viz=viz,
-        claw_override=CLAW_CLOSED_POS
+        claw_override=CLAW_CLOSED_POS,
+        settle_time=0.5
     )
 
     # ── 4. MOVE TO SCAN POSE ─────────────────────────────────────────
@@ -711,6 +884,8 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     if timer:
         timer.start_phase("drop")
     print(f"  📤  [CLAW] Opening... (dwell {RELEASE_DWELL}s)")
+    # Restore normal current limit for opening and for the next cycle
+    send_raw_command(ser, {"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT})
     send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="OPEN grip (release)")
     time.sleep(RELEASE_DWELL)
     print("  📤  [CLAW] Object released at SCAN_POSE")

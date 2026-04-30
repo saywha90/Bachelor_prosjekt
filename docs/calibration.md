@@ -78,7 +78,7 @@ individually.
 | m2 | **2** | Shoulder Tilt | XM540 | 115 200 |
 | m3 | **3** | Elbow Tilt | XM430 | 115 200 |
 | m4 | **4** | Wrist Tilt | XL430 | 115 200 |
-| m5 | **5** | Claw / Gripper | XL430 | 115 200 |
+| m5 | **5** | Claw / Gripper | XM430 | 115 200 |
 
 **Procedure:**
 
