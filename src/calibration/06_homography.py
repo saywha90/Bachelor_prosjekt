@@ -61,7 +61,7 @@ WINDOW_NAME = "Homography Calibration"
 CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.json"
 
 # ── Serial settings (same as 02_joints.py / 02b_claw.py) ─────────────
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call

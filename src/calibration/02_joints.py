@@ -31,7 +31,7 @@ import time
 # Change SERIAL_PORT / SERIAL_BAUD to match your setup (values taken
 # from main.py defaults).
 
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call
@@ -111,7 +111,7 @@ def prompt(msg: str):
 
 
 # ── Known-pose reference ────────────────────────────────────────────
-NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
+NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911, "m5": 2048}
 
 
 def test_1_neutral():
@@ -200,7 +200,7 @@ def test_5_known_geometry():
         "m1": 2048,
         "m2": 2048 + 1024,
         "m3": 2048 - 1024,
-        "m4": 2048,
+        "m4": 1911,    # M4 mechanical centre (3D-printed mount offset)
         "m5": 2048,
     }
     print(f"Commanding: {pose}")

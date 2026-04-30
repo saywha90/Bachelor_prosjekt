@@ -7,7 +7,7 @@ Hardware:
     Motor 2 (ID 2) – Shoulder Tilt – XM540
     Motor 3 (ID 3) – Elbow Tilt    – XM430
     Motor 4 (ID 4) – Wrist Tilt    – XL430
-    Motor 5 (ID 5) – Claw          – XL430
+    Motor 5 (ID 5) – Claw          – XM430
 
 All Dynamixel motors: 0-4095 steps → 0°-360°.
 Centre (straight ahead / straight up) = 2048 = 180°.
@@ -31,7 +31,7 @@ class ArmIK:
     """Geometric IK for a 4-DOF pick-and-place arm (+ claw motor)."""
 
     # ── Claw default position ──────────────────────────────────────────
-    CLAW_OPEN: int = 2048   # centre / open position for the gripper
+    CLAW_OPEN: int = 2016   # centre / open position for the gripper
 
     # ── Link lengths (cm) ──────────────────────────────────────────────
     # Measured from the real robot on 2026-04-21
@@ -41,8 +41,9 @@ class ArmIK:
 
     # ── Dynamixel constants ────────────────────────────────────────────
     STEPS_PER_REV: int = 4096
-    STEP_CENTRE: int = 2048        # 180° = "neutral" (used by motors 2-5)
+    STEP_CENTRE: int = 2048        # 180° = "neutral" (used by motors 2, 3, 5)
     M1_CENTRE: int = 2048          # Center for motor 1 (base pan) — same as Dynamixel centre (2048 = straight ahead)
+    M4_CENTRE: int = 1911          # Center for motor 4 (wrist tilt) — 3D-printed mount shifts mechanical centre from 2048 to 1911
     DEG_PER_STEP: float = 360.0 / 4096.0
     RAD_PER_STEP: float = (2.0 * math.pi) / 4096.0
 
@@ -64,12 +65,12 @@ class ArmIK:
     #   picks from, set this so the Z math references the shoulder as
     #   origin.  Set to 0 if your coordinate frame already accounts for
     #   this.
-    shoulder_height: float = 11.0
+    shoulder_height: float = 35.0   # Measured 2026-04-29 (was 11.0 — claw was 20 cm above ground at z=-1.7)
 
     # ── Floor / hover constraint (cm) ─────────────────────────────────
-    #   Minimum allowed Z for the claw tip.  Set to 12.0 so the arm
-    #   can reach down to grab objects near the desk surface.
-    Z_MIN: float = 1.5
+    #   Minimum allowed Z for the claw tip.  Set to -2.0 so the arm
+    #   can reach below the desk surface for touch calibration.
+    Z_MIN: float = -2.0
 
     # ── Joint limits (Dynamixel steps) ────────────────────────────────
     #   Safe operating ranges for each motor to prevent overload errors.
@@ -154,18 +155,31 @@ class ArmIK:
         """Clamp *value* to [lo, hi] to avoid domain errors in acos."""
         return max(lo, min(hi, value))
 
-    def _rad_to_steps(self, radians: float) -> int:
+    def _rad_to_steps(self, radians: float, centre: Optional[int] = None) -> int:
         """Convert an angle in radians to Dynamixel steps (0-4095).
 
-        Convention: 0 rad → step 2048 (centre).  Positive angle adds steps.
+        Convention: 0 rad → *centre* step (default STEP_CENTRE = 2048).
+        Positive angle adds steps.
+
+        Parameters
+        ----------
+        radians : float
+            Angle in radians.
+        centre : int or None
+            Step value corresponding to 0 rad.  Defaults to
+            ``STEP_CENTRE`` (2048) for most motors.  Pass
+            ``M4_CENTRE`` (1911) for the wrist tilt motor whose
+            3-D-printed mount shifts the mechanical neutral.
         """
-        steps = int(round(self.STEP_CENTRE + radians / self.RAD_PER_STEP))
+        if centre is None:
+            centre = self.STEP_CENTRE
+        steps = int(round(centre + radians / self.RAD_PER_STEP))
         return max(0, min(self.STEPS_PER_REV - 1, steps))
 
     # ──────────────────────────────────────────────────────────────────
     #  Core IK solver
     # ──────────────────────────────────────────────────────────────────
-    def solve(self, x: float, y: float, z: float, skip_sag: bool = False) -> dict:
+    def solve(self, x: float, y: float, z: float, skip_sag: bool = False, strict: bool = False) -> dict:
         """Compute motor step positions for the given (x, y, z) target.
 
         Parameters
@@ -173,21 +187,19 @@ class ArmIK:
         x, y, z : float
             Target coordinates in centimetres, where *z* points up.
         skip_sag : bool
-            If True, skip the internal sag/droop compensation (set
-            ``sag_correction = 0.0``).  Use this when the caller has
-            already accounted for real-world sag — e.g. via touch-
-            calibrated grab heights — to avoid double-compensation.
+            If True, skip the internal sag/droop compensation.
+        strict : bool
+            If True, raise ValueError if the target is out of reach instead of clamping.
 
         Returns
         -------
         dict
             ``{"m1": int, "m2": int, "m3": int, "m4": int, "m5": int}``
-            Dynamixel step values (0-4095) for each motor.
 
         Raises
         ------
         ValueError
-            If the target is unreachable.
+            If the target is unreachable (and strict is True, or if too close).
         """
 
         # ── 0. Hover / floor-collision prevention ──────────────────────
@@ -277,6 +289,8 @@ class ArmIK:
         min_reach = abs(self.L1 - self.L2)
 
         if d > max_reach:
+            if strict:
+                raise ValueError(f"Target ({x:.1f}, {y:.1f}, {z:.1f}) is unreachable (overshoot: {d - max_reach:.1f} cm)")
             # Target is slightly too far — scale the horizontal reach
             # inward so the arm extends to its physical limit instead
             # of crashing.  The base angle is preserved, so the arm
@@ -344,7 +358,7 @@ class ArmIK:
         # to "rotation from vertical" (motor convention).
         m2 = self._rad_to_steps(theta_shoulder - math.pi / 2)
         m3 = self._rad_to_steps(-theta_elbow)  # Elbow requires negation for correct direction
-        m4 = self._rad_to_steps(theta_wrist)   # NOT negated — real hardware wrist tilts opposite to simulator
+        m4 = self._rad_to_steps(theta_wrist, centre=self.M4_CENTRE)  # NOT negated — real hardware wrist tilts opposite to simulator
 
         # ── 10. Enforce joint limits to prevent overload errors ────────
         #    If a computed position exceeds the safe range, clamp it and
@@ -363,6 +377,89 @@ class ArmIK:
                 result[key] = clamped
 
         return result
+
+    # ──────────────────────────────────────────────────────────────────
+    #  Forward Kinematics
+    # ──────────────────────────────────────────────────────────────────
+    def forward_kinematics(self, positions: dict) -> dict:
+        """Compute end-effector Cartesian position from motor step values.
+
+        This is the reverse of :meth:`solve` — it converts Dynamixel step
+        positions back to workspace coordinates using the same geometric
+        model and angle conventions.
+
+        Parameters
+        ----------
+        positions : dict
+            Motor positions in Dynamixel steps, e.g.
+            ``{"m1": 2048, "m2": 1500, "m3": 2200, "m4": 1800, "m5": 2048}``.
+            Keys ``"m1"`` through ``"m4"`` are required; ``"m5"`` (claw) is
+            ignored but accepted.
+
+        Returns
+        -------
+        dict
+            ``{"x": float, "y": float, "z": float, "m4_offset": int}``
+            where *x*, *y*, *z* are in centimetres (same frame as the IK
+            solver) and *m4_offset* is the wrist-tilt motor's deviation
+            from its mechanical neutral (``M4_CENTRE``), in steps.
+        """
+
+        required = {"m1", "m2", "m3", "m4"}
+        missing = required - set(positions.keys())
+        if missing:
+            raise ValueError(f"Missing motor keys for FK: {missing}")
+
+        m1 = positions["m1"]
+        m2 = positions["m2"]
+        m3 = positions["m3"]
+        m4 = positions["m4"]
+
+        # ── 1. Convert steps → joint angles (exact inverse of solve()) ─
+        #   m1 = M1_CENTRE + theta_base / RAD_PER_STEP
+        theta_base = (m1 - self.M1_CENTRE) * self.RAD_PER_STEP
+
+        #   m2 = STEP_CENTRE + (theta_shoulder − π/2) / RAD_PER_STEP
+        theta_shoulder = (m2 - self.STEP_CENTRE) * self.RAD_PER_STEP + math.pi / 2.0
+
+        #   m3 = STEP_CENTRE + (−theta_elbow) / RAD_PER_STEP
+        theta_elbow = -(m3 - self.STEP_CENTRE) * self.RAD_PER_STEP
+
+        #   m4 = M4_CENTRE + theta_wrist / RAD_PER_STEP
+        theta_wrist = (m4 - self.M4_CENTRE) * self.RAD_PER_STEP
+
+        # ── 2. FK in the arm's radial–Z plane (shoulder = origin) ──────
+        #   The second link leaves the elbow at angle (θ_shoulder − θ_elbow)
+        #   from the horizontal, matching the IK triangle geometry.
+        link2_angle = theta_shoulder - theta_elbow
+
+        # Wrist pivot position (end of L2)
+        r_wrist = self.L1 * math.cos(theta_shoulder) + self.L2 * math.cos(link2_angle)
+        z_wrist = self.L1 * math.sin(theta_shoulder) + self.L2 * math.sin(link2_angle)
+
+        # Claw pitch — from IK: theta_wrist = theta_pitch − (θ_shoulder − θ_elbow)
+        theta_pitch = theta_wrist + link2_angle
+
+        # Claw-tip position (end of L3)
+        r_tip = r_wrist + self.L3 * math.cos(theta_pitch)
+        z_tip_ik = z_wrist + self.L3 * math.sin(theta_pitch)
+
+        # ── 3. Convert shoulder-relative frame → workspace frame ───────
+        #   IK uses:  z_ik = z − shoulder_height  (ignoring sag)
+        #   Therefore: z = z_ik + shoulder_height
+        z = z_tip_ik + self.shoulder_height
+        x = r_tip * math.cos(theta_base)
+        y = r_tip * math.sin(theta_base)
+
+        # ── 4. M4 offset from mechanical neutral ──────────────────────
+        m4_offset = m4 - self.M4_CENTRE
+
+        return {
+            "x": round(x, 4),
+            "y": round(y, 4),
+            "z": round(z, 4),
+            "m4_offset": m4_offset,
+        }
 
     # ──────────────────────────────────────────────────────────────────
     #  Partial-move interpolation (utility for tests and demos)

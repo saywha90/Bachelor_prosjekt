@@ -29,15 +29,16 @@ from pathlib import Path
 # ── Make sibling packages importable from src/ik/ ────────────────────
 from ik.solver import ArmIK
 from config.arm import (HOME_POSITION, BINS,
-                        GRAB_HEIGHT, APPROACH_HEIGHT, CLEARANCE_HEIGHT)
+                        GRAB_HEIGHT, APPROACH_HEIGHT, CLEARANCE_HEIGHT,
+                        GRIP_CURRENT_LIMIT, M5_DEFAULT_CURRENT_LIMIT)
 
 RED_BIN    = BINS["RED_BIN"]
 BLUE_BIN   = BINS["BLUE_BIN"]
 REJECT_BIN = BINS["REJECT_BIN"]
 
 # ── Claw constants ───────────────────────────────────────────────────
-CLAW_OPEN_POS   = 2048
-CLAW_CLOSED_POS = 1600
+CLAW_OPEN_POS = 2016
+CLAW_CLOSED_POS = 2890
 
 # ── Timing ───────────────────────────────────────────────────────────
 MOVE_SETTLE = 1.5
@@ -46,7 +47,7 @@ MOVE_SETTLE = 1.5
 # Identical lazy-singleton pattern used by calibrate_joints.py,
 # calibrate_sag.py, and calibrate_claw.py.
 
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call
@@ -280,10 +281,20 @@ def main():
             })
             continue
 
-        # ── CLOSE CLAW ───────────────────────────────────────────────
+        # ── CLOSE CLAW (with current limit safety) ───────────────────
+        print(f"  Setting M5 current limit to {GRIP_CURRENT_LIMIT} mA for safe grip...")
+        ser = _get_serial()
+        ser.write((json.dumps({"cmd": "set_current_limit", "id": 5, "value": GRIP_CURRENT_LIMIT}) + "\n").encode())
+        ser.readline()  # consume response
+
         print("  Closing claw...")
         send_claw(CLAW_CLOSED_POS)
         time.sleep(0.5)
+
+        # Restore default current limit
+        print(f"  Restoring M5 current limit to {M5_DEFAULT_CURRENT_LIMIT} mA")
+        ser.write((json.dumps({"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT}) + "\n").encode())
+        ser.readline()  # consume response
 
         # ── LIFT ─────────────────────────────────────────────────────
         print("  Lifting...")

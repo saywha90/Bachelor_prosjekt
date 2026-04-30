@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import logging
 import math
+from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -48,6 +49,7 @@ L2 = 23.0          # elbow   → wrist   (cm)
 L3 = 22.0          # wrist   → claw tip (cm)
 
 STEP_CENTRE   = 2048
+M4_STEP_CENTRE = 1911   # wrist tilt (motor 4) mechanical centre — 3D-printed mount offset
 RAD_PER_STEP  = (2.0 * math.pi) / 4096.0
 
 SHOULDER_HEIGHT = 11.0   # base to shoulder joint (cm)
@@ -72,9 +74,9 @@ COLORS = {
 
 
 # ─── Forward Kinematics ──────────────────────────────────────────────
-def steps_to_rad(steps: int) -> float:
-    """Convert Dynamixel steps to radians relative to centre (2048)."""
-    return (steps - STEP_CENTRE) * RAD_PER_STEP
+def steps_to_rad(steps: int, centre: int = STEP_CENTRE) -> float:
+    """Convert Dynamixel steps to radians relative to *centre* (default 2048)."""
+    return (steps - centre) * RAD_PER_STEP
 
 
 def forward_kinematics(m1: int, m2: int, m3: int, m4: int, m5: int = 2048):
@@ -98,7 +100,7 @@ def forward_kinematics(m1: int, m2: int, m3: int, m4: int, m5: int = 2048):
     # "elevation above horizontal" convention where 0 = horizontal.
     theta_shoulder =  steps_to_rad(m2) + math.pi / 2
     theta_elbow    = -steps_to_rad(m3)   # negative convention (see IK)
-    theta_wrist    =  steps_to_rad(m4)
+    theta_wrist    =  steps_to_rad(m4, centre=M4_STEP_CENTRE)
 
     # Base is at the origin
     base = (0.0, 0.0, 0.0)
@@ -311,7 +313,7 @@ class ArmVisualizer:
         self._draw_environment()
 
         # ── Batched arm collection (reused across frames) ─────────
-        self._arm_collection: Poly3DCollection | None = None
+        self._arm_collection: Optional[Poly3DCollection] = None
         self._arm_collections: list[Poly3DCollection] = []  # back-compat
         self._cable_lines = []  # kept empty; cables removed for perf
         self._first_frame = True

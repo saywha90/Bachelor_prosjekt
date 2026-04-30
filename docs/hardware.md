@@ -13,7 +13,7 @@
 | 5 | Servo – Shoulder (ID 2) | Dynamixel XM540-W270 | 1 | Joint 2 lift |
 | 6 | Servo – Elbow (ID 3) | Dynamixel XM430-W350 | 1 | Joint 3 reach |
 | 7 | Servo – Wrist (ID 4) | Dynamixel XL430-W250 | 1 | Joint 4 tilt |
-| 8 | Servo – Claw (ID 5) | Dynamixel XL430-W250 | 1 | Gripper open/close |
+| 8 | Servo – Claw (ID 5) | Dynamixel XM430-W350 | 1 | Gripper open/close |
 | 9 | Power supply | Dual-output PSU (12 V + 5 V) | 1 | Powers all components |
 | 10 | Fuse | 15 A blade fuse + inline holder | 1 | Protects 12 V rail |
 | 11 | USB-C cable (data) | USB-C to USB-C | 2 | Pi ↔ OpenRB-150, Pi ↔ OAK-D S2 |
@@ -94,7 +94,7 @@ docs/calibration.md → Step 02c.
 The five Dynamixel servos are connected in a TTL daisy-chain from the OpenRB-150's Dynamixel port:
 
 ```
-OpenRB-150 ──► [ID 1] XM430 ──► [ID 2] XM540 ──► [ID 3] XM430 ──► [ID 4] XL430 ──► [ID 5] XL430
+OpenRB-150 ──► [ID 1] XM430 ──► [ID 2] XM540 ──► [ID 3] XM430 ──► [ID 4] XL430 ──► [ID 5] XM430
                Base          Shoulder         Elbow           Wrist          Claw
 ```
 

@@ -58,8 +58,15 @@ class MockSerial:
         self.visualizer = visualizer
         self.anim_frames = anim_frames   # frames per movement
 
-        # Current simulated motor positions (start at centre = 2048)
-        self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
+        # Current simulated motor positions (start at centre; m4=1911 due to 3D-printed mount offset)
+        self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911, "m5": 2048}
+
+        # Goal positions for simulating load during adaptive grip
+        self._goal_steps = dict(self._current_steps)
+
+        # Claw open/closed constants for load simulation
+        self._claw_open = 2016
+        self._claw_closed = 2675
 
         # Pending response for special commands (read_pos, set_profile, etc.)
         self._pending_response = None
@@ -138,6 +145,14 @@ class MockSerial:
                 return len(data)
             elif cmd == "read_load":
                 resp = {f"m{mid}": 0 for mid in [1, 2, 3, 4, 5]}
+                # Simulate load feedback when claw is closing toward an object
+                m5_current = self._current_steps.get("m5", self._claw_open)
+                m5_goal = self._goal_steps.get("m5", m5_current)
+                if m5_goal > m5_current and m5_current > self._claw_open:
+                    # Simulate increasing load as claw closes
+                    travel = self._claw_closed - self._claw_open
+                    progress = max(0, m5_current - self._claw_open)
+                    resp["m5"] = min(100, progress * 100 // travel) if travel > 0 else 0
                 self._pending_response = json.dumps(resp) + "\n"
                 return len(data)
             elif cmd == "read_errors":
@@ -149,6 +164,12 @@ class MockSerial:
                 return len(data)
 
         logger.debug("[MOCK SERIAL TX] %s", pretty)
+
+        # ── Track goal positions for load simulation ──────────────────
+        if parsed and isinstance(parsed, dict):
+            for k in ("m1", "m2", "m3", "m4", "m5"):
+                if k in parsed:
+                    self._goal_steps[k] = parsed[k]
 
         # ── Animate or sleep ──────────────────────────────────────────
         if parsed and self.visualizer and all(k in parsed for k in ("m1", "m2", "m3", "m4", "m5")):

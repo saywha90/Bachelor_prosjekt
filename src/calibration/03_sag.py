@@ -35,7 +35,7 @@ from ik.solver import ArmIK
 # Identical lazy-singleton pattern used by calibrate_joints.py.
 # Change SERIAL_PORT / SERIAL_BAUD to match your setup.
 
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
 
 _ser = None  # lazily initialised on first call
@@ -94,7 +94,7 @@ def prompt(msg: str):
 
 
 # ── Constants ───────────────────────────────────────────────────────
-NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 2048, "m5": 2048}
+NEUTRAL = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911, "m5": 2048}
 
 # Default test parameters — TEST_Z raised to 10 cm to avoid desk hits
 # at long reaches (previously 2.0 cm, which caused the arm to hit the

@@ -44,7 +44,7 @@ from vision.camera import OAKCamera
 from config.arm import SCAN_POSE as _INITIAL_SCAN_POSE
 
 # ── Constants ─────────────────────────────────────────────────────────
-SERIAL_PORT = "/dev/cu.usbmodem2101"
+SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
 WINDOW_NAME  = "SCAN_POSE Tuner"
 
