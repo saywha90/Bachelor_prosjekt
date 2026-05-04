@@ -168,3 +168,38 @@ Display size constants centralized in `DISPLAY_W, DISPLAY_H`.
 - **Value (Brightness):** Increased minimum V from `10` to **`20`** to ignore deep shadows.
 
 This forces the detector to ignore the desaturated background colors of the desk and only identify the vibrant, highly-saturated red balls.
+
+---
+
+## Fix 12: Code-Review Fixes (May 2026)
+
+**Files:** `src/vision/detector.py`, `src/vision/camera.py`, `src/vision/classifier.py`, `src/diagnostics/stream_debug.py`
+
+**Problem:** Several code-quality and correctness issues identified during code review — thread-safety bugs, dead code, silent exception swallowing, and minor performance/style issues.
+
+**Fixes applied:**
+
+### `detector.py`
+
+- **Thread-unsafe radius mutation:** `detect_balls()` was temporarily mutating `self.min_radius`/`self.max_radius` during detection; replaced with local variables.
+- **Class constant:** Promoted magic `_SCALE = 0.75` to class-level `DETECTION_SCALE`.
+- **Dead code removed:** SVM classifier loading (`_verify_with_svm()` was disabled), `get_adaptive_hsv_ranges()` (always returned ranges unchanged), `_hough_cache` dict, and always-true `_hough_interval` conditional.
+- **Type annotation:** Fixed `Dict[str, any]` → `Dict[str, Any]`.
+- **Performance:** Replaced `np.sqrt()` with `math.hypot()` for scalar distance calculations.
+- **Import hygiene:** Moved `defaultdict` import to module-level.
+- **Naming:** Renamed cumulative stats keys for clarity.
+- **Refactor:** Extracted duplicated Kalman coasting logic into `_coast_track()` helper.
+
+### `camera.py`
+
+- `__enter__` now raises `RuntimeError` if `open()` fails (previously returned silently broken state).
+- Added logging for previously swallowed exceptions in `read()` and `get_focal_length_px()`.
+- Fixed docstring filename mismatch.
+
+### `classifier.py`
+
+- `predict()` now logs exceptions instead of silently swallowing them.
+
+### `stream_debug.py`
+
+- Replaced hardcoded `_DET_SCALE` with `SimpleBallDetector.DETECTION_SCALE` import to stay in sync with the detector.
