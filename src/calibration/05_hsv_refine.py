@@ -109,7 +109,6 @@ def suggest_blue_ranges(data):
 
 
 if __name__ == "__main__":
-    import sys
     data_dir = sys.argv[1] if len(sys.argv) > 1 else "training_data"
 
     red_data  = analyze_color(data_dir, "red")

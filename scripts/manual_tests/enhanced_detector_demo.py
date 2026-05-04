@@ -137,8 +137,8 @@ def main():
             print(f"Tid: {elapsed:.1f}s  |  Frames: {frame_count}  |  Snitt FPS: {frame_count / elapsed:.1f}")
             print()
             print("Deteksjonsmetoder:")
-            print(f"  HSV:      {stats['hsv_detections']}")
-            print(f"  Hough:    {stats['hough_detections']}")
+            print(f"  HSV:      {stats['total_hsv_detections']}")
+            print(f"  Hough:    {stats['total_hough_detections']}")
             print(f"  Ensemble: {stats['ensemble_detections']}")
             print()
             total_balls = red_count + blue_count
@@ -172,8 +172,8 @@ def main():
     print(f"Varighet: {elapsed:.1f}s  |  Frames: {frame_count}  |  Snitt FPS: {(frame_count / elapsed):.1f}" if elapsed > 0 else "Varighet: 0s")
     print()
     print("Deteksjonsmetoder:")
-    print(f"  HSV:      {stats['hsv_detections']}")
-    print(f"  Hough:    {stats['hough_detections']}")
+    print(f"  HSV:      {stats['total_hsv_detections']}")
+    print(f"  Hough:    {stats['total_hough_detections']}")
     print(f"  Ensemble: {stats['ensemble_detections']}")
     print()
 

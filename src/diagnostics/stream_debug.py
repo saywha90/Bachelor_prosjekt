@@ -37,7 +37,7 @@ from vision.detector import SimpleBallDetector, BallColor, DetectedBall
 from config import vision as config
 
 # ── Intern prosesserings-skala (identisk med det detect_balls bruker) ──────────
-_DET_SCALE = 0.75   # detect_balls skalerer til 0.75 internt (oppdatert april 2026)
+_DET_SCALE = SimpleBallDetector.DETECTION_SCALE
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -283,7 +283,7 @@ def _hsv_masks_from_frame(detector: DiagnosticDetector,
     lighting = detector.analyze_lighting(proc)
     comp     = detector.apply_lighting_compensation(proc, lighting)
     hsv      = cv2.cvtColor(comp, cv2.COLOR_BGR2HSV)
-    red_r, blue_r = detector.get_adaptive_hsv_ranges(lighting)
+    red_r, blue_r = detector.red_ranges, detector.blue_ranges
 
     def build(ranges):
         m = np.zeros(hsv.shape[:2], dtype=np.uint8)

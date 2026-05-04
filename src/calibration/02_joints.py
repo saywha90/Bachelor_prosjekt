@@ -221,6 +221,7 @@ def test_5_known_geometry():
 
 
 def main():
+    global _ser
     print("=" * 60)
     print("ARM JOINT CALIBRATION DIAGNOSTIC")
     print("=" * 60)
@@ -229,16 +230,21 @@ def main():
     print()
     input("Clear the workspace around the arm, then press ENTER to start... ")
 
-    test_1_neutral()
-    test_2_shoulder_only()
-    test_3_elbow_only()
-    test_4_wrist_only()
-    test_5_known_geometry()
+    try:
+        test_1_neutral()
+        test_2_shoulder_only()
+        test_3_elbow_only()
+        test_4_wrist_only()
+        test_5_known_geometry()
 
-    print("\n" + "=" * 60)
-    print("DONE. Paste your answers back in chat and I'll tell you")
-    print("exactly which lines in src/ik/solver.py to change.")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("DONE. Paste your answers back in chat and I'll tell you")
+        print("exactly which lines in src/ik/solver.py to change.")
+        print("=" * 60)
+    finally:
+        if _ser is not None:
+            _ser.close()
+            print("Serial port closed.")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,11 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src"))
 
 import cv2
-import depthai as dai
+try:
+    import depthai as dai
+except ImportError:
+    print("Error: depthai library not installed. Install with: pip install depthai")
+    sys.exit(1)
 
 print("OAK KAMERA - TILKOBLINGSTEST")
 print("-" * 40)

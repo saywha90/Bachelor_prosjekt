@@ -1,6 +1,6 @@
 """
-oak_camera.py
-=============
+camera.py
+=========
 
 Wrapper for Luxonis OAK Series 2 kamera via depthai v3 API.
 
@@ -74,6 +74,9 @@ class OAKCamera:
         """
         try:
             self._pipeline = dai.Pipeline()
+            # Intentional dunder call: depthai.Pipeline requires explicit
+            # __enter__/__exit__ to manage the device connection lifecycle
+            # when not using a `with` block directly on the pipeline object.
             self._pipeline.__enter__()
 
             cam = self._pipeline.create(dai.node.Camera).build()
@@ -113,7 +116,8 @@ class OAKCamera:
             if img_frame is None:
                 return False, None
             return True, img_frame.getCvFrame()
-        except Exception:
+        except Exception as e:
+            logger.debug("Frame read failed: %s", e)
             return False, None
 
     def release(self) -> None:
@@ -153,8 +157,8 @@ class OAKCamera:
             fx = float(M[0][0])
             if fx > 50:  # sanity-sjekk
                 return fx
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("EEPROM focal length read failed: %s", e)
 
         # Teoretisk beregning fra HFOV
         w = self._resolution[0]
@@ -165,7 +169,8 @@ class OAKCamera:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> "OAKCamera":
-        self.open()
+        if not self.open():
+            raise RuntimeError("Failed to open OAK-D camera")
         return self
 
     def __exit__(
@@ -184,6 +189,8 @@ class OAKCamera:
         """Release camera resources on context exit."""
         if self._pipeline is not None:
             try:
+                # Intentional dunder call: matches the explicit __enter__()
+                # in open() to properly tear down the depthai device session.
                 self._pipeline.__exit__(None, None, None)
             except Exception:
                 pass

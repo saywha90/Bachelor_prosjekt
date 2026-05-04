@@ -44,10 +44,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import json
 import math
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
 from typing import List, Tuple, Optional
+
+
+def _save_json_atomic(path, data):
+    """Write JSON atomically — write to temp file, then rename."""
+    path_str = str(path)
+    dir_name = os.path.dirname(path_str) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, path_str)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 import cv2
 import numpy as np
@@ -254,7 +270,7 @@ def _auto_detect_balls(cam: OAKCamera) -> List[Tuple[float, float]]:
 
 
 def _preview_detections(frame: np.ndarray,
-                        points: List[Tuple[float, float]]) -> bool:
+                        points: List[Tuple[float, float]]) -> Optional[bool]:
     """Show detected ball positions on the last frame and ask user to confirm.
 
     Returns True if user accepts, False if they want to fall back to manual.
@@ -287,7 +303,7 @@ def _preview_detections(frame: np.ndarray,
             return False
         elif key in (ord('r'), ord('R')):
             cv2.destroyAllWindows()
-            return None  # type: ignore[return-value]  # signals retry
+            return None  # signals retry
         elif key in (ord('q'), ord('Q')):
             cv2.destroyAllWindows()
             sys.exit(0)
@@ -920,8 +936,7 @@ def _save_calibration(pixel_points, cm_points, homography, inlier_mask=None):
         "calibration_date": date.today().isoformat(),
         "n_calibration_points": len(filtered_px),
     }
-    with open(CALIBRATION_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _save_json_atomic(CALIBRATION_FILE, data)
     print(f"\n  💾  Calibration saved to {CALIBRATION_FILE}")
     print(f"       Height calibration: {len(height_calibration)} inlier points saved.")
     print(f"       Wrist calibration:  {len(wrist_calibration)} inlier points saved.")

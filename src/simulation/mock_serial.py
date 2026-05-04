@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import json
 import logging
+import math
 import time
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,22 @@ class MockSerial:
                 resp = {f"m{mid}": 0 for mid in [1, 2, 3, 4, 5]}
                 self._pending_response = json.dumps(resp) + "\n"
                 return len(data)
+            elif cmd == "diagnose":
+                # Mock response matching the firmware diagnose command format.
+                # Reports all 5 motors as found at the default baud rate with
+                # their current simulated positions and realistic model numbers.
+                model_numbers = {1: 1060, 2: 1120, 3: 1060, 4: 1060, 5: 1060}  # XM430=1060, XM540=1120
+                diag = []
+                for mid in [1, 2, 3, 4, 5]:
+                    diag.append({
+                        "id": mid,
+                        "found": True,
+                        "baud": 115200,
+                        "position": self._current_steps.get(f"m{mid}", 2048),
+                        "model": model_numbers.get(mid, 1060),
+                    })
+                self._pending_response = json.dumps({"diagnostics": diag}) + "\n"
+                return len(data)
             else:
                 self._pending_response = f"ERR:Unknown cmd: {cmd}\n"
                 return len(data)
@@ -197,7 +214,7 @@ class MockSerial:
         for i in range(1, n + 1):
             t = i / n  # 0→1
             # Smooth ease-in-out (sinusoidal)
-            t_smooth = (1 - __import__("math").cos(t * __import__("math").pi)) / 2.0
+            t_smooth = (1 - math.cos(t * math.pi)) / 2.0
 
             frame = {}
             for key in ("m1", "m2", "m3", "m4", "m5"):

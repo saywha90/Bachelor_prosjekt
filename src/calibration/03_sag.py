@@ -24,8 +24,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import json
 import math
+import tempfile
 import time
+import traceback
 from pathlib import Path
+
+
+def _save_json_atomic(path, data):
+    """Write JSON atomically — write to temp file, then rename."""
+    path_str = str(path)
+    dir_name = os.path.dirname(path_str) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, path_str)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 import numpy as np
 
@@ -330,8 +347,7 @@ def save_calibration(data, test_z, linear_coeffs, quad_coeffs,
     }
 
     out_path = Path(__file__).resolve().parent.parent / "ik" / "sag_calibration.json"
-    with open(out_path, "w") as f:
-        json.dump(calibration, f, indent=2)
+    _save_json_atomic(out_path, calibration)
     print(f"\n✓ Calibration saved to {out_path}")
 
     return calibration
@@ -416,8 +432,8 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\nCalibration interrupted by user.")
-    except Exception as e:
-        print(f"\n⚠️  Error: {e}")
+    except Exception:
+        traceback.print_exc()
     finally:
         # ── Return to neutral ──────────────────────────────────────
         print("\nReturning to NEUTRAL position…")

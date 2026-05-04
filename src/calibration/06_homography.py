@@ -40,10 +40,26 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import json
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
 from typing import List, Tuple
+
+
+def _save_json_atomic(path, data):
+    """Write JSON atomically — write to temp file, then rename."""
+    path_str = str(path)
+    dir_name = os.path.dirname(path_str) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, path_str)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 import cv2
 import numpy as np
@@ -245,8 +261,7 @@ def _save_calibration(pixel_points: List[Tuple[int, int]],
         "homography": homography.tolist(),
         "calibration_date": date.today().isoformat(),
     }
-    with open(CALIBRATION_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _save_json_atomic(CALIBRATION_FILE, data)
     print(f"\n  💾  Calibration saved to {CALIBRATION_FILE}")
     print("       vision_bridge.py will load it automatically. No manual editing needed.")
 

@@ -30,7 +30,8 @@ except ImportError:
     JOBLIB_AVAILABLE = False
 
 # ─── Feature extraction (duplisert fra train_color_classifier.py) ────────────
-# Holdt separat for å unngå å importere hele train-scriptet ved inferens.
+# TODO: Extract shared feature extraction into src/vision/features.py
+# to avoid drift between training and inference parameters.
 
 H_BINS = 36
 S_BINS = 32
@@ -116,7 +117,8 @@ class ColorHistogramClassifier:
             proba = self._pipeline.predict_proba(features)[0]
             label_idx = int(np.argmax(proba))
             return self._class_names[label_idx], float(proba[label_idx])
-        except Exception:
+        except Exception as e:
+            logger.warning("Classification failed: %s", e)
             return "unknown", 0.0
 
     def predict_batch(self, rois: list[np.ndarray]) -> list[Tuple[str, float]]:
