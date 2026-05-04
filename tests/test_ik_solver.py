@@ -98,6 +98,7 @@ class TestReachability:
         # Z_MIN-clamped z, so d ≈ 0 < min_reach.
         # wrist_z = Z_MIN + L3 = 1.5 + 22.0 = 23.5 (claw straight down)
         # Set shoulder_height = 23.5 so wrist_z_ik ≈ 0
+        # Note: Safe to mutate since 'arm' fixture is function-scoped (recreated per test)
         arm.shoulder_height = 23.5
         with pytest.raises(ValueError, match="too close"):
             arm.solve(x=0.01, y=0.0, z=0.0)
@@ -284,7 +285,7 @@ class TestEdgeCases:
 
     def test_z_below_z_min_is_clamped(self, arm):
         """Targets with z < Z_MIN should be silently clamped upward."""
-        # z=-10 is below the floor; the solver clamps to Z_MIN=6.0
+        # z=-10 is below the floor; the solver clamps to Z_MIN=-2.0
         result_low = arm.solve(x=20.0, y=0.0, z=-10.0)
         result_min = arm.solve(x=20.0, y=0.0, z=arm.Z_MIN)
         # Both should produce the same result since -10 gets clamped to Z_MIN

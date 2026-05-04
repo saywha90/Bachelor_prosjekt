@@ -38,6 +38,7 @@ import json
 import logging
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from types import TracebackType
 from typing import List, Optional, Tuple
@@ -53,7 +54,10 @@ from vision.camera import OAKCamera
 from vision.detector import SimpleBallDetector, BallColor, DetectedBall
 from config import vision as vcfg
 
-from config.arm import CAMERA_OFFSET_X, CAMERA_OFFSET_Y, SCAN_POSE, SCAN_POSE_TOLERANCE
+from config.arm import (
+    CAMERA_OFFSET_X, CAMERA_OFFSET_Y, SCAN_POSE, SCAN_POSE_TOLERANCE,
+    CALIBRATION_FILE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +85,8 @@ logger = logging.getLogger(__name__)
 #     [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
 # ])
 
-# ── Calibration JSON path (auto-saved by 09_touch_calibration.py) ────
-_CALIBRATION_FILE = (
-    Path(__file__).resolve().parent.parent
-    / "calibration"
-    / "homography_calibration.json"
-)
+# ── Calibration JSON path (imported from config.arm) ─────────────────
+_CALIBRATION_FILE = CALIBRATION_FILE
 
 
 # Colour → BGR mapping for OpenCV drawing
@@ -136,7 +136,7 @@ class VisionBridge:
         self._fps_frame_count: int = 0
         self._fps_value: float = 0.0
         self._total_scans: int = 0
-        self._conf_history: List[float] = []
+        self._conf_history: deque[float] = deque(maxlen=500)
         self._CONF_SMOOTH: int = 30  # rolling average window size
 
         # ── Load homography calibration from JSON ─────────────────────
@@ -330,9 +330,7 @@ class VisionBridge:
         # Rolling average confidence
         for b in balls:
             self._conf_history.append(b.confidence)
-        if len(self._conf_history) > 500:
-            self._conf_history = self._conf_history[-500:]
-        recent = self._conf_history[-self._CONF_SMOOTH:] if self._conf_history else []
+        recent = list(self._conf_history)[-self._CONF_SMOOTH:] if self._conf_history else []
         avg_conf = int(sum(recent) / len(recent) * 100) if recent else 0
         lines.append((f"Avg confidence: {avg_conf}%", WHITE))
 
@@ -340,8 +338,8 @@ class VisionBridge:
         if self._detector is not None:
             stats = self._detector.get_statistics()
             lines.append(
-                (f"HSV:{stats.get('hsv_detections', 0)}  "
-                 f"Hough:{stats.get('hough_detections', 0)}  "
+                (f"HSV:{stats.get('total_hsv_detections', 0)}  "
+                 f"Hough:{stats.get('total_hough_detections', 0)}  "
                  f"Ensemble:{stats.get('ensemble_detections', 0)}",
                  GREY)
             )
@@ -595,7 +593,8 @@ class VisionBridge:
     # ── Context manager ───────────────────────────────────────────────
 
     def __enter__(self) -> "VisionBridge":
-        self.open()
+        if not self.open():
+            raise RuntimeError("Failed to open VisionBridge")
         return self
 
     def __exit__(

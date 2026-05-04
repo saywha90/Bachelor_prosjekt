@@ -1,3 +1,7 @@
+"""
+Quick check that matplotlib's 3D projection works with the current backend.
+Run this to verify the visualizer will function before running full demos.
+"""
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src"))

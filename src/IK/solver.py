@@ -17,12 +17,14 @@ Dependencies: numpy
 Author: Bachelor Project 2026 – Autonomia
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math
-from typing import Optional
+import os
 
-from config.arm import MAX_REACH_PITCH
+from config.arm import MAX_REACH_PITCH, CLAW_OPEN_POS
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ class ArmIK:
     """Geometric IK for a 4-DOF pick-and-place arm (+ claw motor)."""
 
     # ── Claw default position ──────────────────────────────────────────
-    CLAW_OPEN: int = 2016   # centre / open position for the gripper
+    CLAW_OPEN: int = CLAW_OPEN_POS   # imported from config.arm
 
     # ── Link lengths (cm) ──────────────────────────────────────────────
     # Measured from the real robot on 2026-04-21
@@ -72,6 +74,10 @@ class ArmIK:
     #   can reach below the desk surface for touch calibration.
     Z_MIN: float = -2.0
 
+    # ── Sag correction safety clamps (cm) ─────────────────────────────
+    SAG_CORRECTION_MIN: float = -15.0  # max downward correction (cm)
+    SAG_CORRECTION_MAX: float = 20.0   # max upward correction (cm)
+
     # ── Joint limits (Dynamixel steps) ────────────────────────────────
     #   Safe operating ranges for each motor to prevent overload errors.
     #   If the IK solution falls outside these limits, the motor would
@@ -89,14 +95,14 @@ class ArmIK:
 
     def __init__(
         self,
-        l1: Optional[float] = None,
-        l2: Optional[float] = None,
-        l3: Optional[float] = None,
-        z_offset_multiplier: Optional[float] = None,
-        z_offset_quadratic: Optional[float] = None,
-        z_offset_constant: Optional[float] = None,
-        sag_model: Optional[str] = None,
-        shoulder_height: Optional[float] = None,
+        l1: float | None = None,
+        l2: float | None = None,
+        l3: float | None = None,
+        z_offset_multiplier: float | None = None,
+        z_offset_quadratic: float | None = None,
+        z_offset_constant: float | None = None,
+        sag_model: str | None = None,
+        shoulder_height: float | None = None,
     ) -> None:
         if l1 is not None:
             self.L1 = l1
@@ -121,7 +127,6 @@ class ArmIK:
 
     def _load_sag_calibration(self) -> None:
         """Load sag compensation coefficients from calibration JSON if available."""
-        import os
         cal_path = os.path.join(os.path.dirname(__file__), "sag_calibration.json")
         if not os.path.exists(cal_path):
             return  # no calibration file, keep defaults
@@ -155,7 +160,7 @@ class ArmIK:
         """Clamp *value* to [lo, hi] to avoid domain errors in acos."""
         return max(lo, min(hi, value))
 
-    def _rad_to_steps(self, radians: float, centre: Optional[int] = None) -> int:
+    def _rad_to_steps(self, radians: float, centre: int | None = None) -> int:
         """Convert an angle in radians to Dynamixel steps (0-4095).
 
         Convention: 0 rad → *centre* step (default STEP_CENTRE = 2048).
@@ -228,15 +233,13 @@ class ArmIK:
             # ── Safety clamp on sag correction ─────────────────────────
             #   Prevent the polynomial model from producing dangerously
             #   large corrections outside the calibrated reach range.
-            SAG_CORRECTION_MIN = -15.0  # max downward correction (cm)
-            SAG_CORRECTION_MAX = 20.0   # max upward correction (cm)
             raw_sag = sag_correction
-            sag_correction = max(SAG_CORRECTION_MIN, min(sag_correction, SAG_CORRECTION_MAX))
+            sag_correction = max(self.SAG_CORRECTION_MIN, min(sag_correction, self.SAG_CORRECTION_MAX))
             if sag_correction != raw_sag:
                 logger.warning(
                     "[IK] Sag correction %.2f cm clamped to [%.1f, %.1f] → %.2f cm "
                     "(horiz_reach=%.1f)",
-                    raw_sag, SAG_CORRECTION_MIN, SAG_CORRECTION_MAX,
+                    raw_sag, self.SAG_CORRECTION_MIN, self.SAG_CORRECTION_MAX,
                     sag_correction, horiz_reach,
                 )
 
@@ -317,7 +320,7 @@ class ArmIK:
                 f"{min_reach:.2f} cm."
             )
 
-        # ── 6. Law of Cosines – elbow angle ──────────────────────────
+        # ── 5. Law of Cosines – elbow angle ──────────────────────────
         cos_elbow = (self.L1 ** 2 + self.L2 ** 2 - d ** 2) / (
             2 * self.L1 * self.L2
         )
@@ -328,7 +331,7 @@ class ArmIK:
         # We define positive elbow deflection as "opening up".
         theta_elbow = math.pi - elbow_interior
 
-        # ── 7. Law of Cosines – shoulder angle ───────────────────────
+        # ── 6. Law of Cosines – shoulder angle ───────────────────────
         cos_alpha = (self.L1 ** 2 + d ** 2 - self.L2 ** 2) / (
             2 * self.L1 * d
         )
@@ -342,14 +345,14 @@ class ArmIK:
         # Shoulder servo angle relative to horizontal
         theta_shoulder = phi + alpha
 
-        # ── 8. Wrist angle using dynamic pitch ────────────────────────
+        # ── 7. Wrist angle using dynamic pitch ────────────────────────
         #   theta_pitch starts at −π/2 (straight down) and may have been
         #   tilted forward by the pitch loop above.  The wrist servo must
         #   compensate for the arm chain's orientation so the claw reaches
         #   the desired pitch.
         theta_wrist = theta_pitch - (theta_shoulder - theta_elbow)
 
-        # ── 9. Convert to Dynamixel steps ────────────────────────────
+        # ── 8. Convert to Dynamixel steps ────────────────────────────
         # Motor 1 uses M1_CENTRE (2048) — Dynamixel centre = straight ahead.
         m1 = max(0, min(self.STEPS_PER_REV - 1,
                         int(round(self.M1_CENTRE + theta_base / self.RAD_PER_STEP))))
@@ -360,7 +363,7 @@ class ArmIK:
         m3 = self._rad_to_steps(-theta_elbow)  # Elbow requires negation for correct direction
         m4 = self._rad_to_steps(theta_wrist, centre=self.M4_CENTRE)  # NOT negated — real hardware wrist tilts opposite to simulator
 
-        # ── 10. Enforce joint limits to prevent overload errors ────────
+        # ── 9. Enforce joint limits to prevent overload errors ────────
         #    If a computed position exceeds the safe range, clamp it and
         #    warn.  This prevents the motor from hitting physical stops
         #    which causes hardware errors (red blinking LED).

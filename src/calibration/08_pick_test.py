@@ -22,23 +22,36 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import json
+import tempfile
 import time
 import math
 from pathlib import Path
+
+
+def _save_json_atomic(path, data):
+    """Write JSON atomically — write to temp file, then rename."""
+    path_str = str(path)
+    dir_name = os.path.dirname(path_str) or "."
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp_path, path_str)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 # ── Make sibling packages importable from src/ik/ ────────────────────
 from ik.solver import ArmIK
 from config.arm import (HOME_POSITION, BINS,
                         GRAB_HEIGHT, APPROACH_HEIGHT, CLEARANCE_HEIGHT,
-                        GRIP_CURRENT_LIMIT, M5_DEFAULT_CURRENT_LIMIT)
+                        GRIP_CURRENT_LIMIT, M5_DEFAULT_CURRENT_LIMIT,
+                        CLAW_OPEN_POS, CLAW_CLOSED_POS)
 
 RED_BIN    = BINS["RED_BIN"]
 BLUE_BIN   = BINS["BLUE_BIN"]
 REJECT_BIN = BINS["REJECT_BIN"]
-
-# ── Claw constants ───────────────────────────────────────────────────
-CLAW_OPEN_POS = 2016
-CLAW_CLOSED_POS = 2890
 
 # ── Timing ───────────────────────────────────────────────────────────
 MOVE_SETTLE = 1.5
@@ -414,8 +427,7 @@ def main():
         "pass_rate": pct,
     }
     out_path = Path(__file__).resolve().parent / "pick_test_results.json"
-    with open(out_path, "w") as f:
-        json.dump(report, f, indent=2)
+    _save_json_atomic(out_path, report)
     print(f"\n  Results saved to {out_path}")
 
     # ── Return to HOME ───────────────────────────────────────────────

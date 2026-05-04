@@ -40,6 +40,7 @@ import time
 from enum import Enum, auto
 
 import cv2
+import serial
 
 from ik.solver import ArmIK
 from config.arm import (
@@ -78,6 +79,8 @@ from config.arm import (
     DEFAULT_PROFILE_VEL,
     DEFAULT_PROFILE_ACC,
     M5_DEFAULT_CURRENT_LIMIT,
+    CLAW_OPEN_POS,
+    CLAW_CLOSED_POS,
 )
 from simulation.mock_serial import MockSerial
 from ik.vision_bridge import VisionBridge
@@ -166,8 +169,7 @@ SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD     = 115200
 
 # ─── Claw motor positions (Dynamixel steps) ───────────────────────────
-CLAW_OPEN_POS = 2016    # open/neutral position for gripper
-CLAW_CLOSED_POS = 2890    # closed/grip position (tune on real hardware — must be the EMPTY jaws-touching position)
+# Imported from config.arm (single source of truth).
 
 # ─── Movement settling time (seconds) ────────────────────────────────
 #   After sending a position command, wait this long for the arm to
@@ -241,7 +243,7 @@ def send_command(ser, arm: ArmIK, x: float, y: float, z: float, label: str = "",
 
     response = ser.readline().decode().strip()
     if response != "OK":
-        print(f"  ⚠️  Unexpected response: {response}")
+        logger.warning("Unexpected response in send_command: %s", response)
 
     # Update visualizer if available (needed for real serial mode)
     if viz is not None:
@@ -289,49 +291,36 @@ def send_claw(ser, last_solution: dict, position: int, label: str = ""):
     ser.write((cmd_json + "\n").encode())
     resp = ser.readline().decode().strip()
     if resp != "OK":
-        print(f"  ⚠️  Claw response: {resp}")
+        logger.warning("Unexpected claw response: %s", resp)
+
+
+def _read_motor_data(ser, cmd: str) -> dict | None:
+    """Send a read command and parse the JSON motor-data response."""
+    if ser is None:
+        return None
+    payload = json.dumps({"cmd": cmd}) + "\n"
+    ser.write(payload.encode())
+    try:
+        raw = ser.readline().decode().strip()
+        return json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning("Failed to read motor data (cmd=%s): %s", cmd, e)
+        return None
 
 
 def read_positions(ser) -> dict | None:
     """Read current positions from all motors via firmware."""
-    if ser is None:
-        return None
-    cmd = json.dumps({"cmd": "read_pos"}) + "\n"
-    ser.write(cmd.encode())
-    try:
-        raw = ser.readline().decode().strip()
-        return json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"  ⚠️  Failed to read positions: {e}")
-        return None
+    return _read_motor_data(ser, "read_pos")
 
 
 def read_load(ser) -> dict | None:
     """Read current load from all motors via firmware."""
-    if ser is None:
-        return None
-    cmd = json.dumps({"cmd": "read_load"}) + "\n"
-    ser.write(cmd.encode())
-    try:
-        raw = ser.readline().decode().strip()
-        return json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"  ⚠️  Failed to read load: {e}")
-        return None
+    return _read_motor_data(ser, "read_load")
 
 
 def read_current(ser) -> dict | None:
     """Read present current from all motors via firmware."""
-    if ser is None:
-        return None
-    cmd = json.dumps({"cmd": "read_current"}) + "\n"
-    ser.write(cmd.encode())
-    try:
-        raw = ser.readline().decode().strip()
-        return json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"  ⚠️  Failed to read current: {e}")
-        return None
+    return _read_motor_data(ser, "read_current")
 
 
 # ── M3 thermal protection helpers ─────────────────────────────────────
@@ -364,14 +353,14 @@ def log_m3_scan_hold_status(ser, context: str) -> int | None:
     if M3_SCAN_CURRENT_LIMIT > 0:
         near_limit_margin = min(50, max(20, M3_SCAN_CURRENT_LIMIT // 10))
         if m3_current >= M3_SCAN_CURRENT_LIMIT:
-            print(
-                "  ⚠️  [M3 THERMAL] M3 present current is at/above the "
-                f"scan hold limit ({m3_current} mA / {M3_SCAN_CURRENT_LIMIT} mA)"
+            logger.warning(
+                "[M3 THERMAL] M3 present current is at/above the "
+                "scan hold limit (%d mA / %d mA)", m3_current, M3_SCAN_CURRENT_LIMIT
             )
         elif m3_current >= (M3_SCAN_CURRENT_LIMIT - near_limit_margin):
-            print(
-                "  ⚠️  [M3 THERMAL] M3 present current is near the "
-                f"scan hold limit ({m3_current} mA / {M3_SCAN_CURRENT_LIMIT} mA)"
+            logger.warning(
+                "[M3 THERMAL] M3 present current is near the "
+                "scan hold limit (%d mA / %d mA)", m3_current, M3_SCAN_CURRENT_LIMIT
             )
 
     return m3_current
@@ -381,14 +370,14 @@ def sync_goal_to_present_pose_before_restore(ser, viz=None) -> dict | None:
     """Re-command the current arm pose before restoring full M3 current."""
     pose = _coerce_full_motor_pose(read_positions(ser))
     if pose is None:
-        print("  ⚠️  [M3 THERMAL] Could not read a full arm pose before restoring M3 current limit")
+        logger.warning("[M3 THERMAL] Could not read a full arm pose before restoring M3 current limit")
         return None
 
     print("  🌡️  [M3 THERMAL] Syncing goal pose to the present arm pose before restoring M3 current")
     ser.write((json.dumps(pose) + "\n").encode())
     response = ser.readline().decode().strip()
     if response != "OK":
-        print(f"  ⚠️  [M3 THERMAL] Pose sync response: {response}")
+        logger.warning("[M3 THERMAL] Pose sync response: %s", response)
 
     if viz is not None:
         viz.update_plot(pose)
@@ -400,12 +389,12 @@ def verify_scan_pose_before_scan(ser, vision: VisionBridge) -> bool | None:
     """Surface SCAN_POSE drift before vision capture."""
     positions = read_positions(ser)
     if not positions:
-        print("  ⚠️  [VISION] Could not verify SCAN_POSE before scan (position read unavailable)")
+        logger.warning("[VISION] Could not verify SCAN_POSE before scan (position read unavailable)")
         return None
 
     ok = vision.verify_pose(positions)
     if not ok:
-        print("  ⚠️  [VISION] SCAN_POSE drift detected before scanning; continuing so the issue is visible")
+        logger.warning("[VISION] SCAN_POSE drift detected before scanning; continuing so the issue is visible")
     return ok
 
 def set_m3_current_limit(ser, milliamps: int):
@@ -483,7 +472,8 @@ def send_raw_command(ser, cmd_dict: dict) -> str:
     ser.write(payload.encode())
     try:
         resp = ser.readline().decode(errors="replace").strip()
-    except Exception:
+    except (serial.SerialException, serial.SerialTimeoutException, OSError) as e:
+        logger.warning("Serial read failed in send_raw_command: %s", e)
         resp = ""
     return resp
 
@@ -516,7 +506,7 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
         # 3. Command m5 to CLAW_CLOSED_POS while maintaining previous goal positions for m1-m4
         # to prevent the arm from springing up if it was pushing against the desk
         if not last_solution:
-            print("  ⚠️  [ADAPTIVE GRIP] No last_solution provided — falling back to verify_grip()")
+            logger.warning("[ADAPTIVE GRIP] No last_solution provided — falling back to verify_grip()")
             return verify_grip(ser, CLAW_CLOSED_POS)
 
         goal = last_solution.copy()
@@ -539,7 +529,7 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
 
             # Timeout guard
             if elapsed > GRIP_TIMEOUT:
-                print(f"  ⚠️  [ADAPTIVE GRIP] Timeout after {GRIP_TIMEOUT:.1f}s")
+                logger.warning("[ADAPTIVE GRIP] Timeout after %.1fs", GRIP_TIMEOUT)
                 break
 
             # Read load
@@ -585,8 +575,8 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
         if final_positions and "m5" in final_positions:
             final_m5 = int(final_positions["m5"])
             if abs(final_m5 - CLAW_CLOSED_POS) <= GRIP_VERIFY_TOLERANCE:
-                print(f"  ❌  [ADAPTIVE GRIP] Claw closed on air (pos={final_m5}, "
-                      f"target={CLAW_CLOSED_POS}, tol={GRIP_VERIFY_TOLERANCE})")
+                logger.warning("[ADAPTIVE GRIP] Claw closed on air (pos=%d, "
+                      "target=%d, tol=%d)", final_m5, CLAW_CLOSED_POS, GRIP_VERIFY_TOLERANCE)
                 gripped = False
             else:
                 print(f"  ✅  [ADAPTIVE GRIP] Object gripped! (pos={final_m5}, "
@@ -594,12 +584,12 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
                 gripped = True
         else:
             # Can't read position — fall back to verify_grip
-            print("  ⚠️  [ADAPTIVE GRIP] Cannot read final position — falling back to verify_grip()")
+            logger.warning("[ADAPTIVE GRIP] Cannot read final position — falling back to verify_grip()")
             gripped = verify_grip(ser, CLAW_CLOSED_POS)
 
     except Exception as e:
-        print(f"  ⚠️  [ADAPTIVE GRIP] Error during adaptive grip: {e}")
-        print("  ⚠️  [ADAPTIVE GRIP] Falling back to verify_grip()")
+        logger.error("[ADAPTIVE GRIP] Error during adaptive grip: %s", e)
+        logger.warning("[ADAPTIVE GRIP] Falling back to verify_grip()")
         try:
             gripped = verify_grip(ser, CLAW_CLOSED_POS)
         except Exception:
@@ -611,7 +601,7 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
         try:
             send_raw_command(ser, {"cmd": "set_profile", "vel": DEFAULT_PROFILE_VEL, "acc": DEFAULT_PROFILE_ACC})
         except Exception as e:
-            print(f"  ⚠️  [ADAPTIVE GRIP] Failed to restore profile: {e}")
+            logger.warning("[ADAPTIVE GRIP] Failed to restore profile: %s", e)
 
     return gripped
 
@@ -635,16 +625,16 @@ def verify_grip(ser, claw_closed_pos: int) -> bool:
             print(f"  ✅ Grip check passed (load): claw load = {claw_load}")
             return True
         else:
-            print(f"  ⚠️  Grip check warning (load): claw load = {claw_load} "
-                  f"(below threshold {GRIP_LOAD_THRESHOLD})")
+            logger.warning("Grip check warning (load): claw load = %s "
+                  "(below threshold %s)", claw_load, GRIP_LOAD_THRESHOLD)
 
     # Check 2: Position-based verification (Fallback)
     positions = read_positions(ser)
     if positions and "m5" in positions:
         claw_pos = positions["m5"]
         if abs(claw_pos - claw_closed_pos) <= GRIP_VERIFY_TOLERANCE:
-            print(f"  ❌ Grip check FAILED (position): claw at {claw_pos}, "
-                  f"target was {claw_closed_pos} (within {GRIP_VERIFY_TOLERANCE} tolerance)")
+            logger.warning("Grip check FAILED (position): claw at %s, "
+                  "target was %s (within %s tolerance)", claw_pos, claw_closed_pos, GRIP_VERIFY_TOLERANCE)
             return False
         else:
             print(f"  ✅ Grip check passed (position): claw at {claw_pos}, "
@@ -652,7 +642,7 @@ def verify_grip(ser, claw_closed_pos: int) -> bool:
             return True
 
     # Fallback: assume grip succeeded if we can't read anything
-    print("  ⚠️  Grip verification unavailable (no sensor data), assuming success")
+    logger.warning("Grip verification unavailable (no sensor data), assuming success")
     return True
 
 
@@ -686,7 +676,7 @@ def send_scan_pose(ser, viz=None, claw_override=None, settle_time: float | None 
 
     response = ser.readline().decode().strip()
     if response != "OK":
-        print(f"  ⚠️  Unexpected SCAN_POSE response: {response}")
+        logger.warning("Unexpected SCAN_POSE response: %s", response)
 
     if viz is not None:
         viz.update_plot(pose)
@@ -736,7 +726,7 @@ def smooth_startup(ser, viz=None):
     ser.write((cmd_json + "\n").encode())
     response = ser.readline().decode().strip()
     if response != "OK":
-        print(f"  ⚠️  Unexpected SCAN_POSE response: {response}")
+        logger.warning("Unexpected SCAN_POSE response during startup: %s", response)
 
     if viz is not None:
         viz.update_plot(SCAN_POSE)
@@ -823,7 +813,8 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
         timer.start_phase("grab")
 
     print(f"\n  🎯  TARGET REACH: {obj_x:.1f} cm, TARGET Z: {grab_z:.1f} cm (distance-adjusted)")
-    input("  ⏸️   Press ENTER to close claw (check accuracy now)...")
+    # Removed: blocking input() halts headless deployment
+    # input("  ⏸️   Press ENTER to close claw (check accuracy now)...")
 
     # Adaptive grip — gradually close until resistance detected
     grip_ok = adaptive_grip(ser, last_ik)
@@ -831,12 +822,13 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     # ── 3b. VERIFY_GRIP ──────────────────────────────────────────────
     log_state(State.VERIFY_GRIP, "Checking grip instantly")
 
-    # Verify grip immediately before lifting
-    print(f"  🔍  Verifying grip...")
-    grip_ok = verify_grip(ser, CLAW_CLOSED_POS)
+    # Verify grip only as fallback if adaptive_grip didn't confirm grip
+    if not grip_ok:
+        print("  🔍  Adaptive grip inconclusive — verifying with verify_grip()...")
+        grip_ok = verify_grip(ser, CLAW_CLOSED_POS)
 
     if not grip_ok:
-        print(f"  ❌  PICK FAILED — grip verification failed for {colour.upper()} ball")
+        logger.warning("PICK FAILED — grip verification failed for %s ball", colour.upper())
         # Restore normal current limit before opening to ensure it can overcome any jams
         send_raw_command(ser, {"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT})
         # Open claw to release any partial grip
@@ -938,7 +930,6 @@ def main():
 
     # ── Open serial connection ────────────────────────────────────────
     if USE_REAL_SERIAL:
-        import serial
         ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
         time.sleep(3)  # wait for OpenRB-150 to boot (increased from 2s)
         # Drain any boot messages from the firmware
@@ -949,7 +940,7 @@ def main():
             boot_msg = ser.readline().decode(errors="replace").strip()
         print(f"[INIT] OpenRB says: {boot_msg.strip()}")
         if "READY" not in boot_msg.upper():
-            print("[INIT] ⚠️  Did not receive 'OK:READY' from OpenRB-150!")
+            logger.warning("[INIT] Did not receive 'OK:READY' from OpenRB-150!")
             print("       Check: (1) firmware uploaded? (2) correct port? (3) baud rate?")
     else:
         ser = MockSerial(move_delay=1.0, visualizer=viz, anim_frames=30)
@@ -957,8 +948,8 @@ def main():
     # ── Initialise vision bridge ──────────────────────────────────────
     vision = VisionBridge(use_camera=USE_REAL_CAMERA)
     if not vision.open():
-        print("[INIT] ❌ Vision bridge failed to open real camera.")
-        print("       Check: (1) USB connection? (2) Re-plug the camera? (3) Power?")
+        logger.error("[INIT] Vision bridge failed to open real camera.")
+        logger.error("       Check: (1) USB connection? (2) Re-plug the camera? (3) Power?")
         return  # Stop here instead of falling back to fake data
 
     # ── Clear any latched hardware errors before moving ──────────────
@@ -1059,7 +1050,7 @@ def main():
                 print(f"\n[PICK FAILED] Attempt {pick_fail_count}/{MAX_PICK_RETRIES} "
                       f"for this detection")
                 if pick_fail_count >= MAX_PICK_RETRIES:
-                    print(f"  ⚠️  Skipping unreachable ball after {MAX_PICK_RETRIES} failed attempts")
+                    logger.warning("Skipping unreachable ball after %d failed attempts", MAX_PICK_RETRIES)
                     pick_fail_count = 0
                 else:
                     print("  🔄  Returning to SCAN_POSE for retry (no idle delay)...")
@@ -1084,7 +1075,7 @@ def main():
         log_state(State.IDLE, "Returning to SCAN_POSE before shutdown")
         send_scan_pose(ser, viz=viz)
     except Exception as e:
-        print(f"  ⚠️  Could not return to SCAN_POSE: {e}")
+        logger.warning("Could not return to SCAN_POSE: %s", e)
 
     # ── Shutdown ──────────────────────────────────────────────────────
     print(f"\n{'━' * 60}")

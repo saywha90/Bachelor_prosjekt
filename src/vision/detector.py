@@ -19,22 +19,16 @@ Author: Bachelor Project 2026 - Autonomia
 """
 
 import logging
+import math
+from collections import defaultdict
+
 import cv2
 import numpy as np
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 from dataclasses import dataclass
 from enum import Enum
 
 logger = logging.getLogger(__name__)
-
-# SVM-fargebeklassifiserer (sekundær voting) — laster ved import
-try:
-    from vision.classifier import ColorHistogramClassifier as _CHC
-    _SVM_AVAILABLE = True
-except ImportError:
-    _SVM_AVAILABLE = False
-    _CHC = None
 
 __all__ = ["SimpleBallDetector", "BallColor", "DetectedBall"]
 
@@ -151,13 +145,7 @@ class BallTracker:
                     self._kalman.pop(oid, None)
                     self._radius_sm.pop(oid, None)
                 else:
-                    kf = self._kalman.get(oid)
-                    if kf is not None:
-                        kf.statePost    = kf.statePre.copy()
-                        kf.errorCovPost = kf.errorCovPre.copy()
-                    if oid in predicted and oid in self._objects:
-                        px, py = predicted[oid]
-                        self._objects[oid].center = (int(round(px)), int(round(py)))
+                    self._coast_track(oid, predicted)
             return dict(self._objects)
 
         # ── Ingen eksisterende objekter: registrer alle nye direkte ───────
@@ -187,7 +175,7 @@ class BallTracker:
                     continue
                 dx = px - nb.center[0]
                 dy = py - nb.center[1]
-                cost[i, j] = float(np.sqrt(dx * dx + dy * dy))
+                cost[i, j] = math.hypot(dx, dy)
 
         # ── Grådig matching (laveste kostnad vinner) ─────────────────────
         pairs = sorted(
@@ -237,13 +225,7 @@ class BallTracker:
                     self._kalman.pop(oid, None)
                     self._radius_sm.pop(oid, None)
                 else:
-                    kf = self._kalman.get(oid)
-                    if kf is not None:
-                        kf.statePost    = kf.statePre.copy()
-                        kf.errorCovPost = kf.errorCovPre.copy()
-                    if oid in predicted and oid in self._objects:
-                        px, py = predicted[oid]
-                        self._objects[oid].center = (int(round(px)), int(round(py)))
+                    self._coast_track(oid, predicted)
 
         # ── Registrer nye, umatchede deteksjoner ─────────────────────────
         for j in range(n_d):
@@ -258,6 +240,20 @@ class BallTracker:
                 self._next_id += 1
 
         return dict(self._objects)
+
+    def _coast_track(self, oid: int, predicted: Dict[int, Tuple[float, float]]) -> None:
+        """Advance a track with no detection (Kalman predict-only).
+
+        Commits the Kalman prediction as the new state and updates the
+        tracked object's center to the predicted position.
+        """
+        kf = self._kalman.get(oid)
+        if kf is not None:
+            kf.statePost    = kf.statePre.copy()
+            kf.errorCovPost = kf.errorCovPre.copy()
+        if oid in predicted and oid in self._objects:
+            px, py = predicted[oid]
+            self._objects[oid].center = (int(round(px)), int(round(py)))
 
     def reset(self) -> None:
         """Nullstill all tracking-tilstand og ID-teller."""
@@ -285,6 +281,9 @@ class SimpleBallDetector:
     
     # Kjent balldiameter i mm (brukes til avstandsberegning)
     BALL_DIAMETER_MM = 50.0
+
+    # Processing scale for detect_balls() — kernel sizes in __init__ are tuned for this value
+    DETECTION_SCALE = 0.75
 
     # ─── Initialization ──────────────────────────────────────────────────
 
@@ -362,32 +361,25 @@ class SimpleBallDetector:
         # CLAHE opprettes én gang (ikke per frame) for ytelse
         self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
 
-        # SVM-fargebeklassifiserer — lastes hvis modell finnes
+        # SVM color classifier — DISABLED (always returns input unchanged).
+        # Loading is skipped to avoid unnecessary I/O; see _verify_with_svm().
         self._svm_classifier = None
-        if _SVM_AVAILABLE:
-            _model_path = Path(__file__).parent / "models" / "ball_color_classifier.pkl"
-            try:
-                self._svm_classifier = _CHC(str(_model_path))
-            except (FileNotFoundError, Exception):
-                pass
 
         # Statistics
         self.stats = {
-            'hsv_detections': 0,
-            'hough_detections': 0,
+            'total_hsv_detections': 0,
+            'total_hough_detections': 0,
             'ensemble_detections': 0,
             'lighting_level': 'unknown'
         }
         self._frame_counter  = 0
-        self._hough_interval = 1         # Kjør hver frame for robusthet når masker overlapper
-        self._hough_cache: List[DetectedBall] = []
         self._tracker = BallTracker(
             max_disappeared=2, max_distance=100.0
         )
     
     # ─── Lighting analysis ─────────────────────────────────────────────
 
-    def analyze_lighting(self, frame: np.ndarray) -> Dict[str, any]:
+    def analyze_lighting(self, frame: np.ndarray) -> Dict[str, Any]:
         """
         Analyserer lysforholdene i bildet for adaptiv justering.
         Estimerer lux-nivå basert på gjennomsnittlig lysstyrke (300-700 lux range).
@@ -446,31 +438,6 @@ class SimpleBallDetector:
         l_channel = self.clahe.apply(l_channel)
         enhanced = cv2.merge([l_channel, a, b])
         return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-    
-    def get_adaptive_hsv_ranges(self, lighting_info: Dict) -> Tuple[List, List]:
-        """
-        Justerer HSV-ranges dynamisk basert på lysforhold.
-        
-        Args:
-            lighting_info: Lysanalyse fra analyze_lighting()
-            
-        Returns:
-            Tuple med (red_ranges, blue_ranges) justert for lysforhold
-        """
-        if not self.enable_adaptive_lighting:
-            return self.red_ranges, self.blue_ranges
-        
-        red_ranges_adjusted = []
-        blue_ranges_adjusted = []
-        
-        # CLAHE kjøres alltid nå, så adaptive adjustment er minimal.
-        # Bruk base ranges uansett lysnivå — CLAHE normaliserer lokalt.
-        # Tidligere var low-light adjustment *øking* av S_min (max(60,...)),
-        # som faktisk gjorde deteksjon VERRE. Fjernet.
-        red_ranges_adjusted = self.red_ranges
-        blue_ranges_adjusted = self.blue_ranges
-        
-        return red_ranges_adjusted, blue_ranges_adjusted
     
     # ─── Detection pipeline ───────────────────────────────────────────
 
@@ -533,15 +500,10 @@ class SimpleBallDetector:
         Returns:
             Tuple med (red_balls, blue_balls)
         """
-        if lighting_info and self.enable_adaptive_lighting:
-            red_ranges, blue_ranges = self.get_adaptive_hsv_ranges(lighting_info)
-        else:
-            red_ranges, blue_ranges = self.red_ranges, self.blue_ranges
+        red_balls  = self._apply_hsv_ranges(hsv, self.red_ranges,  BallColor.RED)
+        blue_balls = self._apply_hsv_ranges(hsv, self.blue_ranges, BallColor.BLUE)
 
-        red_balls  = self._apply_hsv_ranges(hsv, red_ranges,  BallColor.RED)
-        blue_balls = self._apply_hsv_ranges(hsv, blue_ranges, BallColor.BLUE)
-
-        self.stats['hsv_detections'] += len(red_balls) + len(blue_balls)
+        self.stats['total_hsv_detections'] += len(red_balls) + len(blue_balls)
         return red_balls, blue_balls
     
     def detect_with_hough(self, gray: np.ndarray, hsv: np.ndarray) -> List[DetectedBall]:
@@ -662,7 +624,7 @@ class SimpleBallDetector:
                             )
                             detected_balls.append(ball)
         
-        self.stats['hough_detections'] += len(detected_balls)
+        self.stats['total_hough_detections'] += len(detected_balls)
         return detected_balls
     
     # ─── Internal helpers ─────────────────────────────────────────────
@@ -723,7 +685,7 @@ class SimpleBallDetector:
         return BallColor.UNKNOWN
     
     def _validate_contour(self, contour: np.ndarray, color: BallColor, method: str,
-                           hsv: Optional[np.ndarray] = None) -> Optional['DetectedBall']:
+                           hsv: Optional[np.ndarray] = None) -> Optional[DetectedBall]:
         """
         Validerer en contour og returnerer DetectedBall hvis valid.
         Krever at formen er tilnærmet sirkulær (ball-form).
@@ -921,7 +883,7 @@ class SimpleBallDetector:
                     continue
                 dx = b1.center[0] - b2.center[0]
                 dy = b1.center[1] - b2.center[1]
-                dist = np.sqrt(dx**2 + dy**2)
+                dist = math.hypot(dx, dy)
                 # Merge hvis senter er innenfor 1.5× største radius —
                 # Hough-senter (geometrisk) og HSV-senter (farge-tyngdepunkt) kan
                 # lett ligge 10-20 px fra hverandre på en 40 px radius-ball.
@@ -992,7 +954,7 @@ class SimpleBallDetector:
                     continue
                 dx = candidate.center[0] - accepted.center[0]
                 dy = candidate.center[1] - accepted.center[1]
-                dist = np.sqrt(dx**2 + dy**2)
+                dist = math.hypot(dx, dy)
                 # Samme ball hvis sentrene er innenfor 1.3× radius.
                 # 2.0× var for aggressivt: to baller side om side (avstand ~2×diameter)
                 # ble feilaktig merget til én.
@@ -1009,7 +971,6 @@ class SimpleBallDetector:
         Beholder kun de N beste deteksjonene per farge (sortert etter confidence).
         Forhindrer at falske positiver teller med når vi vet maks antall baller i scenen.
         """
-        from collections import defaultdict
         per_color: dict = defaultdict(list)
         for b in balls:
             per_color[b.color].append(b)
@@ -1022,19 +983,12 @@ class SimpleBallDetector:
 
     def _verify_with_svm(self, frame: np.ndarray, balls: List[DetectedBall]) -> List[DetectedBall]:
         """
-        Sekundær fargeverifisering med SVM-klassifiserer.
-        Korrigerer fargelabel hvis SVM har >= 75% konfidanse og disagreer med HSV/Hough.
+        SVM color verification — **DISABLED**.
 
-        Args:
-            frame: Kompensert BGR-frame
-            balls: Detekterte baller fra ensemble
-
-        Returns:
-            Baller med potensielt korrigert fargelabel
+        The SVM classifier erroneously relabels dark-blue balls as red.
+        HSV+Hough ensemble is reliable enough without secondary SVM voting.
+        This method is kept as a no-op hook for potential future re-enablement.
         """
-        # DISABLED: SVM is erroneously classifying the dark blue ball as red
-        # See issue where "RED 100% [ensemble]" is shown for a blue ball.
-        # HSV+Hough ensemble is reliable enough.
         return balls
 
     # ─── Public API ─────────────────────────────────────────────────
@@ -1058,15 +1012,20 @@ class SimpleBallDetector:
         # Skaler ned for prosessering — 0.75 gir 480x300 på 640x400-input.
         # VIKTIG: 0.5 (320x200) ga 13×13 close-kernel = 87 % av balldiameter (15px ødelagt form).
         # Ved 0.75: ballradius ~11px, 13×13-kernel = 57 % av diameter → form-gates passerer.
-        # Benchmark 02.04: 100 % deteksjon bekreftet med _SCALE=0.75 (summary.json).
-        _SCALE = 0.75
-        proc_frame = cv2.resize(frame, (0, 0), fx=_SCALE, fy=_SCALE,
+        # Benchmark 02.04: 100 % deteksjon bekreftet med DETECTION_SCALE=0.75 (summary.json).
+        _scale = self.DETECTION_SCALE
+        proc_frame = cv2.resize(frame, (0, 0), fx=_scale, fy=_scale,
                                 interpolation=cv2.INTER_LINEAR)
 
-        # Juster radius-grenser til skalert koordinatrom
-        orig_min_r, orig_max_r = self.min_radius, self.max_radius
-        self.min_radius = max(5, int(orig_min_r * _SCALE))
-        self.max_radius = int(orig_max_r * _SCALE)
+        # Compute scaled radius bounds as local variables (thread-safe — no mutation of self)
+        orig_min_r = self.min_radius
+        orig_max_r = self.max_radius
+        scaled_min_r = max(5, int(orig_min_r * _scale))
+        scaled_max_r = int(orig_max_r * _scale)
+
+        # Temporarily set instance radius for pipeline methods that read self.min/max_radius
+        self.min_radius = scaled_min_r
+        self.max_radius = scaled_max_r
 
         try:
             # 1. Analyser lysforhold (300-700 lux range)
@@ -1087,14 +1046,9 @@ class SimpleBallDetector:
             red_balls_hsv, blue_balls_hsv = self.detect_with_hsv_multirange(hsv, lighting_info)
             hsv_balls = red_balls_hsv + blue_balls_hsv
 
-            # 6. Hough Circle Transform — kjøres hvert N-te frame for ytelse.
-            # Når Hough ikke kjøres brukes tom liste: stale cache ville ellers skape
-            # spøkelsesballer fra forrige Hough-kjøring (ball har beveget seg).
+            # 6. Hough Circle Transform — always run (interval is always 1)
             self._frame_counter += 1
-            if (self._frame_counter - 1) % self._hough_interval == 0:
-                hough_balls = self.detect_with_hough(gray, hsv)
-            else:
-                hough_balls = []
+            hough_balls = self.detect_with_hough(gray, hsv)
             
             # 7. Ensemble merge - kombinerer begge metodene
             merged_balls = self.ensemble_merge(hsv_balls, hough_balls)
@@ -1102,7 +1056,7 @@ class SimpleBallDetector:
             # 8. Post-merge NMS per farge: fjern gjenværende duplikater
             merged_balls = self._post_merge_nms(merged_balls)
 
-            # 9. SVM-fargeverifisering (sekundær — korrigerer feil fargelabel)
+            # 9. SVM-fargeverifisering (disabled — returns input unchanged)
             merged_balls = self._verify_with_svm(compensated_frame, merged_balls)
 
             # 10. Behold maks N baller per farge (sortert etter confidence)
@@ -1119,7 +1073,7 @@ class SimpleBallDetector:
             self.min_radius, self.max_radius = orig_min_r, orig_max_r
 
         # Skaler koordinater og radius tilbake til original oppløsning
-        inv = 1.0 / _SCALE
+        inv = 1.0 / _scale
         for ball in merged_balls:
             ball.center = (int(ball.center[0] * inv), int(ball.center[1] * inv))
             ball.radius = ball.radius * inv
@@ -1416,13 +1370,12 @@ class SimpleBallDetector:
     def reset(self) -> None:
         """Nullstill statistikk, Hough-cache og ball-tracker."""
         self.stats = {
-            'hsv_detections':      0,
-            'hough_detections':    0,
+            'total_hsv_detections':      0,
+            'total_hough_detections':    0,
             'ensemble_detections': 0,
             'lighting_level':      'unknown',
         }
         self._frame_counter = 0
-        self._hough_cache   = []
         self._tracker.reset()
 
     def reset_tracker(self) -> None:

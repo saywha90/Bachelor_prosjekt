@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import logging
 import math
+from collections import deque
 from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
@@ -41,18 +42,18 @@ from mpl_toolkits.mplot3d import Axes3D            # noqa: F401  (registers 3D p
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from config.arm import BINS, HOME_POSITION, SCAN_POSE
+from ik.solver import ArmIK
 
+# ─── Constants (imported from solver.py to stay in sync) ───────────
+L1 = ArmIK.L1               # shoulder → elbow  (cm)
+L2 = ArmIK.L2               # elbow   → wrist   (cm)
+L3 = ArmIK.L3               # wrist   → claw tip (cm)
 
-# ─── Constants (must match solver.py) ──────────────────────────────
-L1 = 25.5          # shoulder → elbow  (cm)
-L2 = 23.0          # elbow   → wrist   (cm)
-L3 = 22.0          # wrist   → claw tip (cm)
+STEP_CENTRE    = ArmIK.STEP_CENTRE
+M4_STEP_CENTRE = ArmIK.M4_CENTRE   # wrist tilt (motor 4) mechanical centre
+RAD_PER_STEP   = ArmIK.RAD_PER_STEP
 
-STEP_CENTRE   = 2048
-M4_STEP_CENTRE = 1911   # wrist tilt (motor 4) mechanical centre — 3D-printed mount offset
-RAD_PER_STEP  = (2.0 * math.pi) / 4096.0
-
-SHOULDER_HEIGHT = 11.0   # base to shoulder joint (cm)
+SHOULDER_HEIGHT = ArmIK.shoulder_height  # base to shoulder joint (cm)
 
 # Reduced polygon count for cylinders (was 14)
 _CYLINDER_SIDES = 8
@@ -326,9 +327,9 @@ class ArmVisualizer:
         )
 
         # Ghost trail (faint previous positions) — reused via set_data_3d
-        self._trail_xs: list[float] = []
-        self._trail_ys: list[float] = []
-        self._trail_zs: list[float] = []
+        self._trail_xs: deque = deque(maxlen=300)
+        self._trail_ys: deque = deque(maxlen=300)
+        self._trail_zs: deque = deque(maxlen=300)
         self.trail_line, = self.ax.plot(
             [], [], [], ".", color=COLORS['trail'], alpha=0.15, markersize=3,
         )
@@ -511,31 +512,9 @@ class ArmVisualizer:
 
         return all_faces, all_facecolors, all_edgecolors
 
-    # Keep legacy wrapper for API compatibility
-    def _build_arm_geometry(self, joints, theta_base, m5_steps):
-        """Build all Poly3DCollection objects for the arm at the given pose.
-
-        Parameters
-        ----------
-        joints : list of 5 tuples (x,y,z)
-            [base, shoulder, elbow, wrist, tip]
-        theta_base : float
-            Base rotation angle (rad) for orienting servos
-        m5_steps : int
-            Claw motor steps for open/close angle
-
-        Returns
-        -------
-        collections : list of Poly3DCollection
-        cable_lines : list of mpl line objects  (always empty — cables removed)
-        """
-        all_faces, all_facecolors, all_edgecolors = self._build_arm_faces(
-            joints, theta_base, m5_steps)
-
-        coll = Poly3DCollection(all_faces, facecolors=all_facecolors,
-                                edgecolors=all_edgecolors,
-                                linewidths=0.3, alpha=0.9)
-        return [coll], []
+    # Removed: _build_arm_geometry() — legacy wrapper, never called.
+    # Removed: _build_claw() — wrapped _build_claw_faces() into Poly3DCollection, never called.
+    # Removed: _draw_cables() — always returned empty list (cables removed for performance).
 
     def _build_claw_faces(self, wrist_pt, tip_pt, m5_steps):
         """Build the two-jaw gripper faces (raw lists, not collections).
@@ -582,40 +561,6 @@ class ArmVisualizer:
         edgecolors.extend(['#666666'] * len(jaw2))
 
         return faces, facecolors, edgecolors
-
-    def _build_claw(self, wrist_pt, tip_pt, m5_steps):
-        """Build the two-jaw gripper at the end effector.
-
-        Parameters
-        ----------
-        wrist_pt : (3,) array
-        tip_pt   : (3,) array
-        m5_steps : int – claw motor steps (2048=centre/open)
-
-        Returns
-        -------
-        list of Poly3DCollection
-        """
-        faces, facecolors, edgecolors = self._build_claw_faces(
-            wrist_pt, tip_pt, m5_steps)
-        if not faces:
-            return []
-        coll = Poly3DCollection(faces, facecolors=facecolors,
-                                edgecolors=edgecolors,
-                                linewidths=0.3, alpha=0.9)
-        return [coll]
-
-    def _draw_cables(self, shoulder, elbow, wrist, tip, rot_base):
-        """Draw thin cable lines along the arm segments.
-
-        Returns list of matplotlib line objects.
-
-        NOTE: Cables are disabled for rendering performance. This method
-        is retained for API compatibility but returns an empty list.
-        """
-        # Cables removed for performance — they created 3 line objects
-        # per frame and added significant draw overhead.
-        return []
 
     # ── Remove dynamic arm objects ───────────────────────────────────
 
@@ -691,15 +636,10 @@ class ArmVisualizer:
         tip = joints[-1]
         self.tip_marker.set_data_3d([tip[0]], [tip[1]], [tip[2]])
 
-        # Ghost trail — append and reuse existing line object
+        # Ghost trail — append and reuse existing line object (deque handles maxlen)
         self._trail_xs.append(tip[0])
         self._trail_ys.append(tip[1])
         self._trail_zs.append(tip[2])
-        MAX_TRAIL = 300
-        if len(self._trail_xs) > MAX_TRAIL:
-            self._trail_xs = self._trail_xs[-MAX_TRAIL:]
-            self._trail_ys = self._trail_ys[-MAX_TRAIL:]
-            self._trail_zs = self._trail_zs[-MAX_TRAIL:]
         self.trail_line.set_data_3d(
             self._trail_xs, self._trail_ys, self._trail_zs)
 

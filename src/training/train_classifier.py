@@ -7,7 +7,7 @@ røde og blå baller. Fungerer utmerket med lite treningsdata (50-200 bilder)
 og er rask nok for Raspberry Pi (< 1ms per klassifisering).
 
 Teknisk tilnærming:
-- Trekker ut HSV-histogrammer (32 bins per kanal = 96 features)
+- Trekker ut HSV-histogrammer (36+32+32 = 100 features)
 - Normaliserer histogrammer
 - Trener SVM med RBF-kjerne + kryssvalidering
 
@@ -25,7 +25,6 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import argparse
-import sys
 from pathlib import Path
 
 import cv2

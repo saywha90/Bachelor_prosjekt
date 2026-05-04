@@ -83,7 +83,10 @@ size_t bufIndex = 0;
 void setup() {
     // USB serial to Pi
     PI_SERIAL.begin(PI_BAUDRATE);
-    while (!PI_SERIAL);   // wait for USB enumeration
+    unsigned long serial_start = millis();
+    while (!PI_SERIAL && millis() - serial_start < 5000) {
+        // Wait up to 5 seconds for USB serial
+    }
 
     // Dynamixel bus
     dxl.begin(DXL_BAUDRATE);
@@ -183,12 +186,16 @@ void processCommand(const char* json) {
     // ── Handle "read_pos" command ────────────────────────────────────
     if (doc.containsKey("cmd")) {
         const char* cmd = doc["cmd"].as<const char*>();
+        if (cmd == nullptr) {
+            PI_SERIAL.println("ERR:cmd is not a string");
+            return;
+        }
 
         if (strcmp(cmd, "read_pos") == 0) {
             // Read current positions of all 5 motors and send back as JSON
             JsonDocument resp;
             for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-                char key[4];
+                char key[5];
                 snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
                 resp[key] = (int32_t)dxl.getPresentPosition(MOTOR_IDS[i]);
             }
@@ -203,7 +210,7 @@ void processCommand(const char* json) {
             // of max torque.  Useful for grip verification on the claw motor.
             JsonDocument resp;
             for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-                char key[4];
+                char key[5];
                 snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
                 resp[key] = (int16_t)dxl.readControlTableItem(PRESENT_LOAD, MOTOR_IDS[i]);
             }
@@ -216,7 +223,7 @@ void processCommand(const char* json) {
             // Read Hardware Error Status of all 5 motors and send back as JSON
             JsonDocument resp;
             for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-                char key[4];
+                char key[5];
                 snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
                 resp[key] = (uint8_t)dxl.readControlTableItem(HARDWARE_ERROR_STATUS, MOTOR_IDS[i]);
             }
@@ -227,8 +234,16 @@ void processCommand(const char* json) {
 
         if (strcmp(cmd, "set_profile") == 0) {
             // Set motion profile on all motors
+            if (!doc.containsKey("vel") || !doc.containsKey("acc")) {
+                PI_SERIAL.println("ERR:set_profile requires vel and acc");
+                return;
+            }
             uint32_t vel = doc["vel"].as<uint32_t>();
             uint32_t acc = doc["acc"].as<uint32_t>();
+            if (vel == 0) {
+                PI_SERIAL.println("ERR:vel must be > 0 (0 = unlimited speed)");
+                return;
+            }
             for (uint8_t i = 0; i < NUM_MOTORS; i++) {
                 uint8_t id = MOTOR_IDS[i];
                 dxl.writeControlTableItem(PROFILE_ACCELERATION, id, acc);
@@ -334,7 +349,10 @@ void processCommand(const char* json) {
             dxl.torqueOff(target_id);
             dxl.writeControlTableItem(CURRENT_LIMIT, target_id, current_val);
 
-            // Re-enable torque and restore position mode
+            // Re-apply operating mode and profile before re-enabling torque
+            dxl.setOperatingMode(target_id, OP_POSITION);
+            dxl.writeControlTableItem(PROFILE_VELOCITY, target_id, PROF_VEL_VALUE);
+            dxl.writeControlTableItem(PROFILE_ACCELERATION, target_id, PROF_ACC_VALUE);
             dxl.torqueOn(target_id);
 
             PI_SERIAL.print("{\"status\":\"current_limit_set\",\"id\":");
@@ -347,11 +365,11 @@ void processCommand(const char* json) {
 
         if (strcmp(cmd, "read_current") == 0) {
             // Read Present Current of all 5 motors and send back as JSON
-            // Present Current (addr 126, 2 bytes) reports current in mA
+            // Present Current (addr 146, 2 bytes) reports current in mA
             // (1 unit ≈ 1 mA on XM430/XM540; 1 unit ≈ 1 mA on XL430).
             JsonDocument resp;
             for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-                char key[4];
+                char key[5];
                 snprintf(key, sizeof(key), "m%d", MOTOR_IDS[i]);
                 resp[key] = (int16_t)dxl.readControlTableItem(PRESENT_CURRENT, MOTOR_IDS[i]);
             }

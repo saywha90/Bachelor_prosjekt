@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import cv2
 import numpy as np
-import sys
 from pathlib import Path
 
 from vision.camera import OAKCamera
@@ -138,7 +137,7 @@ class HSVTuner:
         
         try:
             # Bruk Path for sikker filhåndtering
-            output_path = Path.cwd() / filename
+            output_path = Path(__file__).resolve().parent / filename
             
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write("HSV KALIBRERINGSVERDIER\n")
@@ -158,10 +157,7 @@ class HSVTuner:
             print(f"✓ Verdier lagret til {output_path}")
         
         except Exception as e:
-            print(f"❌ FEIL ved lagring. Prøv igjen.")
-            # Log detaljert feil for debugging
-            import logging
-            logging.error(f"Lagringsfeil: {e}")
+            print(f"❌ Save failed: {e}")
     
     def run(self):
         """Hovedløkke"""

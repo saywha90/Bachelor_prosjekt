@@ -94,11 +94,14 @@ CLEARANCE_HEIGHT = 15.0  # Reduced from 28.0; 15 is plenty of room and prevents 
 GRAB_HEIGHT_SLOPE     = 0.05   # cm extra Z per cm of horizontal distance (applied everywhere)
 GRAB_HEIGHT_MAX       = 5.0    # cm – absolute maximum grab height
 
-# DEPRECATED: APPROACH_HEIGHT was used by the old 2-step approach
-# (descend to approach height, then to grab height). Replaced with a
-# single direct move to GRAB_HEIGHT (see ADR-003). Retained only for
-# calibration script 08_pick_test.py which still uses it as an
-# intermediate safety height during manual testing.
+# ──────────────────────────────────────────────────────────────────────
+# DEPRECATED — APPROACH_HEIGHT
+#   Was used by the old 2-step approach (descend to approach height,
+#   then to grab height).  Replaced with a single direct move to
+#   GRAB_HEIGHT (see ADR-003).  Use compute_grab_height() instead.
+#   Retained *only* for calibration script 08_pick_test.py which still
+#   uses it as an intermediate safety height during manual testing.
+# ──────────────────────────────────────────────────────────────────────
 APPROACH_HEIGHT  = 24.0
 
 # ── Timing (seconds) ─────────────────────────────────────────────────
@@ -189,6 +192,10 @@ STARTUP_PROFILE_ACC = 15    # gentle ramp-up / ramp-down
 # 0.0 = horizontal; negative values limit the tilt before horizontal.
 MAX_REACH_PITCH = 0.0
 
+# ── Claw motor positions (Dynamixel steps) ─────────────────────────
+CLAW_OPEN_POS   = 2016    # open/neutral position for gripper
+CLAW_CLOSED_POS = 2890    # closed/grip position (tune on real hardware — must be the EMPTY jaws-touching position)
+
 # ── Grip verification ──────────────────────────────────────────────
 GRIP_VERIFY_TOLERANCE = 30        # Dynamixel steps: if claw pos is within this of CLAW_CLOSED_POS, grip failed
 GRIP_LOAD_THRESHOLD   = 50        # Minimum absolute load value to confirm grip (from read_load)
@@ -209,28 +216,45 @@ DEFAULT_PROFILE_ACC   = 20        # normal operating acceleration
 M5_DEFAULT_CURRENT_LIMIT = 1193   # XM430-W350 factory default current limit in mA
 
 
-def _interpolate_height(distance: float, calibration: List[dict]) -> float:
-    """Linearly interpolate the grab Z from calibrated (distance, z) pairs.
+def _interpolate_field(distance: float, calibration: List[dict], field: str) -> float:
+    """Generic clamped linear interpolation over a sorted calibration list.
 
-    If *distance* is outside the calibrated range the nearest endpoint value
-    is returned (i.e. clamped extrapolation).
+    Parameters
+    ----------
+    distance : float
+        The horizontal distance to interpolate at.
+    calibration : list of dict
+        Sorted list of ``{"distance": float, field: float}`` entries.
+    field : str
+        The dictionary key to interpolate (e.g. ``"z"`` or ``"m4_offset"``).
+
+    Returns
+    -------
+    float
+        Interpolated value.  If *distance* is outside the calibrated range
+        the nearest endpoint value is returned (clamped extrapolation).
     """
-    # calibration is already sorted by distance
     if distance <= calibration[0]["distance"]:
-        return calibration[0]["z"]
+        return float(calibration[0][field])
     if distance >= calibration[-1]["distance"]:
-        return calibration[-1]["z"]
+        return float(calibration[-1][field])
 
-    # Find the two surrounding points
     for j in range(len(calibration) - 1):
-        d0, z0 = calibration[j]["distance"], calibration[j]["z"]
-        d1, z1 = calibration[j + 1]["distance"], calibration[j + 1]["z"]
+        d0 = calibration[j]["distance"]
+        v0 = calibration[j][field]
+        d1 = calibration[j + 1]["distance"]
+        v1 = calibration[j + 1][field]
         if d0 <= distance <= d1:
             t = (distance - d0) / (d1 - d0) if d1 != d0 else 0.0
-            return z0 + t * (z1 - z0)
+            return v0 + t * (v1 - v0)
 
     # Fallback (should not happen)
-    return calibration[-1]["z"]
+    return float(calibration[-1][field])
+
+
+def _interpolate_height(distance: float, calibration: List[dict]) -> float:
+    """Linearly interpolate the grab Z from calibrated (distance, z) pairs."""
+    return _interpolate_field(distance, calibration, "z")
 
 
 def compute_grab_height(x: float, y: float) -> float:
@@ -315,26 +339,8 @@ def load_wrist_calibration() -> Optional[List[dict]]:
 
 
 def _interpolate_wrist(distance: float, calibration: List[dict]) -> int:
-    """Linearly interpolate the m4 offset from calibrated (distance, m4_offset) pairs.
-
-    If *distance* is outside the calibrated range the nearest endpoint value
-    is returned (i.e. clamped extrapolation).
-    """
-    if distance <= calibration[0]["distance"]:
-        return int(calibration[0]["m4_offset"])
-    if distance >= calibration[-1]["distance"]:
-        return int(calibration[-1]["m4_offset"])
-
-    for j in range(len(calibration) - 1):
-        d0 = calibration[j]["distance"]
-        o0 = calibration[j]["m4_offset"]
-        d1 = calibration[j + 1]["distance"]
-        o1 = calibration[j + 1]["m4_offset"]
-        if d0 <= distance <= d1:
-            t = (distance - d0) / (d1 - d0) if d1 != d0 else 0.0
-            return int(round(o0 + t * (o1 - o0)))
-
-    return int(calibration[-1]["m4_offset"])
+    """Linearly interpolate the m4 offset from calibrated (distance, m4_offset) pairs."""
+    return int(round(_interpolate_field(distance, calibration, "m4_offset")))
 
 
 def compute_wrist_correction(x: float, y: float) -> int:
@@ -382,12 +388,8 @@ def get_bin_coords(color_string: str) -> tuple:
     Returns
     -------
     tuple
-        ``(x, y, z)`` coordinates of the bin.
-
-    Raises
-    ------
-    KeyError
-        If no matching bin is found, falls back to ``REJECT_BIN``.
+        ``(x, y, z)`` coordinates of the bin.  If no matching bin is
+        found, silently falls back to ``REJECT_BIN`` and logs a warning.
     """
     key = color_string.upper().strip()
     if not key.endswith("_BIN"):

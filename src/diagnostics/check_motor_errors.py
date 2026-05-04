@@ -51,31 +51,34 @@ def main():
         print(f"Failed to connect: {e}")
         return
 
-    print("Sending 'read_errors' command...")
-    cmd = json.dumps({"cmd": "read_errors"}) + "\n"
-    ser.write(cmd.encode("utf-8"))
-    
-    resp_raw = ser.readline().decode("utf-8").strip()
-    if not resp_raw:
-        print("No response from OpenRB-150. Are you sure you uploaded the new firmware?")
-        return
-    
     try:
-        errors = json.loads(resp_raw)
-        print("\n=== HARDWARE ERROR STATUS ===")
-        for motor_key, status in errors.items():
-            parsed = parse_error_status(status)
-            if not parsed:
-                print(f"  {motor_key.upper()}: OK (0)")
-            else:
-                print(f"  {motor_key.upper()}: ERROR ({status}) -> {', '.join(parsed)}")
-                
-        print("\nNote: Once a motor is in an error state (blinking red), you MUST")
-        print("disconnect its 12V power to clear the error. Software commands")
-        print("cannot magically reset the physical hardware error flag.")
-        
-    except json.JSONDecodeError:
-        print(f"Failed to parse response: {resp_raw}")
+        print("Sending 'read_errors' command...")
+        cmd = json.dumps({"cmd": "read_errors"}) + "\n"
+        ser.write(cmd.encode("utf-8"))
+
+        resp_raw = ser.readline().decode("utf-8").strip()
+        if not resp_raw:
+            print("No response from OpenRB-150. Are you sure you uploaded the new firmware?")
+            return
+
+        try:
+            errors = json.loads(resp_raw)
+            print("\n=== HARDWARE ERROR STATUS ===")
+            for motor_key, status in errors.items():
+                parsed = parse_error_status(status)
+                if not parsed:
+                    print(f"  {motor_key.upper()}: OK (0)")
+                else:
+                    print(f"  {motor_key.upper()}: ERROR ({status}) -> {', '.join(parsed)}")
+
+            print("\nNote: Once a motor is in an error state (blinking red), you MUST")
+            print("disconnect its 12V power to clear the error. Software commands")
+            print("cannot magically reset the physical hardware error flag.")
+
+        except json.JSONDecodeError:
+            print(f"Failed to parse response: {resp_raw}")
+    finally:
+        ser.close()
 
 if __name__ == "__main__":
     main()
