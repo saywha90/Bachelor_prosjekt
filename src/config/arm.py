@@ -24,6 +24,7 @@ _height_calibration_cache: Optional[List[dict]] = None
 _height_calibration_loaded: bool = False
 
 CALIBRATION_FILE = Path(__file__).resolve().parent.parent / "calibration" / "homography_calibration.json"
+BIN_CALIBRATION_FILE = Path(__file__).resolve().parent.parent / "calibration" / "bin_calibration.json"
 
 
 def load_height_calibration() -> Optional[List[dict]]:
@@ -302,6 +303,31 @@ def compute_grab_height(x: float, y: float) -> float:
     return grab_z
 
 
+# ── Bin calibration cache ─────────────────────────────────────────────
+_bin_cal_cache: dict | None = None
+_bin_cal_loaded: bool = False
+
+
+def load_bin_calibration() -> dict | None:
+    """Load bin calibration from bin_calibration.json.
+    Returns the 'bins' dict or None if file not found.
+    Caches result after first load.
+    """
+    global _bin_cal_cache, _bin_cal_loaded
+    if _bin_cal_loaded:
+        return _bin_cal_cache
+    _bin_cal_loaded = True
+    if BIN_CALIBRATION_FILE.exists():
+        try:
+            with open(BIN_CALIBRATION_FILE, "r") as f:
+                data = json.load(f)
+            _bin_cal_cache = data.get("bins", None)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"[arm.py] WARNING: failed to load bin calibration: {exc}")
+            _bin_cal_cache = None
+    return _bin_cal_cache
+
+
 # ── Wrist calibration cache ───────────────────────────────────────────
 _wrist_calibration_cache: Optional[List[dict]] = None
 _wrist_calibration_loaded: bool = False
@@ -376,27 +402,32 @@ def compute_wrist_correction(x: float, y: float) -> int:
 
 
 def get_bin_coords(color_string: str) -> tuple:
-    """Return the (x, y, z) coordinates for the named bin.
+    """Return (x, y, z) for the given bin colour.
 
-    Parameters
-    ----------
-    color_string : str
-        A colour label such as ``"red"``, ``"BLUE"``, or ``"Red"``.
-        The lookup is case-insensitive and appends ``_BIN`` automatically
-        if needed.
-
-    Returns
-    -------
-    tuple
-        ``(x, y, z)`` coordinates of the bin.  If no matching bin is
-        found, silently falls back to ``REJECT_BIN`` and logs a warning.
+    Checks calibrated positions first, falls back to hardcoded BINS.
     """
     key = color_string.upper().strip()
     if not key.endswith("_BIN"):
         key += "_BIN"
 
+    # Try calibrated positions first
+    cal = load_bin_calibration()
+    if cal and key in cal:
+        entry = cal[key]
+        return (entry["x"], entry["y"], entry["z"])
+
+    # Fallback to hardcoded
     if key in BINS:
         return BINS[key]
-
-    logger.warning("[CONFIG] ⚠️  Unknown colour '%s' → routing to REJECT_BIN", color_string)
     return BINS["REJECT_BIN"]
+
+
+def get_bin_m4_offset(color_string: str) -> int:
+    """Return the calibrated m4_offset for a bin, or 0 if not calibrated."""
+    key = color_string.upper().strip()
+    if not key.endswith("_BIN"):
+        key += "_BIN"
+    cal = load_bin_calibration()
+    if cal and key in cal:
+        return cal[key].get("m4_offset", 0)
+    return 0

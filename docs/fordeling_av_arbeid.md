@@ -79,11 +79,12 @@ binder IK til den virkelige verden."*
 | Fil | Hva den gjør |
 |-----|--------------|
 | `firmware/openrb_bridge/openrb_bridge.ino` ⭐ | OpenRB-150 firmware (Arduino/C++). USB-bro mellom Raspberry Pi og 5 daisy-chained Dynamixel-motorer. JSON-protokoll over seriell. |
-| `src/main.py` ⭐ | Hovedløkken — orkestrerer scan → detect → pick → place. Kobler IK, vision og firmware sammen. Inneholder retry-logikk og grip-verifikasjon. |
-| `src/config/arm.py` | Fysiske konstanter, bin-posisjoner, `SCAN_POSE`, `HOME_POSITION`, link-lengder (L1/L2/L3), grab heights, sag-modell parametere, `MAX_REACH_PITCH`, `compute_grab_height()`, `compute_wrist_correction()`. Bindeleddet mellom IK og virkelig geometri. |
+| `src/main.py` ⭐ | Hovedløkken — orkestrerer scan → detect → pick → place. Kobler IK, vision og firmware sammen. Inneholder retry-logikk, grip-verifikasjon og bin-kalibrerings-integrasjon (SORTING/DROPPING-states bruker kalibrerte bin-posisjoner). |
+| `src/config/arm.py` | Fysiske konstanter, bin-posisjoner, `SCAN_POSE`, `HOME_POSITION`, link-lengder (L1/L2/L3), grab heights, sag-modell parametere, `MAX_REACH_PITCH`, `compute_grab_height()`, `compute_wrist_correction()`, `load_bin_calibration()`, `get_bin_coords()`, `get_bin_m4_offset()`. Bindeleddet mellom IK og virkelig geometri. |
 | `src/simulation/mock_serial.py` | Falsk seriell-port for testing av `main.py` uten fysisk hardware. |
 | `src/calibration/02_joints.py` | Kalibrerer null-punkter for hver motor (sign + zero offset). |
 | `src/calibration/02b_claw.py` | Kalibrerer klo-åpning og lukket-posisjon. |
+| `src/calibration/10_bin_calibration.py` | Interaktiv bin-posisjon-kalibrering med WASD-styring + limp mode. Lagrer kalibrerte bin-koordinater til JSON. |
 | `src/calibration/08_pick_test.py` | End-to-end pick-test med en kjent ball-posisjon. |
 | `scripts/manual_tests/record_stats.py` | Tar opp ytelses-statistikk (latens, FPS, syklustid) under kjøring for `docs/performance.md`. |
 
@@ -106,6 +107,9 @@ binder IK til den virkelige verden."*
 - Retry-logikk og feilhåndtering på system-nivå
 - Mock-seriell for hardware-løs testing
 - Motor-kalibrering (joints, claw)
+- Bin-kalibrering — interaktiv WASD-styring + limp mode for presis plassering av bin-koordinater
+- `load_bin_calibration()` / `get_bin_coords()` / `get_bin_m4_offset()` — dynamisk lasting og oppslag av kalibrerte bin-posisjoner
+- SORTING/DROPPING-states i `main.py` — bruk av kalibrerte bin-posisjoner for presist ball-avkast
 - End-to-end pick-test integrasjon
 
 ---
@@ -170,7 +174,7 @@ presentasjoner:
 | `pyproject.toml` | Pakke-konfigurasjon, pytest-oppsett. |
 | `requirements.txt` / `Pipfile` | Dependencies. |
 | `docs/fordeling_av_arbeid.md` | Dette dokumentet — fordeling av arbeid mellom U, F og O. |
-| `src/calibration/README.md` | Oversikt over alle kalibreringsstegene 02–09 (alle tre eier ulike steg). |
+| `src/calibration/README.md` | Oversikt over alle kalibreringsstegene 02–10 (alle tre eier ulike steg). |
 | `scripts/manual_tests/README.md` | Beskriver `manual_tests/`-mappen og demo-scriptene. |
 
 ---
@@ -179,11 +183,11 @@ presentasjoner:
 
 | Eier | Kode-filer | Dokumenter | Totalt |
 |------|-----------:|-----------:|-------:|
-| **U** | 13 | 5 | **18** |
-| **F** | 8 | 3 | **11** |
-| **O** | 16 | 3 | **19** |
-| Felles | 5 | 2 | **7** |
-| **Sum** | **42** | **13** | **55** |
+| **U** |    13     |      5     | **18** |
+| **F** |    9      |      3     | **12** |
+| **O** |    16     |      3     | **19** |
+| Felles |    5     |      2     | **7**  |
+| **Sum** |  **43** |   **13**   | **56** |
 
 > *Antall ADRs (designvalg) per person: U har 3 (002, 003, 004) + hardware-valg, F har 0 dedikerte, O har 1 (001).*
 
@@ -233,7 +237,7 @@ presentasjoner:
 | Vision-pipeline (kamera, deteksjon, klassifisering) | **O** |
 | System-integrasjon (main.py, hovedløkke) | **F** |
 | Kalibrering — IK-relatert (sag, scan-pose, touch) | **U** |
-| Kalibrering — motor (joints, claw) | **F** |
+| Kalibrering — motor (joints, claw, bin) | **F** |
 | Kalibrering — vision (HSV, homografi-offset) | **O** |
 | Motor-diagnostikk & termal-beskyttelse | **U** |
 | Feilsøking & troubleshooting | **U** |
