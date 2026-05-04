@@ -45,6 +45,8 @@ import serial
 from ik.solver import ArmIK
 from config.arm import (
     get_bin_coords,
+    get_bin_m4_offset,
+    load_bin_calibration,
     compute_grab_height,
     compute_wrist_correction,
     load_height_calibration,
@@ -798,6 +800,13 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     # apply its own sag compensation (avoids double-compensation).
     has_touch_cal = load_height_calibration() is not None
 
+    # Check bin calibration availability
+    has_bin_cal = load_bin_calibration() is not None
+    if has_bin_cal:
+        logger.info("Bin calibration loaded — sorting to calibrated bin positions")
+    else:
+        logger.info("No bin calibration — using hardcoded bin positions")
+
     # Single full move — descend to grab height in one motion
     last_ik = send_command(
         ser, arm, obj_x, obj_y, grab_z,
@@ -862,25 +871,41 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
         settle_time=0.5
     )
 
-    # ── 4. MOVE TO SCAN POSE ─────────────────────────────────────────
-    log_state(State.SORTING, "Returning to SCAN_POSE to drop the ball")
+    # ── 4. SORTING — move to the correct colour bin ───────────────────
+    bx, by, bz = get_bin_coords(colour)
+    bin_m4 = get_bin_m4_offset(colour)
+    log_state(State.SORTING, f"Moving {colour.upper()} ball to bin at ({bx:.1f}, {by:.1f}, {bz:.1f})")
     if timer:
         timer.start_phase("sort")
-    send_scan_pose(ser, viz=viz, claw_override=CLAW_CLOSED_POS)
 
-    # Small delay to let the arm stabilise before releasing
-    time.sleep(0.5)
+    # Move to bin position (arm is already at CLEARANCE_HEIGHT with ball)
+    last_ik = send_command(
+        ser, arm, bx, by, bz,
+        label=f"Moving to {colour.upper()} bin",
+        viz=viz,
+        claw_override=CLAW_CLOSED_POS,
+        m4_offset=bin_m4,
+    )
 
-    # ── 5. DROPPING ──────────────────────────────────────────────────
-    log_state(State.DROPPING, f"Releasing {colour.upper()} ball at SCAN_POSE")
+    # ── 5. DROPPING — release at the bin ─────────────────────────────
+    log_state(State.DROPPING, f"Releasing {colour.upper()} ball at bin")
     if timer:
         timer.start_phase("drop")
     print(f"  📤  [CLAW] Opening... (dwell {RELEASE_DWELL}s)")
     # Restore normal current limit for opening and for the next cycle
     send_raw_command(ser, {"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT})
-    send_claw(ser, SCAN_POSE, CLAW_OPEN_POS, label="OPEN grip (release)")
+    send_claw(ser, last_ik, CLAW_OPEN_POS, label="OPEN grip (release at bin)")
     time.sleep(RELEASE_DWELL)
-    print("  📤  [CLAW] Object released at SCAN_POSE")
+    print(f"  📤  [CLAW] {colour.upper()} ball released at bin")
+
+    # Lift to clearance height before returning to scan pose
+    send_command(
+        ser, arm, bx, by, CLEARANCE_HEIGHT,
+        label="Lifting clear after drop",
+        viz=viz,
+        claw_override=CLAW_OPEN_POS,
+        settle_time=0.5,
+    )
 
     log_state(State.DONE, "Cycle complete ✅")
     return True
