@@ -74,7 +74,7 @@ from config import vision as vcfg
 from config.arm import (
     SCAN_POSE, SCAN_POSE_TOLERANCE, GRAB_HEIGHT, CLEARANCE_HEIGHT,
     compute_grab_height, compute_wrist_correction,
-    M3_SCAN_CURRENT_LIMIT, M3_DEFAULT_CURRENT_LIMIT, HOME_POSITION
+    HOME_POSITION
 )
 from ik.solver import ArmIK
 
@@ -88,6 +88,33 @@ CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.jso
 
 SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
+
+# Limp-mode coarse points are physically recorded close to the desk.  When
+# re-entering IK-driven fine-tune, sag is disabled in the solver commands below,
+# so long reaches need a much higher start height than near reaches.
+LIMP_FINE_TUNE_MIN_Z = 10.0
+LIMP_FINE_TUNE_ABOVE_COARSE_Z = 5.0
+LIMP_FINE_TUNE_SAG_Z_PER_CM = 0.55
+LIMP_FINE_TUNE_FAR_REACH_CM = 50.0
+LIMP_FINE_TUNE_FAR_MIN_Z = 30.0
+
+
+def _limp_fine_tune_start_height(x: float, y: float, coarse_z: float) -> Tuple[float, float]:
+    """Return a reach/sag-aware safe Z for limp-mode fine-tune startup.
+
+    The returned height is intentionally conservative because the subsequent
+    movement uses sag-disabled IK while the arm may be fully extended.
+    """
+    reach = math.hypot(x, y)
+    sag_safe_z = reach * LIMP_FINE_TUNE_SAG_Z_PER_CM
+    far_reach_floor = LIMP_FINE_TUNE_FAR_MIN_Z if reach >= LIMP_FINE_TUNE_FAR_REACH_CM else 0.0
+    start_z = max(
+        coarse_z + LIMP_FINE_TUNE_ABOVE_COARSE_Z,
+        LIMP_FINE_TUNE_MIN_Z,
+        sag_safe_z,
+        far_reach_floor,
+    )
+    return start_z, reach
 
 # ── Manual-click state (fallback) ─────────────────────────────────────
 _clicked_points: List[Tuple[int, int]] = []
@@ -171,11 +198,10 @@ def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
         (solution_dict, firmware_response)
     """
     try:
-        solution = arm.solve(x, y, z, skip_sag=True, strict=True)
+        solution = arm.solve(x, y, z, skip_sag=True, strict=True, m4_offset=m4_offset)
     except ValueError as e:
         print(f"  ⚠️  Target unreachable: {e}")
         return None, None
-    solution["m4"] = max(500, min(3500, solution["m4"] + m4_offset))
     solution["m5"] = claw_override
     cmd_json = json.dumps(solution)
     ser.write((cmd_json + "\n").encode())
@@ -187,9 +213,6 @@ def _move_to_scan_pose(ser):
     print("[ARM] Moving arm to SCAN_POSE for calibration...")
     send_raw_command(ser, SCAN_POSE)
     time.sleep(2)
-    if M3_SCAN_CURRENT_LIMIT > 0:
-        print(f"[ARM] Applying M3 thermal limit ({M3_SCAN_CURRENT_LIMIT} mA)")
-        send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_SCAN_CURRENT_LIMIT})
     print("[ARM] ✅ Arm is at SCAN_POSE.\n")
 
 
@@ -435,10 +458,6 @@ def _touch_phase(ser, arm: ArmIK,
     the standard WASD/UJ movement.  The learned m4 offset is saved per point
     and later used for runtime wrist correction.
     """
-    if M3_DEFAULT_CURRENT_LIMIT > 0:
-        print(f"\n[ARM] Restoring M3 full power for manual driving ({M3_DEFAULT_CURRENT_LIMIT} mA)")
-        send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_DEFAULT_CURRENT_LIMIT})
-
     cm_points: List[Tuple[float, float, float, int]] = []
     n = len(pixel_points)
 
@@ -469,14 +488,30 @@ def _touch_phase(ser, arm: ArmIK,
     print(f"{'─'*60}")
 
     for i in range(n):
+        # Clear any latched motor errors (e.g. M4 overload from previous
+        # point) so the next point starts with a clean slate.
+        send_raw_command(ser, {"cmd": "clear_errors"})
+        time.sleep(0.3)
+
         label = f"Ball #{i+1}/{n}"
         px, py = pixel_points[i]
         
         if coarse_cm_points is not None:
             target_x, target_y, target_z, m4_offset = coarse_cm_points[i]
+            # BUG FIX: Don't descend all the way to the coarse target_z.
+            # The coarse Z comes from limp-mode (manual positioning near the desk,
+            # typically 0–3 cm).  IK-driven motion behaves differently (sag,
+            # compliance), so descending to that height crashes the arm into the
+            # desk.  Start at a safe height above the coarse Z and let the user
+            # lower manually with J key.
+            fine_tune_start_z, fine_tune_reach = _limp_fine_tune_start_height(
+                target_x, target_y, target_z
+            )
             step = 0.10  # Fine tuning step size
             print(f"\n  👉  Target: {label}  (pixel {px:.0f}, {py:.0f})")
-            print(f"       Auto-driving to coarse point: X={target_x:.1f}, Y={target_y:.1f}, Z={target_z:.1f}")
+            print(f"       Coarse point: X={target_x:.1f}, Y={target_y:.1f}, Z={target_z:.1f}")
+            print(f"       Fine-tune safe start: reach={fine_tune_reach:.1f} cm → "
+                  f"Z={fine_tune_start_z:.1f} cm (use J to lower)")
         else:
             if prev_homography is not None:
                 pt = np.float32([[[px, py]]])
@@ -501,12 +536,25 @@ def _touch_phase(ser, arm: ArmIK,
         # Move to clearance height above the new target with NO wrist offset.
         # (Pre-tilting the wrist while the arm is fully extended at clearance height 
         # causes the claw to point up and crash into the elbow bracket)
-        send_ik_command(ser, arm, target_x, target_y, CLEARANCE_HEIGHT)
+        approach_z = max(
+            CLEARANCE_HEIGHT,
+            fine_tune_start_z if coarse_cm_points is not None else target_z,
+        )
+        if coarse_cm_points is not None:
+            print(f"       Initial approach: Z={approach_z:.1f} cm "
+                  f"(max of clearance {CLEARANCE_HEIGHT:.1f} and safe start {fine_tune_start_z:.1f})")
+        send_ik_command(ser, arm, target_x, target_y, approach_z)
         time.sleep(0.5)
         
-        # Lower down and apply the wrist offset gently
-        send_ik_with_m4_offset(ser, arm, target_x, target_y, target_z, m4_offset)
+        # Lower down and apply the wrist offset gently.
+        # When fine-tuning from limp-mode coarse data, use the safe starting
+        # height instead of the raw coarse Z (which is near the desk surface).
+        descent_z = fine_tune_start_z if coarse_cm_points is not None else target_z
+        send_ik_with_m4_offset(ser, arm, target_x, target_y, descent_z, m4_offset)
         time.sleep(0.5)
+        # Update target_z so the keyboard loop starts at the safe height
+        if coarse_cm_points is not None:
+            target_z = fine_tune_start_z
         
         # Restore normal velocity for WASD manual driving
         send_raw_command(ser, {"cmd": "set_profile", "vel": 80, "acc": 20})
@@ -631,10 +679,6 @@ def _limp_touch_phase(ser, arm: ArmIK,
     list[tuple[float, float, float, int]]
         Recorded (x, y, z, m4_offset) for each ball.
     """
-    if M3_DEFAULT_CURRENT_LIMIT > 0:
-        print(f"\n[ARM] Restoring M3 full power ({M3_DEFAULT_CURRENT_LIMIT} mA)")
-        send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_DEFAULT_CURRENT_LIMIT})
-
     cm_points: List[Tuple[float, float, float, int]] = []
     n = len(pixel_points)
 
@@ -755,8 +799,20 @@ def _limp_touch_phase(ser, arm: ArmIK,
                     # Calculate relative m4_offset (delta from IK).
                     # The calibration system expects offsets relative to the IK baseline.
                     try:
-                        ik_sol = arm.solve(fk_x, fk_y, fk_z, skip_sag=True)
-                        fk_m4_offset = int(positions["m4"] - ik_sol["m4"])
+                        fk_m4_offset_raw = int(fk.get("replay_m4_offset", 0))
+                        # BUG FIX: Clamp m4 offset to protect the XL430 wrist
+                        # motor from overload.  During limp mode the user can
+                        # position M4 freely, producing offsets of 800+ steps
+                        # in final claw pitch.  Commanding such a large offset
+                        # causes the weak XL430 (~1.0 N·m) to fight gravity at
+                        # an extreme angle, triggering a hardware overload (red LED).
+                        MAX_M4_OFFSET = 200  # protect XL430 from overload
+                        fk_m4_offset = max(-MAX_M4_OFFSET, min(MAX_M4_OFFSET, fk_m4_offset_raw))
+                        if fk_m4_offset != fk_m4_offset_raw:
+                            print(
+                                f"       ⚠️  Wrist replay offset clipped from {fk_m4_offset_raw:+d} "
+                                f"to {fk_m4_offset:+d} steps for XL430 safety; XYZ replay remains geometric."
+                            )
                     except Exception:
                         fk_m4_offset = 0
                 except Exception as e:
@@ -767,7 +823,8 @@ def _limp_touch_phase(ser, arm: ArmIK,
                 print(f"       📐 Motor positions: m1={positions['m1']}, m2={positions['m2']}, "
                       f"m3={positions['m3']}, m4={positions['m4']}")
                 print(f"       📍 Computed:  X={fk_x:.2f} cm,  Y={fk_y:.2f} cm,  "
-                      f"Z={fk_z:.2f} cm,  m4_offset={fk_m4_offset:+d}")
+                      f"Z={fk_z:.2f} cm,  pitch={fk.get('theta_pitch_deg', 0.0):+.1f}°, "
+                      f"replay_m4_offset={fk_m4_offset:+d}")
 
                 # ── Confirm or retry ─────────────────────────────────────
                 confirm = input("       Accept? (Enter=yes, r=retry): ").strip().lower()
@@ -1053,6 +1110,11 @@ def main():
                 print("\n  [Phase 2b] Fine-Tune (WASD Mode)")
                 print("  Returning to SCAN_POSE before fine-tuning...")
                 _move_to_scan_pose(ser)
+                
+                # Clear any latched motor errors (e.g. M4 overload from limp
+                # mode) before starting fine-tuning with active IK control.
+                send_raw_command(ser, {"cmd": "clear_errors"})
+                time.sleep(0.3)
                 
                 cm_points = _touch_phase(ser, arm, pixel_points, coarse_cm_points=coarse_cm_points)
                 break

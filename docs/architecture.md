@@ -7,7 +7,7 @@ Bachelor Project 2026
 
 ## 1. System Overview
 
-Autonomia is an autonomous sorting system that uses a Luxonis OAK-D camera to detect coloured balls (red and blue) on a workspace, computes inverse kinematics for a 4-DOF robotic arm, and commands five Dynamixel servos via serial to pick up each ball and place it in the correct sorting bin. The system runs a continuous scan → approach → pick → sort → rescan loop, operating without human intervention once calibrated.
+Autonomia is an autonomous sorting system that uses a Luxonis OAK-D camera to detect coloured balls (red and blue) on a workspace, computes inverse kinematics for a 4-DOF robotic arm, and commands five Dynamixel servos via serial to pick up each ball and place it in the correct rear sorting bin. Rear placement uses a calibrated fold-over route: the arm reaches behind the robot by folding over the top while base yaw stays limited, rather than rotating the base 180°. The system runs a continuous scan → approach → pick → sort → rescan loop, operating without human intervention once calibrated.
 
 The following diagram shows the data flow from camera frame to servo command.
 
@@ -33,7 +33,7 @@ flowchart TD
     end
 
     subgraph Config ["Config (src/config/)"]
-        ARMCFG["arm.py\nL1=25.5 L2=23.0 L3=22.0 cm"]
+        ARMCFG["arm.py\nL1=25.5 L2=23.0 L3=22.0 cm\nrear route schema"]
         VISCFG["vision.py\nHSV ranges, camera params"]
     end
 
@@ -192,6 +192,7 @@ Key features:
 - **Shoulder height**: subtracts `shoulder_height` (33.0 cm) to convert workspace Z to the shoulder-relative frame
 - **Joint limits**: clamps motor positions to safe ranges to prevent hardware overload errors
 - **Partial-move interpolation**: `calculate_partial_move()` interpolates in Cartesian space (utility for tests/demos; production uses a single direct move — see ADR-003)
+- **Strict route solving**: [`solve_strict()`](../src/ik/solver.py:525) is used for production route prevalidation, including rear fold-over placement with a configured base-yaw guard.
 
 | Property | Detail |
 |---|---|
@@ -234,11 +235,13 @@ Configuration is split into two modules:
 
 **`src/config/arm.py`** — Physical arm parameters:
 - `HOME_POSITION` = (20.0, 0.0, 30.0) cm — safe resting position
-- `GRAB_HEIGHT` = 13.0 cm — Z when closing the claw (formula fallback)
-- `CLEARANCE_HEIGHT` = 28.0 cm — Z to lift to before traversing
+- `GRAB_HEIGHT` = 2.0 cm — base Z for formula fallback before distance adjustment
+- `CLEARANCE_HEIGHT` = 15.0 cm — clearance Z used for pickup recovery and route planning
 - `VERIFY_HEIGHT` = 8.0 cm — Z to lift to for grip verification
 - `CAMERA_OFFSET_X/Y` = 0.0 cm — fine-tuning offset (homography maps directly to shoulder frame)
-- `BINS` — colour-to-position mapping: `RED_BIN` (20, 8, 10), `BLUE_BIN` (20, −8, 10), `REJECT_BIN` (25, 0, 12)
+- Production rear transport route loading from [`bin_calibration.json`](../src/calibration/bin_calibration.json): required shared waypoints `front_neutral` and `rear_transfer`, plus `approach` and `drop` poses for `RED_BIN` and `BLUE_BIN`.
+- `DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG` = 45.0° — default symmetric yaw guard for rear fold-over route waypoints; the route schema may override it with `rear_base_yaw_limit_deg`.
+- The real setup uses only `RED_BIN` and `BLUE_BIN` for rear placement. No `REJECT_BIN` is used in production routing; no-grip / air-pick cases return to scan/look-again.
 - Timing: `GRAB_DWELL` = 0.8 s, `RELEASE_DWELL` = 0.5 s
 - Grip verification: `GRIP_VERIFY_TOLERANCE` = 30 steps, `GRIP_LOAD_THRESHOLD` = 50, `MAX_PICK_RETRIES` = 2
 - [`compute_grab_height(x, y)`](../src/config/arm.py) — returns the correct grab Z for a given ball position by linearly interpolating over `height_calibration` data from `homography_calibration.json`. Falls back to the formula-based `GRAB_HEIGHT` constant when no touch calibration data exists.
@@ -268,11 +271,11 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 | `IDLE` | Arm is at HOME, waiting. Logs detection details before a cycle begins. |
 | `MOVE_TO_SCAN_POSE` | Move the arm to `SCAN_POSE` so the wrist-mounted camera has a valid view of the workspace. |
 | `SCANNING` | `VisionBridge.scan_for_balls()` captures frames and returns detections. |
-| `APPROACHING` | Single direct move to `(obj_x, obj_y, GRAB_HEIGHT)`. |
-| `GRABBING` | Close the claw, wait `GRAB_DWELL`, lift to `VERIFY_HEIGHT`. |
-| `VERIFY_GRIP` | Grip verification via position check and load check. On failure, open claw and immediately re-scan (up to `MAX_PICK_RETRIES` attempts before skipping). On success, lift to `CLEARANCE_HEIGHT` and continue. |
-| `SORTING` | Return to `HOME_POSITION` while carrying the ball. |
-| `DROPPING` | Open the claw at HOME, wait `RELEASE_DWELL`. |
+| `APPROACHING` | Single direct move to the computed grab pose using touch-calibrated or formula fallback Z plus wrist correction. |
+| `GRABBING` | Run adaptive grip by closing the claw gently and watching load/position feedback. |
+| `VERIFY_GRIP` | If adaptive grip is inconclusive, use position/load fallback verification. On failure, open claw, retreat through the prevalidated pickup recovery waypoint, then return to scan/look-again. |
+| `SORTING` | Move the confirmed ball through the prevalidated rear route: `front_neutral` → `rear_transfer` → bin `approach` → bin `drop`. |
+| `DROPPING` | Open the claw at the validated rear drop pose, wait `RELEASE_DWELL`. |
 | `DONE` | Cycle complete. Control returns to the main loop for the next scan. |
 
 ### 3.2 State Diagram
@@ -288,18 +291,17 @@ stateDiagram-v2
 
     IDLE --> APPROACHING : begin pick cycle
 
-    APPROACHING --> GRABBING : direct move to\n(obj_x, obj_y, GRAB_HEIGHT)
+    APPROACHING --> GRABBING : direct move to\ncomputed grab pose
 
-    GRABBING --> VERIFY_GRIP : close claw, lift to VERIFY_HEIGHT
+    GRABBING --> VERIFY_GRIP : adaptive grip feedback
 
     VERIFY_GRIP --> SORTING : grip confirmed ✓
     VERIFY_GRIP --> grip_fail : grip failed ✗
 
     state grip_fail <<choice>>
-    grip_fail --> MOVE_TO_SCAN_POSE : retries < MAX_PICK_RETRIES (2)\nopen claw → immediate rescan
-    grip_fail --> DONE : retries exhausted\nskip ball
+    grip_fail --> DONE : open claw → pickup recovery clearance → retry or skip in main loop
 
-    SORTING --> DROPPING : move to bin position
+    SORTING --> DROPPING : prevalidated rear fold-over route
 
     DROPPING --> DONE : open claw, release ball
 
@@ -311,7 +313,7 @@ stateDiagram-v2
 | Failure | Handling |
 |---|---|
 | **No balls detected** | Main loop resets `scan_round` to 0, waits `IDLE_RESCAN_DELAY` (3 s), then rescans continuously. The OpenCV window stays responsive during the idle wait. |
-| **Pick failed (grip verification)** | After closing the claw, the arm lifts to `VERIFY_HEIGHT` (8 cm) and checks grip via two methods: (1) **Position check** — if claw motor position reached `CLAW_CLOSED_POS` within `GRIP_VERIFY_TOLERANCE` (30 steps), the claw closed on air → pick failed; (2) **Load check** — if claw motor load exceeds `GRIP_LOAD_THRESHOLD` (50), something is being gripped → pick confirmed. On failure, the claw opens and the system immediately re-scans (skips idle delay). Up to `MAX_PICK_RETRIES` (2) attempts before skipping the ball. Helper functions: `read_positions()`, `read_load()`, `verify_grip()`. |
+| **Pick failed (grip verification)** | After closing the claw, the arm verifies grip via adaptive grip plus load/position fallback. On failure, the claw opens, retreats through the prevalidated pickup recovery waypoint, and the main loop returns to scan/look-again. No reject bin is used in the real route. Helper functions: `adaptive_grip()`, `read_positions()`, `read_load()`, `verify_grip()`. |
 | **Camera fails to open** | `vision.open()` returns `False`; `main()` prints an error and exits immediately (no fallback to fake data in production mode). |
 | **IK target unreachable** | `ArmIK.solve()` clamps targets beyond `max_reach` (L1 + L2 = 48.5 cm) to 99% of max reach, preserving the base angle. Targets too close raise `ValueError`. |
 | **Motor overload / hardware error** | On startup, firmware reboots any motor with a latched hardware error. Python-side `clear_errors` command available. Joint limits in `ArmIK.JOINT_LIMITS` prevent commands that would cause overload. |
@@ -357,6 +359,27 @@ approach: avg 1.80s, grab: avg 0.50s, scan: avg 0.30s, sort: avg 1.20s, drop: av
 
 This data is intended for the performance evaluation section of the thesis. See [`docs/performance.md`](performance.md) for expected phase durations.
 
+### 3.7 Rear-Placement Transport Route
+
+Production sorting uses [`prevalidate_transport_plan()`](../src/main.py:290) before moving the arm. The plan solves the pickup, pickup recovery, and all destination route waypoints with strict IK before the first movement command is sent. If route loading or strict solving fails, the cycle fails closed instead of attempting a guessed move.
+
+The production route schema is loaded by [`load_transport_route_calibration()`](../src/config/arm.py:517) with `require_route_schema=True`. Required route data is:
+
+- Shared waypoints: `front_neutral` and `rear_transfer`.
+- Per-bin route poses: `RED_BIN.approach`, `RED_BIN.drop`, `BLUE_BIN.approach`, and `BLUE_BIN.drop`.
+- Rear-yaw guard: `rear_base_yaw_limit_deg`, defaulting to [`DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG`](../src/config/arm.py:227) = ±45°.
+
+Rear placement is a fold-over move. The rear waypoints are behind the base in Cartesian space, but strict IK keeps base yaw within the configured symmetric guard so the shoulder/forearm fold over the top instead of using a 180° base rotation. The real setup has no reject bin; failed/no-grip picks return to scan/look-again.
+
+Route simulation support lives in [`route_demo.py`](../src/simulation/route_demo.py), [`visualizer.py`](../src/simulation/visualizer.py), and [`sample_route_calibration.json`](../src/simulation/sample_route_calibration.json). Typical checks:
+
+```bash
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --sequence
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/simulation/sample_route_calibration.json --sequence
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --destination RED_BIN
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --air-pick
+```
+
 ---
 
 ## 4. Data Flow
@@ -401,13 +424,14 @@ The `OAKCamera` captures frames at 640 × 400 resolution using the DepthAI v3 pi
 2. Add `L3` (22.0 cm) to Z — end-effector offset so claw tip reaches target
 3. Add sag compensation: `z_ik += reach × z_offset_multiplier` (linear model, loaded from `sag_calibration.json`). **Skipped when `skip_sag=True`** — used for grab moves when touch calibration data is available, because the touch-calibrated Z already accounts for droop.
 4. Subtract `shoulder_height` (33.0 cm) to convert to the shoulder-relative frame
-5. Base angle: `θ_base = atan2(y, x)`
-6. Planar distance: `d = sqrt(r² + z_ik²)`, with reachability clamping
-7. Elbow angle: Law of Cosines on triangle (L1, L2, d)
-8. Shoulder angle: Law of Cosines + `atan2(z_ik, r)`
-9. Wrist angle: compensate so claw points straight down (`−π/2 − (θ_shoulder − θ_elbow)`)
-10. Convert radians to Dynamixel steps (0–4095, centre = 2048)
-11. Enforce joint limits and clamp
+5. For normal front-workspace picks, base angle is `θ_base = atan2(y, x)`.
+6. For strict rear-placement route poses, fold-over yaw validation keeps base yaw within the route guard instead of using a 180° base turn.
+7. Planar distance: `d = sqrt(r² + z_ik²)`, with reachability clamping.
+8. Elbow angle: Law of Cosines on triangle (L1, L2, d).
+9. Shoulder angle: Law of Cosines + `atan2(z_ik, r)`.
+10. Wrist angle: compensate so claw points straight down (`−π/2 − (θ_shoulder − θ_elbow)`) plus any route `m4_offset`.
+11. Convert radians to Dynamixel steps (0–4095, centre = 2048).
+12. Enforce joint limits and clamp.
 
 **Output:** `{"m1": int, "m2": int, "m3": int, "m4": int, "m5": int}`.
 
@@ -435,12 +459,13 @@ The five Dynamixel servos (XM430 × 3, XM540 × 1, XL430 × 1) execute the goal 
 | Geometric 4-DOF IK | Closed-form solution using Law of Cosines chosen for exact results, fast computation, and predictable behaviour. Sag compensation added as post-processing. | [ADR-002](decisions/002-4dof-geometry.md) |
 | Fixed scan pose over continuous visual servoing | Camera is wrist-mounted; vision only works from a fixed `SCAN_POSE`. The arm moves to this known joint configuration before every scan. Homography is calibrated once at this pose. Mid-approach visual correction was removed because the claw occludes the target ball during approach. | [ADR-003](decisions/003-fixed-scan-pose.md) |
 | Touch calibration replaces homography + sag for grabs | Touch-based calibration replaces manual ruler measurements for homography and also captures per-point grab height (Z) and wrist tilt (m4 offset). At runtime, `compute_grab_height()` and `compute_wrist_correction()` interpolate these values, and `skip_sag` prevents double-compensation with the sag model. | [ADR-004](decisions/004-touch-calibration-replaces-homography.md) |
+| Strict two-bin rear route | Rear placement uses route-schema calibration and strict IK prevalidation for `RED_BIN` and `BLUE_BIN`; failed/no-grip picks return to scan/look-again instead of a reject bin. | [ADR-002](decisions/002-4dof-geometry.md) |
 
 ---
 
 ## 6. Calibration Pipeline
 
-The system requires a 10-step calibration pipeline before autonomous operation. Each step builds on previous ones. Total time: approximately 55–80 minutes.
+The system requires a 10-step calibration pipeline before autonomous operation. Each step builds on previous ones.
 
 ### Phase A — Arm Hardware (no camera needed)
 
@@ -468,5 +493,6 @@ The system requires a 10-step calibration pipeline before autonomous operation. 
 |:---:|---|---|
 | **7** | `src/calibration/07_vision_offset.py` | Fine-tune residual `CAMERA_OFFSET_X/Y` by comparing detected vs. actual ball positions |
 | **8** | `src/calibration/08_pick_test.py` | End-to-end pick-and-place verification at 5 workspace positions; target: ≥ 80% clean picks |
+| **9** | `src/calibration/10_bin_calibration.py` | Hardware-first fine-tuning of the strict two-bin rear fold-over route with dry-run, validation-only, limp/lock/capture, route tests, backups, and explicit save |
 
 For detailed calibration instructions, see the [README Calibration Guide](../README.md#-calibration-guide-first-time-setup).

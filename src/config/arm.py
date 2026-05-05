@@ -11,13 +11,63 @@ All coordinates are in centimetres, relative to the shoulder joint origin.
 Author: Bachelor Project 2026 – Autonomia
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import math
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class RouteCalibrationError(ValueError):
+    """Raised when route-oriented bin calibration is invalid or incomplete."""
+
+
+@dataclass(frozen=True)
+class RoutePose:
+    """Cartesian route pose plus optional wrist trim and sag mode."""
+
+    x: float
+    y: float
+    z: float
+    m4_offset: int = 0
+    skip_sag: bool = False
+
+    def as_strict_pose(self, m5: int | None = None) -> dict:
+        """Return a dict accepted by ArmIK.solve_strict()."""
+        pose = {
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "m4_offset": self.m4_offset,
+            "skip_sag": self.skip_sag,
+        }
+        if m5 is not None:
+            pose["m5"] = m5
+        return pose
+
+
+@dataclass(frozen=True)
+class BinRoute:
+    """Route-oriented production drop data for a single destination bin."""
+
+    approach: RoutePose
+    drop: RoutePose
+
+
+@dataclass(frozen=True)
+class TransportRouteCalibration:
+    """Validated route-oriented bin calibration."""
+
+    schema_version: int
+    shared_waypoints: dict[str, RoutePose]
+    bins: dict[str, BinRoute]
+    source_schema: str
+    rear_base_yaw_limit_deg: float
 
 # ── Height calibration cache ──────────────────────────────────────────
 _height_calibration_cache: Optional[List[dict]] = None
@@ -59,11 +109,13 @@ def load_height_calibration() -> Optional[List[dict]]:
     return _height_calibration_cache
 
 # ── Bin positions ─────────────────────────────────────────────────────
+#   Bins are placed in front of the arm at different X distances with Y≈0.
+#   This keeps M1 stable (no base rotation) during the sort motion.
 #   Z is set high enough so the arm clears the bin walls before dropping.
 BINS = {
-    "RED_BIN":    (20.0,   8.0,  10.0),   # Y reduced from 15 to 8 to reduce left swing
-    "BLUE_BIN":   (20.0,  -8.0,  10.0),   # Y reduced from -15 to -8 symmetrically
-    "REJECT_BIN": (25.0,   0.0,  12.0),
+    "RED_BIN":    (20.0,  -3.0,  15.0),   # reachable forward-left
+    "BLUE_BIN":   (20.0,   3.0,  15.0),   # reachable forward-right
+    "REJECT_BIN": (22.0,   0.0,  12.0),   # reachable straight ahead
 }
 
 # ── Home / resting position ──────────────────────────────────────────
@@ -152,31 +204,6 @@ SCAN_POSE = {
 # running vision (Dynamixel steps; ~1.8° at 4096 steps/360°)
 SCAN_POSE_TOLERANCE = 20
 
-# ── M3 thermal protection in SCAN_POSE ───────────────────────────────
-# Motor 3 (XM430-W350, elbow) bears a heavy static gravity load in
-# SCAN_POSE (forearm + camera folded back ~92°).  At 0.47 A continuous
-# draw, it reaches concerning temperatures after ~5 minutes.
-#
-# Mitigation 1 — Reduced hold current:
-#   Lower the Current Limit (Dynamixel register 38) on M3 when the arm
-#   is parked at SCAN_POSE.  The motor only needs to *hold* position,
-#   not accelerate, so a lower limit reduces heat with minimal position
-#   drift.  Value is in mA (XM430: 1 unit ≈ 1 mA; max stall ~1400 mA).
-#   0 = disabled (use default / max current).
-#   300 mA is only a cautious starting point; treat it as experimental
-#   until runtime current/drift checks have been validated on hardware.
-M3_SCAN_CURRENT_LIMIT = 400       # mA — scan-hold current cap for M3 to prevent overheating
-M3_DEFAULT_CURRENT_LIMIT = 1193  # mA — XM430-W350 factory default current limit
-
-# Mitigation 2 — Periodic torque relaxation (disabled by default):
-#   Torque-off at SCAN_POSE is mechanically unsafe unless a validated rest
-#   pose and recovery path exist.  Keep this path disabled until such a
-#   pose has been proven on hardware.
-M3_TORQUE_RELAX_ENABLED = False
-M3_RELAX_REST_POSE = None
-M3_RELAX_INTERVAL = 45.0   # seconds — only used if torque relaxation is explicitly enabled
-M3_RELAX_DURATION = 3.0    # seconds — only used if torque relaxation is explicitly enabled
-
 # ── Motion profile for startup home move ─────────────────────────────
 # Dynamixel profile velocity (~0.229 rpm per unit) and acceleration
 # (~214 rev/min² per unit) used when moving to SCAN_POSE on startup.
@@ -192,6 +219,12 @@ STARTUP_PROFILE_ACC = 15    # gentle ramp-up / ramp-down
 # at −π/2 (straight down) and increments toward this value.
 # 0.0 = horizontal; negative values limit the tilt before horizontal.
 MAX_REACH_PITCH = 0.0
+
+# ── Rear-placement route base yaw guard ───────────────────────────────
+# Rear bins are reached by folding the shoulder/forearm over the base, not
+# by spinning M1 around to face the rear.  Route-schema calibration may
+# override this symmetric limit with rear_base_yaw_limit_deg.
+DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG = 45.0
 
 # ── Claw motor positions (Dynamixel steps) ─────────────────────────
 CLAW_OPEN_POS   = 2016    # open/neutral position for gripper
@@ -306,6 +339,11 @@ def compute_grab_height(x: float, y: float) -> float:
 # ── Bin calibration cache ─────────────────────────────────────────────
 _bin_cal_cache: dict | None = None
 _bin_cal_loaded: bool = False
+_route_cal_cache: TransportRouteCalibration | None = None
+_route_cal_loaded: bool = False
+
+REQUIRED_SHARED_ROUTE_WAYPOINTS = ("front_neutral", "rear_transfer")
+REQUIRED_BIN_ROUTE_POSES = ("approach", "drop")
 
 
 def load_bin_calibration() -> dict | None:
@@ -326,6 +364,210 @@ def load_bin_calibration() -> dict | None:
             print(f"[arm.py] WARNING: failed to load bin calibration: {exc}")
             _bin_cal_cache = None
     return _bin_cal_cache
+
+
+def _normalise_bin_key(color_string: str) -> str:
+    key = color_string.upper().strip()
+    if not key.endswith("_BIN"):
+        key += "_BIN"
+    return key
+
+
+def _read_bin_calibration_file(path: Path | None = None) -> dict:
+    cal_path = path or BIN_CALIBRATION_FILE
+    try:
+        with open(cal_path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError as exc:
+        raise RouteCalibrationError(f"Bin route calibration file not found: {cal_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise RouteCalibrationError(f"Invalid JSON in bin route calibration file {cal_path}: {exc}") from exc
+    except OSError as exc:
+        raise RouteCalibrationError(f"Could not read bin route calibration file {cal_path}: {exc}") from exc
+
+
+def _pose_from_mapping(raw: Any, context: str) -> RoutePose:
+    if not isinstance(raw, dict):
+        raise RouteCalibrationError(f"{context} must be an object with x, y, z fields")
+    missing = [key for key in ("x", "y", "z") if key not in raw]
+    if missing:
+        raise RouteCalibrationError(f"{context} missing required field(s): {', '.join(missing)}")
+    try:
+        return RoutePose(
+            x=float(raw["x"]),
+            y=float(raw["y"]),
+            z=float(raw["z"]),
+            m4_offset=int(raw.get("m4_offset", 0) or 0),
+            skip_sag=bool(raw.get("skip_sag", False)),
+        )
+    except (TypeError, ValueError) as exc:
+        raise RouteCalibrationError(f"{context} has invalid numeric field: {exc}") from exc
+
+
+def _parse_rear_base_yaw_limit(raw: Any, context: str = "rear_base_yaw_limit_deg") -> float:
+    try:
+        limit = abs(float(raw))
+    except (TypeError, ValueError) as exc:
+        raise RouteCalibrationError(f"{context} must be numeric") from exc
+    if not math.isfinite(limit) or limit < 0.0 or limit > 180.0:
+        raise RouteCalibrationError(f"{context} must be finite and within [0, 180] degrees")
+    return limit
+
+
+def _rear_fold_base_yaw_deg(pose: RoutePose) -> float:
+    if abs(pose.x) < 1e-9 and abs(pose.y) < 1e-9:
+        return 0.0
+    yaw = math.degrees(math.atan2(pose.y, pose.x) + math.pi)
+    return (yaw + 180.0) % 360.0 - 180.0
+
+
+def _validate_rear_route_yaw(name: str, pose: RoutePose, limit_deg: float) -> None:
+    yaw_deg = _rear_fold_base_yaw_deg(pose)
+    if yaw_deg < -limit_deg - 1e-9 or yaw_deg > limit_deg + 1e-9:
+        raise RouteCalibrationError(
+            f"Rear route waypoint {name} requires base yaw {yaw_deg:.1f}° outside "
+            f"configured range [-{limit_deg:.1f}°, {limit_deg:.1f}°]"
+        )
+
+
+def _parse_route_calibration(data: dict, source_schema: str) -> TransportRouteCalibration:
+    version = data.get("schema_version", data.get("version"))
+    try:
+        schema_version = int(version)
+    except (TypeError, ValueError) as exc:
+        raise RouteCalibrationError("Route calibration missing integer schema_version") from exc
+    if schema_version < 2:
+        raise RouteCalibrationError(f"Unsupported route calibration schema_version={schema_version}")
+
+    rear_base_yaw_limit_deg = _parse_rear_base_yaw_limit(
+        data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)
+    )
+
+    shared_raw = data.get("shared_waypoints")
+    if not isinstance(shared_raw, dict):
+        raise RouteCalibrationError("Route calibration missing shared_waypoints object")
+    missing_shared = [name for name in REQUIRED_SHARED_ROUTE_WAYPOINTS if name not in shared_raw]
+    if missing_shared:
+        raise RouteCalibrationError(
+            f"Route calibration missing required shared waypoint(s): {', '.join(missing_shared)}"
+        )
+    shared = {
+        name: _pose_from_mapping(raw, f"shared_waypoints.{name}")
+        for name, raw in shared_raw.items()
+    }
+
+    bins_raw = data.get("bins")
+    if not isinstance(bins_raw, dict) or not bins_raw:
+        raise RouteCalibrationError("Route calibration missing bins object")
+
+    bins: dict[str, BinRoute] = {}
+    for raw_key, raw_entry in bins_raw.items():
+        key = _normalise_bin_key(raw_key)
+        if not isinstance(raw_entry, dict):
+            raise RouteCalibrationError(f"bins.{key} must be an object")
+        missing_poses = [name for name in REQUIRED_BIN_ROUTE_POSES if name not in raw_entry]
+        if missing_poses:
+            raise RouteCalibrationError(
+                f"bins.{key} missing required route pose(s): {', '.join(missing_poses)}"
+            )
+        bins[key] = BinRoute(
+            approach=_pose_from_mapping(raw_entry["approach"], f"bins.{key}.approach"),
+            drop=_pose_from_mapping(raw_entry["drop"], f"bins.{key}.drop"),
+        )
+
+    _validate_rear_route_yaw("shared_waypoints.rear_transfer", shared["rear_transfer"], rear_base_yaw_limit_deg)
+    for key, route in bins.items():
+        _validate_rear_route_yaw(f"bins.{key}.approach", route.approach, rear_base_yaw_limit_deg)
+        _validate_rear_route_yaw(f"bins.{key}.drop", route.drop, rear_base_yaw_limit_deg)
+
+    return TransportRouteCalibration(
+        schema_version=schema_version,
+        shared_waypoints=shared,
+        bins=bins,
+        source_schema=source_schema,
+        rear_base_yaw_limit_deg=rear_base_yaw_limit_deg,
+    )
+
+
+def _legacy_route_from_bins(bins: dict) -> TransportRouteCalibration:
+    if not isinstance(bins, dict) or not bins:
+        raise RouteCalibrationError("Legacy bin calibration missing bins object")
+
+    # Legacy schema has one calibrated target per bin and no rear-transfer
+    # semantics.  Provide explicit route objects for loader compatibility only;
+    # production requires the route schema via require_route_schema=True.
+    shared = {
+        "front_neutral": RoutePose(20.0, 0.0, CLEARANCE_HEIGHT),
+        "rear_transfer": RoutePose(20.0, 0.0, CLEARANCE_HEIGHT),
+    }
+    routes: dict[str, BinRoute] = {}
+    for raw_key, entry in bins.items():
+        key = _normalise_bin_key(raw_key)
+        pose = _pose_from_mapping(entry, f"bins.{key}")
+        routes[key] = BinRoute(approach=pose, drop=pose)
+    return TransportRouteCalibration(
+        schema_version=1,
+        shared_waypoints=shared,
+        bins=routes,
+        source_schema="legacy",
+        rear_base_yaw_limit_deg=DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG,
+    )
+
+
+def load_transport_route_calibration(
+    path: Path | None = None,
+    *,
+    require_route_schema: bool = False,
+) -> TransportRouteCalibration:
+    """Load validated route-oriented transport calibration.
+
+    Supports both schemas in ``bin_calibration.json``.  If a versioned route
+    schema is present, it is preferred and strictly validated.  Legacy schema
+    is still loadable for compatibility unless ``require_route_schema`` is set,
+    which production sorting uses to fail closed instead of guessing routes.
+    """
+    global _route_cal_cache, _route_cal_loaded
+    if path is None and _route_cal_loaded and _route_cal_cache is not None:
+        if require_route_schema and _route_cal_cache.source_schema != "route":
+            raise RouteCalibrationError(
+                "Production transport requires route schema calibration; legacy single-target bin schema is insufficient"
+            )
+        return _route_cal_cache
+
+    data = _read_bin_calibration_file(path)
+    if not isinstance(data, dict):
+        raise RouteCalibrationError("Bin calibration root must be an object")
+
+    has_route_schema = "shared_waypoints" in data or "schema_version" in data or "version" in data
+    if has_route_schema:
+        route = _parse_route_calibration(data, "route")
+    else:
+        route = _legacy_route_from_bins(data.get("bins"))
+
+    if require_route_schema and route.source_schema != "route":
+        raise RouteCalibrationError(
+            "Production transport requires route schema calibration; legacy single-target bin schema is insufficient"
+        )
+
+    if path is None:
+        _route_cal_cache = route
+        _route_cal_loaded = True
+    return route
+
+
+def get_transport_route(color_string: str) -> list[tuple[str, RoutePose]]:
+    """Return strict production route waypoints for a destination colour."""
+    route = load_transport_route_calibration(require_route_schema=True)
+    key = _normalise_bin_key(color_string)
+    if key not in route.bins:
+        raise RouteCalibrationError(f"No route calibration for destination bin {key}")
+    bin_route = route.bins[key]
+    return [
+        ("front_neutral", route.shared_waypoints["front_neutral"]),
+        ("rear_transfer", route.shared_waypoints["rear_transfer"]),
+        (f"{key}.approach", bin_route.approach),
+        (f"{key}.drop", bin_route.drop),
+    ]
 
 
 # ── Wrist calibration cache ───────────────────────────────────────────
@@ -406,9 +648,7 @@ def get_bin_coords(color_string: str) -> tuple:
 
     Checks calibrated positions first, falls back to hardcoded BINS.
     """
-    key = color_string.upper().strip()
-    if not key.endswith("_BIN"):
-        key += "_BIN"
+    key = _normalise_bin_key(color_string)
 
     # Try calibrated positions first
     cal = load_bin_calibration()
@@ -424,9 +664,7 @@ def get_bin_coords(color_string: str) -> tuple:
 
 def get_bin_m4_offset(color_string: str) -> int:
     """Return the calibrated m4_offset for a bin, or 0 if not calibrated."""
-    key = color_string.upper().strip()
-    if not key.endswith("_BIN"):
-        key += "_BIN"
+    key = _normalise_bin_key(color_string)
     cal = load_bin_calibration()
     if cal and key in cal:
         return cal[key].get("m4_offset", 0)

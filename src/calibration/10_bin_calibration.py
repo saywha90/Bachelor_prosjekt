@@ -1,88 +1,406 @@
 """
-10_bin_calibration.py
-======================
-Interactive tool to calibrate sorting bin positions (RED_BIN, BLUE_BIN,
-REJECT_BIN) by driving the robot arm with WASD keys or manually (limp mode).
+Interactive rear-bin route fine-tuning for real hardware calibration.
 
-Instead of relying on hardcoded bin coordinates in ``config/arm.py``, this
-script lets the operator physically drive the end-effector to each bin and
-record the exact (x, y, z, m4_offset) drop position.  Calibrated positions
-are saved to ``bin_calibration.json`` and can be loaded at runtime.
+This tool edits the production route schema in ``bin_calibration.json`` for the
+two physical rear bins only: ``RED_BIN`` and ``BLUE_BIN``.  It intentionally does
+not create or save ``REJECT_BIN`` because production should return to scanning
+when no object is gripped instead of routing to a reject bin.
 
-The control interface (serial communication, IK movement, WASD control loop,
-limp mode, and HUD rendering) follows the exact patterns established in
-``09_touch_calibration.py``.
+The default mode connects to the arm, mirrors the touch-calibration workflow,
+and supports explicit hardware movement plus limp-mode pose capture.  Offline
+editing and test runs are still available with ``--dry-run``/``--no-hardware``.
 
 Usage
 -----
-    python -m src.calibration.10_bin_calibration
-    python src/calibration/10_bin_calibration.py
-    python src/calibration/10_bin_calibration.py --port /dev/ttyUSB0 --baud 115200
-
-Author: Bachelor Project 2026 – Autonomia
+    PYTHONPATH=src python3 src/calibration/10_bin_calibration.py
+    PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --port /dev/cu.usbmodem101
+    PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --dry-run
 """
-import sys, os
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import shutil
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-import json
-import argparse
-import tempfile
-import time
-from datetime import date
-from pathlib import Path
-from typing import List, Tuple, Optional
-
-import cv2
-import numpy as np
-
-from config.arm import (
-    SCAN_POSE, CLEARANCE_HEIGHT, HOME_POSITION, BINS,
-    M3_SCAN_CURRENT_LIMIT, M3_DEFAULT_CURRENT_LIMIT,
+from config.arm import (  # noqa: E402
+    BIN_CALIBRATION_FILE as CONFIG_BIN_CALIBRATION_FILE,
+    DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG,
+    SCAN_POSE,
+    RouteCalibrationError,
+    load_transport_route_calibration,
 )
-from ik.solver import ArmIK
+from ik.solver import ArmIK  # noqa: E402
 
-# ── Constants ─────────────────────────────────────────────────────────
-BIN_CALIBRATION_FILE = Path(__file__).resolve().parent / "bin_calibration.json"
+
+BIN_CALIBRATION_FILE = Path(CONFIG_BIN_CALIBRATION_FILE)
 SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
-WINDOW_NAME = "Bin Calibration"
+MOVE_SETTLE_SECONDS = 0.75
+ROUTE_SETTLE_SECONDS = 0.75
+LIMP_MOTOR_IDS = (1, 2, 3, 4)
+MAX_CAPTURE_M4_OFFSET = 1500
 
-# Ordered list of bins to calibrate
-BIN_NAMES = ["RED_BIN", "BLUE_BIN", "REJECT_BIN"]
+ROUTE_SCHEMA_VERSION = 2
+ONLY_BIN_NAMES = ("RED_BIN", "BLUE_BIN")
+SHARED_WAYPOINTS = ("front_neutral", "rear_transfer")
+BIN_POSES = ("approach", "drop")
+POSE_FIELDS = ("x", "y", "z", "m4_offset")
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Atomic JSON save
-# ══════════════════════════════════════════════════════════════════════
+@dataclass(frozen=True)
+class WaypointSpec:
+    """Editable route waypoint descriptor."""
 
-def _save_json_atomic(path, data):
-    """Write JSON atomically — write to temp file, then rename."""
-    path_str = str(path)
-    dir_name = os.path.dirname(path_str) or "."
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    key: str
+    title: str
+    intent: str
+    root: str
+    bin_name: str | None = None
+    pose_name: str | None = None
+
+
+EDITABLE_WAYPOINTS = (
+    WaypointSpec("front_neutral", "front_neutral", "carry", "shared"),
+    WaypointSpec("rear_transfer", "rear_transfer", "rear_place", "shared"),
+    WaypointSpec("RED_BIN.approach", "RED_BIN.approach", "rear_place", "bin", "RED_BIN", "approach"),
+    WaypointSpec("RED_BIN.drop", "RED_BIN.drop", "rear_place", "bin", "RED_BIN", "drop"),
+    WaypointSpec("BLUE_BIN.approach", "BLUE_BIN.approach", "rear_place", "bin", "BLUE_BIN", "approach"),
+    WaypointSpec("BLUE_BIN.drop", "BLUE_BIN.drop", "rear_place", "bin", "BLUE_BIN", "drop"),
+)
+
+
+def _safe_default_route_schema() -> dict[str, Any]:
+    """Return a conservative valid two-bin rear route schema."""
+
+    return {
+        "schema_version": ROUTE_SCHEMA_VERSION,
+        "calibration_date": date.today().isoformat(),
+        "calibrated_with_scan_pose": {k: int(v) for k, v in SCAN_POSE.items()},
+        "rear_base_yaw_limit_deg": float(DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG),
+        "shared_waypoints": {
+            "front_neutral": {
+                "x": 22.0,
+                "y": 0.0,
+                "z": 30.0,
+                "m4_offset": 0,
+                "skip_sag": True,
+            },
+            "rear_transfer": {
+                "x": -22.0,
+                "y": 0.0,
+                "z": 38.0,
+                "m4_offset": 0,
+                "skip_sag": True,
+            },
+        },
+        "bins": {
+            "RED_BIN": {
+                "approach": {
+                    "x": -24.0,
+                    "y": -7.0,
+                    "z": 38.0,
+                    "m4_offset": 0,
+                    "skip_sag": True,
+                },
+                "drop": {
+                    "x": -24.0,
+                    "y": -7.0,
+                    "z": 33.0,
+                    "m4_offset": 0,
+                    "skip_sag": True,
+                },
+            },
+            "BLUE_BIN": {
+                "approach": {
+                    "x": -24.0,
+                    "y": 7.0,
+                    "z": 38.0,
+                    "m4_offset": 0,
+                    "skip_sag": True,
+                },
+                "drop": {
+                    "x": -24.0,
+                    "y": 7.0,
+                    "z": 33.0,
+                    "m4_offset": 0,
+                    "skip_sag": True,
+                },
+            },
+        },
+    }
+
+
+def _route_calibration_to_schema(route_calibration: Any) -> dict[str, Any]:
+    """Convert a validated config.arm transport route to writable JSON data."""
+
+    def pose_to_dict(pose: Any) -> dict[str, Any]:
+        return {
+            "x": round(float(pose.x), 2),
+            "y": round(float(pose.y), 2),
+            "z": round(float(pose.z), 2),
+            "m4_offset": int(pose.m4_offset),
+            "skip_sag": bool(pose.skip_sag),
+        }
+
+    schema = _safe_default_route_schema()
+    schema["schema_version"] = max(int(route_calibration.schema_version), ROUTE_SCHEMA_VERSION)
+    schema["rear_base_yaw_limit_deg"] = float(
+        getattr(
+            route_calibration,
+            "rear_base_yaw_limit_deg",
+            DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG,
+        )
+    )
+    for waypoint in SHARED_WAYPOINTS:
+        schema["shared_waypoints"][waypoint] = pose_to_dict(route_calibration.shared_waypoints[waypoint])
+    for bin_name in ONLY_BIN_NAMES:
+        bin_route = route_calibration.bins[bin_name]
+        schema["bins"][bin_name] = {
+            "approach": pose_to_dict(bin_route.approach),
+            "drop": pose_to_dict(bin_route.drop),
+        }
+    return schema
+
+
+def load_or_initialize_route_schema(path: Path = BIN_CALIBRATION_FILE) -> tuple[dict[str, Any], list[str]]:
+    """Load current route schema or return a safe two-bin initialization.
+
+    The returned schema is always constrained to ``RED_BIN`` and ``BLUE_BIN``.
+    Legacy, missing, incomplete, invalid, or extra-bin files never propagate a
+    ``REJECT_BIN`` entry into the editable data.
+    """
+
+    messages: list[str] = []
     try:
-        with os.fdopen(tmp_fd, "w") as f:
+        route = load_transport_route_calibration(path=path, require_route_schema=True)
+        missing_bins = [bin_name for bin_name in ONLY_BIN_NAMES if bin_name not in route.bins]
+        if missing_bins:
+            raise RouteCalibrationError(f"route schema missing required bin(s): {', '.join(missing_bins)}")
+        schema = _route_calibration_to_schema(route)
+        messages.append(f"Loaded route schema from {path}")
+        if any(bin_name not in ONLY_BIN_NAMES for bin_name in route.bins):
+            messages.append("Ignored non-production bin entries while loading; only RED_BIN and BLUE_BIN are editable")
+        return schema, messages
+    except RouteCalibrationError as exc:
+        messages.append(f"Using safe two-bin route defaults because calibration could not be loaded: {exc}")
+    except FileNotFoundError as exc:
+        messages.append(f"Using safe two-bin route defaults because calibration file is missing: {exc}")
+
+    return _safe_default_route_schema(), messages
+
+
+def _save_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    """Write JSON atomically by replacing with a fully-written temp file."""
+
+    path = Path(path)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
-        os.replace(tmp_path, path_str)
+        os.replace(tmp_path, path)
     except BaseException:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         raise
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Serial / Arm helpers
-# ══════════════════════════════════════════════════════════════════════
+def save_route_schema_with_backup(data: dict[str, Any], path: Path = BIN_CALIBRATION_FILE) -> Path | None:
+    """Save route schema, creating a timestamped backup before overwriting."""
 
-def _open_serial(port: str = SERIAL_PORT, baud: int = SERIAL_BAUD):
-    """Open a new serial connection to the arm and return it.
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path: Path | None = None
+    if path.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = path.with_name(f"{path.stem}.backup_{timestamp}{path.suffix}")
+        shutil.copy2(path, backup_path)
+    data_to_save = sanitize_two_bin_schema(data)
+    data_to_save["calibration_date"] = date.today().isoformat()
+    data_to_save["calibrated_with_scan_pose"] = {k: int(v) for k, v in SCAN_POSE.items()}
+    _save_json_atomic(path, data_to_save)
+    return backup_path
 
-    This is called once in ``main()``; the returned object is passed as a
-    parameter to every function that needs to talk to hardware.  Importing
-    this module does **not** open a serial port.
-    """
+
+def sanitize_two_bin_schema(data: dict[str, Any]) -> dict[str, Any]:
+    """Return a route schema containing only supported two-bin route data."""
+
+    defaults = _safe_default_route_schema()
+    sanitized = copy.deepcopy(defaults)
+    sanitized["schema_version"] = int(data.get("schema_version", data.get("version", ROUTE_SCHEMA_VERSION)) or ROUTE_SCHEMA_VERSION)
+    sanitized["schema_version"] = max(sanitized["schema_version"], ROUTE_SCHEMA_VERSION)
+    sanitized["rear_base_yaw_limit_deg"] = _parse_rear_base_yaw_limit(
+        data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)
+    )
+
+    shared_raw = data.get("shared_waypoints") if isinstance(data.get("shared_waypoints"), dict) else {}
+    for waypoint in SHARED_WAYPOINTS:
+        if isinstance(shared_raw.get(waypoint), dict):
+            sanitized["shared_waypoints"][waypoint] = _sanitize_pose(shared_raw[waypoint], defaults["shared_waypoints"][waypoint])
+
+    bins_raw = data.get("bins") if isinstance(data.get("bins"), dict) else {}
+    for bin_name in ONLY_BIN_NAMES:
+        raw_bin = bins_raw.get(bin_name) if isinstance(bins_raw.get(bin_name), dict) else {}
+        for pose_name in BIN_POSES:
+            if isinstance(raw_bin.get(pose_name), dict):
+                sanitized["bins"][bin_name][pose_name] = _sanitize_pose(
+                    raw_bin[pose_name], defaults["bins"][bin_name][pose_name]
+                )
+    return sanitized
+
+
+def _parse_rear_base_yaw_limit(raw: Any) -> float:
+    try:
+        limit = abs(float(raw))
+    except (TypeError, ValueError):
+        return float(DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)
+    if not 0.0 <= limit <= 180.0:
+        return float(DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)
+    return limit
+
+
+def _sanitize_pose(raw_pose: dict[str, Any], default_pose: dict[str, Any]) -> dict[str, Any]:
+    pose = copy.deepcopy(default_pose)
+    for field in ("x", "y", "z"):
+        try:
+            pose[field] = round(float(raw_pose.get(field, pose[field])), 2)
+        except (TypeError, ValueError):
+            pass
+    try:
+        pose["m4_offset"] = int(raw_pose.get("m4_offset", pose.get("m4_offset", 0)) or 0)
+    except (TypeError, ValueError):
+        pose["m4_offset"] = int(default_pose.get("m4_offset", 0) or 0)
+    pose["skip_sag"] = bool(raw_pose.get("skip_sag", pose.get("skip_sag", True)))
+    return pose
+
+
+def get_waypoint(data: dict[str, Any], spec: WaypointSpec) -> dict[str, Any]:
+    """Return the mutable waypoint pose dictionary for a waypoint spec."""
+
+    if spec.root == "shared":
+        return data["shared_waypoints"][spec.key]
+    if spec.bin_name is None or spec.pose_name is None:
+        raise ValueError(f"Invalid bin waypoint spec: {spec}")
+    return data["bins"][spec.bin_name][spec.pose_name]
+
+
+def update_waypoint_field(
+    data: dict[str, Any],
+    spec: WaypointSpec,
+    field: str,
+    delta: float,
+    *,
+    clamp_m4: bool = True,
+) -> dict[str, Any]:
+    """Apply a small field adjustment to a waypoint and return that waypoint."""
+
+    if field not in POSE_FIELDS:
+        raise ValueError(f"Unsupported waypoint field {field!r}; expected one of {POSE_FIELDS}")
+    waypoint = get_waypoint(data, spec)
+    if field == "m4_offset":
+        next_value = int(waypoint.get(field, 0)) + int(round(delta))
+        if clamp_m4:
+            next_value = max(-1500, min(1500, next_value))
+        waypoint[field] = next_value
+    else:
+        waypoint[field] = round(float(waypoint.get(field, 0.0)) + float(delta), 2)
+    return waypoint
+
+
+def strict_pose_for_validation(data: dict[str, Any], spec: WaypointSpec) -> dict[str, Any]:
+    """Build the pose mapping passed to ArmIK.solve_strict()."""
+
+    pose = dict(get_waypoint(data, spec))
+    pose.setdefault("m4_offset", 0)
+    pose.setdefault("skip_sag", True)
+    if spec.intent == "rear_place":
+        pose["rear_base_yaw_limit_deg"] = data.get(
+            "rear_base_yaw_limit_deg",
+            DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG,
+        )
+    return pose
+
+
+def validate_waypoint(data: dict[str, Any], spec: WaypointSpec, arm: ArmIK | None = None) -> dict[str, Any]:
+    """Validate a waypoint with ArmIK.solve_strict() and return a result dict."""
+
+    if arm is None:
+        arm = ArmIK(rear_base_yaw_limit_deg=data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG))
+    pose = strict_pose_for_validation(data, spec)
+    try:
+        solved = arm.solve_strict(pose, intent=spec.intent)
+        validation = solved["validation"]
+        return {
+            "ok": True,
+            "reason": "OK",
+            "commands": solved["commands"],
+            "base_yaw_deg": float(validation["base_yaw_deg"]),
+            "branch": validation["ik_branch"],
+            "shoulder_deg": float(validation["theta_shoulder_deg"]),
+            "validation": validation,
+        }
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "reason": str(exc),
+            "commands": None,
+            "base_yaw_deg": None,
+            "branch": None,
+            "shoulder_deg": None,
+            "validation": None,
+        }
+
+
+def validate_all_waypoints(data: dict[str, Any], arm: ArmIK | None = None) -> dict[str, dict[str, Any]]:
+    """Validate all editable waypoints."""
+
+    return {spec.key: validate_waypoint(data, spec, arm) for spec in EDITABLE_WAYPOINTS}
+
+
+def print_validation_result(spec: WaypointSpec, result: dict[str, Any]) -> None:
+    """Print concise validation details for one waypoint."""
+
+    if result["ok"]:
+        print(f"  ✅ {spec.title}: OK")
+        print(f"     base_yaw={result['base_yaw_deg']:.2f}°  branch={result['branch']}  shoulder={result['shoulder_deg']:.2f}°")
+        print(f"     commands={json.dumps(result['commands'], sort_keys=True)}")
+    else:
+        print(f"  ❌ {spec.title}: {result['reason']}")
+
+
+def print_route_summary(data: dict[str, Any], selected_index: int | None = None) -> None:
+    """Show current editable route values."""
+
+    print("\nCurrent rear-bin route calibration")
+    print(f"  rear_base_yaw_limit_deg = {float(data.get('rear_base_yaw_limit_deg', DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)):.1f}")
+    for idx, spec in enumerate(EDITABLE_WAYPOINTS, start=1):
+        pose = get_waypoint(data, spec)
+        marker = "→" if selected_index == idx - 1 else " "
+        print(
+            f"{marker} [{idx}] {spec.title:<17} "
+            f"x={float(pose['x']):>7.2f}  y={float(pose['y']):>7.2f}  "
+            f"z={float(pose['z']):>7.2f}  m4_offset={int(pose.get('m4_offset', 0)):>+5d}  "
+            f"skip_sag={bool(pose.get('skip_sag', True))}"
+        )
+
+
+def _open_serial(port: str, baud: int):
+    """Open serial connection to the OpenRB bridge."""
+
     import serial
+
     print(f"[SERIAL] Opening {port} @ {baud} …")
     ser = serial.Serial(port, baud, timeout=2)
     time.sleep(3)
@@ -92,473 +410,601 @@ def _open_serial(port: str = SERIAL_PORT, baud: int = SERIAL_BAUD):
     if not boot_msg.strip():
         boot_msg = ser.readline().decode(errors="replace").strip()
     print(f"[SERIAL] OpenRB says: {boot_msg.strip()}")
-
-    cmd = json.dumps({"cmd": "enable_torque"})
-    ser.write((cmd + "\n").encode())
-    ser.readline()
-
-    cmd = json.dumps({"cmd": "set_profile", "vel": 40, "acc": 10})
-    ser.write((cmd + "\n").encode())
-    ser.readline()
+    send_raw_command(ser, {"cmd": "enable_torque"})
+    send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
     return ser
 
 
-def send_raw_command(ser, positions: dict):
-    cmd_json = json.dumps(positions)
-    ser.write((cmd_json + "\n").encode())
-    resp = ser.readline().decode(errors="replace").strip()
-    return resp
+def send_raw_command(ser: Any, command: dict[str, Any]) -> str:
+    """Send one JSON command to hardware and return the firmware response."""
+
+    ser.write((json.dumps(command) + "\n").encode())
+    return ser.readline().decode(errors="replace").strip()
 
 
-def send_ik_command(ser, arm: ArmIK, x: float, y: float, z: float,
-                    claw_override: int = 2048):
+def read_motor_positions(ser: Any) -> dict[str, int] | None:
+    """Read current motor positions from the firmware."""
+
+    response = send_raw_command(ser, {"cmd": "read_pos"})
     try:
-        solution = arm.solve(x, y, z, skip_sag=True, strict=True)
-    except ValueError as e:
-        print(f"  ⚠️  Target unreachable: {e}")
+        positions = json.loads(response)
+    except json.JSONDecodeError:
+        print(f"  ❌ Invalid read_pos response: {response}")
         return None
-    solution["m5"] = claw_override
-    cmd_json = json.dumps(solution)
-    ser.write((cmd_json + "\n").encode())
-    resp = ser.readline().decode(errors="replace").strip()
-    return resp
-
-
-def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
-                           m4_offset: int = 0, claw_override: int = 2048):
-    """Solve IK, apply an m4 offset, clamp, send command, and return (solution, response)."""
+    if not isinstance(positions, dict):
+        print(f"  ❌ Unexpected read_pos response: {positions!r}")
+        return None
+    missing = {"m1", "m2", "m3", "m4"} - set(positions)
+    if missing:
+        print(f"  ❌ read_pos response missing motor keys: {sorted(missing)}")
+        return None
     try:
-        solution = arm.solve(x, y, z, skip_sag=True, strict=True)
-    except ValueError as e:
-        print(f"  ⚠️  Target unreachable: {e}")
-        return None, None
-    solution["m4"] = max(500, min(3500, solution["m4"] + m4_offset))
-    solution["m5"] = claw_override
-    cmd_json = json.dumps(solution)
-    ser.write((cmd_json + "\n").encode())
-    resp = ser.readline().decode(errors="replace").strip()
-    return solution, resp
+        return {key: int(value) for key, value in positions.items() if str(key).startswith("m")}
+    except (TypeError, ValueError):
+        print(f"  ❌ Non-integer motor position in read_pos response: {positions}")
+        return None
 
 
-def _move_to_scan_pose(ser):
-    print("[ARM] Moving arm to SCAN_POSE …")
-    send_raw_command(ser, SCAN_POSE)
-    time.sleep(2)
-    if M3_SCAN_CURRENT_LIMIT > 0:
-        print(f"[ARM] Applying M3 thermal limit ({M3_SCAN_CURRENT_LIMIT} mA)")
-        send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_SCAN_CURRENT_LIMIT})
-    print("[ARM] ✅ Arm is at SCAN_POSE.\n")
+def _set_current_goals_before_torque_on(ser: Any, positions: dict[str, int] | None = None) -> None:
+    """Best-effort snap-back prevention before enabling torque."""
+
+    if positions is None:
+        positions = read_motor_positions(ser)
+    if positions is not None:
+        print(f"  [SAFETY] Setting goal positions to current positions before torque-on: {positions}")
+        send_raw_command(ser, positions)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  WASD control loop for a single bin
-# ══════════════════════════════════════════════════════════════════════
+def disable_limp_mode(ser: Any, input_func: Callable[[str], str] = input) -> bool:
+    """Disable torque on arm motors 1-4 so the arm can be guided by hand."""
 
-def _wasd_bin_phase(ser, arm: ArmIK, bin_name: str, bin_index: int,
-                    total_bins: int,
-                    start_x: float, start_y: float, start_z: float
-                    ) -> Optional[Tuple[float, float, float, int]]:
-    """Drive the arm with WASD keys to calibrate a single bin position.
+    print("\n🖐️  Limp mode requested.")
+    print("  ⚠️  SUPPORT THE ARM before disabling torque; it can fall under gravity.")
+    confirm = input_func("  Type LIMP when you are supporting the arm, or anything else to cancel: ").strip()
+    if confirm != "LIMP":
+        print("  Limp mode cancelled; torque was not changed.")
+        return False
+    for motor_id in LIMP_MOTOR_IDS:
+        response = send_raw_command(ser, {"cmd": "set_torque", "id": motor_id, "enable": False})
+        if "ERR" in response.upper():
+            print(f"  ⚠️  Motor {motor_id} torque disable warning: {response}")
+    print("  🔓 Motors 1-4 are now limp. Guide the arm by hand; use 'capture' or 'lock' when done.")
+    return True
 
-    Returns (x, y, z, m4_offset) on ENTER, or None if the user quits.
-    """
-    if M3_DEFAULT_CURRENT_LIMIT > 0:
-        send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_DEFAULT_CURRENT_LIMIT})
 
-    target_x = start_x
-    target_y = start_y
-    target_z = start_z
-    step = 1.0
-    step_m4 = 10
-    m4_offset = 0
+def enable_limp_mode(ser: Any) -> bool:
+    """Re-enable torque safely by first setting goals to current positions."""
 
-    cv2.namedWindow(WINDOW_NAME)
+    print("\n🔒 Re-enabling torque safely.")
+    try:
+        positions = read_motor_positions(ser)
+        _set_current_goals_before_torque_on(ser, positions)
+        response = send_raw_command(ser, {"cmd": "enable_torque"})
+        print(f"  Torque response: {response}")
+        print("  ✅ Torque re-enabled; arm should hold its current pose.")
+        return True
+    except Exception as exc:
+        print(f"  ⚠️  Failed to re-enable torque: {exc}")
+        print("  ⚠️  Manually support the arm and power-cycle if needed.")
+        return False
 
-    # Slow profile for initial move
+
+def capture_current_waypoint(
+    data: dict[str, Any],
+    spec: WaypointSpec,
+    ser: Any,
+    arm: ArmIK,
+) -> bool:
+    """Capture current motor pose with FK and store it in the selected waypoint."""
+
+    positions = read_motor_positions(ser)
+    if positions is None:
+        print("  Capture failed: current motor positions could not be read.")
+        return False
+
+    try:
+        fk = arm.forward_kinematics(positions)
+    except Exception as exc:
+        print(f"  Capture failed: forward kinematics could not convert current motors: {exc}")
+        enable_limp_mode(ser)
+        return False
+
+    old_pose = copy.deepcopy(get_waypoint(data, spec))
+    candidate = copy.deepcopy(old_pose)
+    candidate["x"] = round(float(fk["x"]), 2)
+    candidate["y"] = round(float(fk["y"]), 2)
+    candidate["z"] = round(float(fk["z"]), 2)
+
+    # Compute the saved trim as the final claw pitch's deviation from IK's
+    # default straight-down pitch.  ``m4_offset`` participates in IK geometry,
+    # so FK-captured limp poses can replay the same XYZ instead of rotating the
+    # L3 claw-tip link after the Cartesian solve.
+    try:
+        raw_offset = int(fk.get("replay_m4_offset", 0))
+        candidate["m4_offset"] = max(
+            -MAX_CAPTURE_M4_OFFSET,
+            min(MAX_CAPTURE_M4_OFFSET, raw_offset),
+        )
+        if candidate["m4_offset"] != raw_offset:
+            print(
+                f"  ⚠️  Wrist replay offset clipped from {raw_offset:+d} "
+                f"to {candidate['m4_offset']:+d} steps for safety."
+            )
+    except Exception as exc:
+        candidate["m4_offset"] = int(old_pose.get("m4_offset", 0) or 0)
+        print(f"  ⚠️  Could not derive wrist trim from strict IK ({exc}); keeping previous m4_offset={candidate['m4_offset']}.")
+
+    get_waypoint(data, spec).clear()
+    get_waypoint(data, spec).update(candidate)
+    result = validate_waypoint(data, spec, arm)
+    print("\nCaptured current pose:")
+    print(f"  motors={json.dumps(positions, sort_keys=True)}")
+    print(
+        f"  fk={{x={candidate['x']:.2f}, y={candidate['y']:.2f}, z={candidate['z']:.2f}, "
+        f"pitch={float(fk.get('theta_pitch_deg', 0.0)):+.1f}°, replay_m4_offset={candidate['m4_offset']:+d}}}"
+    )
+    print_validation_result(spec, result)
+
+    if not result["ok"]:
+        get_waypoint(data, spec).clear()
+        get_waypoint(data, spec).update(old_pose)
+        print("  Capture rejected and reverted because strict IK validation failed.")
+        enable_limp_mode(ser)
+        return False
+
+    enable_limp_mode(ser)
+    print("  ✅ Captured pose stored in memory. Use 'save' to persist it.")
+    return True
+
+
+def send_validated_commands(ser: Any, commands: dict[str, int], *, label: str, settle_seconds: float = MOVE_SETTLE_SECONDS) -> str:
+    """Send prevalidated motor commands and wait briefly for motion to settle."""
+
+    print(f"  📍 {label}: commands={json.dumps(commands, sort_keys=True)}")
+    response = send_raw_command(ser, commands)
+    print(f"     Firmware response: {response}")
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
+    return response
+
+
+def maybe_move_hardware(ser: Any, commands: dict[str, int], input_func: Callable[[str], str] = input) -> None:
+    """Explicitly confirm before moving the arm to validated motor commands."""
+
+    print("\nHardware move requested.")
+    print(f"  Commands: {json.dumps(commands, sort_keys=True)}")
+    confirm = input_func("  Type MOVE to send these motor goals, or anything else to cancel: ").strip()
+    if confirm != "MOVE":
+        print("  Move cancelled; no hardware command sent.")
+        return
+    send_validated_commands(ser, commands, label="Selected waypoint")
+
+
+def route_specs_for_bin(bin_name: str) -> list[WaypointSpec]:
+    """Return editable waypoint specs in movement order for one rear bin."""
+
+    normalized = bin_name.upper()
+    if normalized in {"RED", "RED_BIN"}:
+        target = "RED_BIN"
+    elif normalized in {"BLUE", "BLUE_BIN"}:
+        target = "BLUE_BIN"
+    else:
+        raise ValueError("expected RED_BIN or BLUE_BIN")
+    return [
+        EDITABLE_WAYPOINTS[0],
+        EDITABLE_WAYPOINTS[1],
+        next(spec for spec in EDITABLE_WAYPOINTS if spec.key == f"{target}.approach"),
+        next(spec for spec in EDITABLE_WAYPOINTS if spec.key == f"{target}.drop"),
+    ]
+
+
+def route_specs_for_selected(spec: WaypointSpec) -> list[WaypointSpec]:
+    """Return selected bin route specs, or raise for shared-only selections."""
+
+    if spec.bin_name is None:
+        raise ValueError("selected waypoint is shared; use 'test red' or 'test blue'")
+    return route_specs_for_bin(spec.bin_name)
+
+
+def maybe_test_route_hardware(
+    data: dict[str, Any],
+    *,
+    ser: Any,
+    arm: ArmIK,
+    specs: list[WaypointSpec],
+    label: str,
+    confirmation: str,
+    input_func: Callable[[str], str] = input,
+) -> bool:
+    """Validate, display, confirm, and move through multiple route waypoints."""
+
+    print(f"\nHardware route test requested: {label}")
+    route_commands: list[tuple[WaypointSpec, dict[str, Any]]] = []
+    all_ok = True
+    for spec in specs:
+        result = validate_waypoint(data, spec, arm)
+        print_validation_result(spec, result)
+        all_ok = all_ok and result["ok"]
+        if result["ok"]:
+            route_commands.append((spec, result["commands"]))
+    if not all_ok:
+        print("  Route test refused because one or more waypoints failed strict validation.")
+        return False
+
+    print("\n  Movement order:")
+    for idx, (spec, commands) in enumerate(route_commands, start=1):
+        print(f"    {idx}. {spec.title}: {json.dumps(commands, sort_keys=True)}")
+    confirm = input_func(f"  Type {confirmation} to move through these {len(route_commands)} waypoints: ").strip()
+    if confirm != confirmation:
+        print("  Route test cancelled; no hardware command sent.")
+        return False
+
     send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
+    for spec, commands in route_commands:
+        send_validated_commands(ser, commands, label=spec.title, settle_seconds=ROUTE_SETTLE_SECONDS)
+    print("  ✅ Route test complete.")
+    return True
 
-    # Move to clearance height above target first
-    send_ik_command(ser, arm, target_x, target_y, CLEARANCE_HEIGHT)
-    time.sleep(0.5)
 
-    # Lower to target position
-    send_ik_with_m4_offset(ser, arm, target_x, target_y, target_z, m4_offset)
-    time.sleep(0.5)
+def interactive_loop(
+    data: dict[str, Any],
+    *,
+    hardware: bool = False,
+    ser: Any = None,
+    input_func: Callable[[str], str] = input,
+) -> bool:
+    """Run the terminal interactive route editor.  Returns True if saved."""
 
-    # Restore normal velocity for WASD manual driving
-    send_raw_command(ser, {"cmd": "set_profile", "vel": 80, "acc": 20})
+    selected_index = 0
+    xyz_step = 0.5
+    m4_step = 25
+    saved = False
+    dirty = False
+
+    print("\nInteractive controls")
+    print("  select 1-6     choose waypoint")
+    print("  x+/x- y+/y- z+/z-  adjust Cartesian fields by current cm step")
+    print("  m4+/m4-        adjust wrist trim by current motor-step size")
+    print("  step <cm>      set Cartesian step size, e.g. step 0.1")
+    print("  m4step <n>     set m4_offset step size, e.g. m4step 10")
+    print("  yaw <deg>      set rear base yaw limit, default 45")
+    print("  v              validate selected waypoint")
+    print("  va             validate all waypoints")
+    print("  move           validate and move to selected waypoint after MOVE confirmation")
+    print("  test red/blue  validate and move through one bin route after TEST RED/BLUE confirmation")
+    print("  test selected  validate and move through the selected bin route")
+    print("  test all       validate and move through RED then BLUE routes after TEST ALL confirmation")
+    print("  limp           hardware only: disable torque on motors 1-4 for hand-guiding")
+    print("  lock           hardware only: set current goals and re-enable torque")
+    print("  capture        hardware only: read current motors, FK-convert, store selected waypoint, and lock")
+    print("  pos            hardware only: read current motor positions")
+    print("  save           validate all, confirm, backup, and save")
+    print("  q              quit without saving")
+    print("\nNote: production route schema supports x/y/z/m4_offset/skip_sag here; m5/claw is not saved by config.arm routes.")
+
+    arm = ArmIK(rear_base_yaw_limit_deg=data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG))
+    last_valid_commands: dict[str, int] | None = None
+    last_valid_key: str | None = None
 
     while True:
-        # ── Draw HUD ──────────────────────────────────────────────
-        hud = np.zeros((450, 600, 3), dtype=np.uint8)
+        spec = EDITABLE_WAYPOINTS[selected_index]
+        print_route_summary(data, selected_index)
+        print(f"\nSelected: {spec.title} | xyz_step={xyz_step:.2f} cm | m4_step={m4_step} steps")
+        command = input_func("bin-route> ").strip()
+        if not command:
+            continue
+        lowered = command.lower()
 
-        cv2.putText(hud, f"Calibrating: {bin_name}", (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-        cv2.putText(hud, f"Bin {bin_index + 1}/{total_bins}", (450, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
+        if lowered in {"q", "quit", "exit"}:
+            if dirty:
+                confirm = input_func("Unsaved edits exist. Type DISCARD to quit without saving: ").strip()
+                if confirm != "DISCARD":
+                    continue
+            print("Exiting without additional saves.")
+            return saved
 
-        cv2.putText(hud, f"X = {target_x:.1f} cm  (forward/back)",
-                    (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        cv2.putText(hud, f"Y = {target_y:.1f} cm  (left/right)",
-                    (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        cv2.putText(hud, f"Z = {target_z:.1f} cm  (up/down)",
-                    (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        if target_z <= arm.Z_MIN:
-            cv2.putText(hud, "Z at minimum! (IK clamp)",
-                        (320, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
-        cv2.putText(hud, f"m4 offset = {m4_offset:+d} steps  (wrist tilt)",
-                    (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 1)
-        cv2.putText(hud, f"Step Size = {step:.2f} cm",
-                    (20, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
-
-        cv2.putText(hud, "W/S: X   A/D: Y   U/J: Z   I/K: Wrist",
-                    (20, 330), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-        cv2.putText(hud, "[/]: Step   ENTER: Save   L: Limp   Q: Quit",
-                    (20, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-        cv2.putText(hud, f"Move arm to the {bin_name} drop position",
-                    (20, 420), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 100, 100), 1)
-
-        cv2.imshow(WINDOW_NAME, hud)
-        key = cv2.waitKey(50) & 0xFF
-
-        if key == 255:
+        if lowered in {"h", "help", "?"}:
+            print("Commands: 1-6, x+/x-, y+/y-, z+/z-, m4+/m4-, step <cm>, m4step <n>, yaw <deg>, v, va, move, test red/blue/selected/all, limp, lock, capture, pos, save, q")
             continue
 
-        moved = False
-        wrist_moved = False
-        old_x, old_y, old_z = target_x, target_y, target_z
-        old_m4 = m4_offset
-
-        if key in (ord('w'), ord('W')):
-            target_x += step; moved = True
-        elif key in (ord('s'), ord('S')):
-            target_x -= step; moved = True
-        elif key in (ord('a'), ord('A')):
-            target_y += step; moved = True
-        elif key in (ord('d'), ord('D')):
-            target_y -= step; moved = True
-        elif key in (ord('u'), ord('U')):
-            target_z += step; moved = True
-        elif key in (ord('j'), ord('J')):
-            target_z -= step; moved = True
-        elif key in (ord('i'), ord('I')):
-            m4_offset += step_m4; wrist_moved = True
-            print(f"       m4 offset → {m4_offset:+d}")
-        elif key in (ord('k'), ord('K')):
-            m4_offset -= step_m4; wrist_moved = True
-            print(f"       m4 offset → {m4_offset:+d}")
-        elif key == ord('['):
-            step = max(0.10, step / 2)
-            print(f"       Step → {step:.2f} cm")
-        elif key == ord(']'):
-            step = min(5.0, step * 2)
-            print(f"       Step → {step:.2f} cm")
-        elif key == 13:  # ENTER
-            print(f"       ✅ Saved {bin_name} at ({target_x:.1f}, {target_y:.1f}, "
-                  f"z={target_z:.1f}) cm, m4_offset={m4_offset:+d}")
-            cv2.destroyAllWindows()
-            return (target_x, target_y, target_z, m4_offset)
-        elif key in (ord('l'), ord('L')):
-            # Switch to limp mode for this bin
-            cv2.destroyAllWindows()
-            result = _limp_bin_phase(ser, arm, bin_name, bin_index, total_bins)
-            if result is not None:
-                return result
-            # If limp mode was cancelled, re-enter WASD loop
-            cv2.namedWindow(WINDOW_NAME)
-            send_raw_command(ser, {"cmd": "set_profile", "vel": 80, "acc": 20})
-            send_ik_with_m4_offset(ser, arm, target_x, target_y, target_z, m4_offset)
-            time.sleep(0.3)
-            continue
-        elif key in (ord('q'), ord('Q')):
-            print("\n  ⛔ Quit requested.")
-            cv2.destroyAllWindows()
-            return None
-
-        if moved or wrist_moved:
-            solution, resp = send_ik_with_m4_offset(ser, arm, target_x, target_y, target_z, m4_offset)
-            if solution is None:
-                target_x, target_y, target_z = old_x, old_y, old_z
-                m4_offset = old_m4
-                print("       ⚠️  Move reverted (unreachable).")
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Limp-mode calibration for a single bin
-# ══════════════════════════════════════════════════════════════════════
-
-def _limp_bin_phase(ser, arm: ArmIK, bin_name: str, bin_index: int,
-                    total_bins: int
-                    ) -> Optional[Tuple[float, float, float, int]]:
-    """Record a bin position by manually guiding the limp arm.
-
-    Disables torque on motors 1–4 so the user can physically move the arm
-    by hand to the bin position.  Motor 5 (claw) stays torqued.
-
-    Forward kinematics converts the read motor positions to (x, y, z,
-    m4_offset) — the same format as the WASD phase.
-
-    Returns (x, y, z, m4_offset) on success, or None if cancelled.
-    """
-    if M3_DEFAULT_CURRENT_LIMIT > 0:
-        send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_DEFAULT_CURRENT_LIMIT})
-
-    print(f"\n{'═'*60}")
-    print(f"  🖐️  LIMP MODE — {bin_name}  (Bin {bin_index + 1}/{total_bins})")
-    print(f"{'═'*60}")
-    print("  The arm's motors (1–4) will be DISABLED so you can move")
-    print("  the arm freely by hand.  Motor 5 (claw) stays locked.")
-    print()
-    print("  ⚠️  WARNING: The arm will FALL under gravity when torque")
-    print("  is disabled!  SUPPORT THE ARM with your hand before")
-    print("  pressing Enter to disable torque.")
-    print()
-    print("  Steps:")
-    print(f"    1. Support the arm, then press Enter to go limp.")
-    print(f"    2. Guide the end-effector to the {bin_name} position.")
-    print(f"    3. Press Enter to record the position.")
-    print(f"    4. Torque re-engages automatically.")
-    print(f"    5. Enter to accept, or 'r' to retry, 'q' to cancel.")
-    print(f"{'═'*60}")
-
-    while True:  # retry loop
-        print(f"\n  👉  {bin_name} — SUPPORT the arm, then press Enter to disable torque…")
-        input()
-
-        # ── Disable torque on motors 1–4 (keep m5 claw torqued) ──
-        try:
-            for motor_id in range(1, 5):
-                cmd = json.dumps({"cmd": "set_torque", "id": motor_id, "enable": False})
-                ser.write((cmd + "\n").encode())
-                resp = ser.readline().decode(errors="replace").strip()
-                if "ERR" in resp:
-                    print(f"  ⚠ WARNING: Motor {motor_id} torque disable failed: {resp}")
-            print("       🔓 Motors 1–4 are now LIMP — guide the arm to the bin.")
-        except Exception as e:
-            print(f"       ❌ Error disabling torque: {e}")
-            try:
-                cmd = json.dumps({"cmd": "enable_torque"})
-                ser.write((cmd + "\n").encode())
-                ser.readline()
-            except Exception:
-                pass
-            print("       Retrying…")
+        if lowered.isdigit() and 1 <= int(lowered) <= len(EDITABLE_WAYPOINTS):
+            selected_index = int(lowered) - 1
+            last_valid_commands = None
+            last_valid_key = None
             continue
 
-        print(f"       Press Enter when the end-effector is at the {bin_name} position…")
-        input()
+        if lowered.startswith("step "):
+            try:
+                xyz_step = max(0.01, min(5.0, abs(float(lowered.split(maxsplit=1)[1]))))
+                print(f"  Cartesian step set to {xyz_step:.2f} cm")
+            except ValueError:
+                print("  Invalid step value")
+            continue
 
-        # ── Read positions and immediately re-enable torque ──────
-        positions = None
-        try:
-            cmd = json.dumps({"cmd": "read_pos"})
-            ser.write((cmd + "\n").encode())
-            resp = ser.readline().decode(errors="replace").strip()
+        if lowered.startswith("m4step "):
             try:
-                positions = json.loads(resp)
-            except json.JSONDecodeError:
-                print(f"       ❌ Invalid response from read_pos: {resp}")
-        except Exception as e:
-            print(f"       ❌ Error reading positions: {e}")
-        finally:
-            # ALWAYS re-enable torque so the arm holds position
+                m4_step = max(1, min(250, abs(int(lowered.split(maxsplit=1)[1]))))
+                print(f"  m4_offset step set to {m4_step} motor steps")
+            except ValueError:
+                print("  Invalid m4step value")
+            continue
+
+        if lowered.startswith("yaw "):
             try:
-                if positions is not None:
-                    print(f"       [DEBUG] Setting goal positions to current: {positions}")
-                    send_raw_command(ser, positions)
+                data["rear_base_yaw_limit_deg"] = _parse_rear_base_yaw_limit(lowered.split(maxsplit=1)[1])
+                arm = ArmIK(rear_base_yaw_limit_deg=data["rear_base_yaw_limit_deg"])
+                dirty = True
+                last_valid_commands = None
+                last_valid_key = None
+                print(f"  rear_base_yaw_limit_deg set to {data['rear_base_yaw_limit_deg']:.1f}")
+            except ValueError:
+                print("  Invalid yaw value")
+            continue
+
+        field_delta: tuple[str, float] | None = None
+        if lowered in {"x+", "xp"}:
+            field_delta = ("x", xyz_step)
+        elif lowered in {"x-", "xm"}:
+            field_delta = ("x", -xyz_step)
+        elif lowered in {"y+", "yp"}:
+            field_delta = ("y", xyz_step)
+        elif lowered in {"y-", "ym"}:
+            field_delta = ("y", -xyz_step)
+        elif lowered in {"z+", "zp"}:
+            field_delta = ("z", xyz_step)
+        elif lowered in {"z-", "zm"}:
+            field_delta = ("z", -xyz_step)
+        elif lowered in {"m4+", "m4p", "i"}:
+            field_delta = ("m4_offset", m4_step)
+        elif lowered in {"m4-", "m4m", "k"}:
+            field_delta = ("m4_offset", -m4_step)
+
+        if field_delta is not None:
+            field, delta = field_delta
+            old_pose = copy.deepcopy(get_waypoint(data, spec))
+            update_waypoint_field(data, spec, field, delta)
+            result = validate_waypoint(data, spec, arm)
+            print_validation_result(spec, result)
+            if not result["ok"]:
+                get_waypoint(data, spec).clear()
+                get_waypoint(data, spec).update(old_pose)
+                print("  Edit reverted because strict IK validation failed.")
+                last_valid_commands = None
+                last_valid_key = None
+            else:
+                dirty = True
+                last_valid_commands = result["commands"]
+                last_valid_key = spec.key
+                print("  Edit kept in memory. Use 'move' to test on hardware and 'save' to persist it; hardware did not move automatically.")
+            continue
+
+        if lowered == "v":
+            result = validate_waypoint(data, spec, arm)
+            print_validation_result(spec, result)
+            last_valid_commands = result["commands"] if result["ok"] else None
+            last_valid_key = spec.key if result["ok"] else None
+            continue
+
+        if lowered == "va":
+            results = validate_all_waypoints(data, arm)
+            for waypoint_spec in EDITABLE_WAYPOINTS:
+                print_validation_result(waypoint_spec, results[waypoint_spec.key])
+            continue
+
+        if lowered == "move":
+            if not hardware:
+                print("  Dry-run/no-hardware mode: no serial connection is open. Run without --dry-run to enable moves.")
+                continue
+            result = validate_waypoint(data, spec, arm)
+            print_validation_result(spec, result)
+            if not result["ok"]:
+                print("  Move refused because selected waypoint is invalid.")
+                continue
+            last_valid_commands = result["commands"]
+            last_valid_key = spec.key
+            maybe_move_hardware(ser, last_valid_commands, input_func)
+            continue
+
+        if lowered in {"limp", "l"}:
+            if not hardware:
+                print("  Dry-run/no-hardware mode: limp mode requires a serial connection. Run without --dry-run.")
+                continue
+            disable_limp_mode(ser, input_func)
+            continue
+
+        if lowered in {"lock", "torque", "torque on"}:
+            if not hardware:
+                print("  Dry-run/no-hardware mode: torque control requires a serial connection. Run without --dry-run.")
+                continue
+            enable_limp_mode(ser)
+            continue
+
+        if lowered in {"capture", "cap", "read capture"}:
+            if not hardware:
+                print("  Dry-run/no-hardware mode: current-position capture requires a serial connection. Run without --dry-run.")
+                continue
+            if capture_current_waypoint(data, spec, ser, arm):
+                dirty = True
+                result = validate_waypoint(data, spec, arm)
+                last_valid_commands = result["commands"] if result["ok"] else None
+                last_valid_key = spec.key if result["ok"] else None
+            continue
+
+        if lowered in {"pos", "read", "read_pos"}:
+            if not hardware:
+                print("  Dry-run/no-hardware mode: motor readout requires a serial connection. Run without --dry-run.")
+                continue
+            positions = read_motor_positions(ser)
+            if positions is not None:
+                print(f"  Current motor positions: {json.dumps(positions, sort_keys=True)}")
+            continue
+
+        if lowered.startswith("test"):
+            if not hardware:
+                print("  Dry-run/no-hardware mode: route movement requires a serial connection. Run without --dry-run.")
+                continue
+            parts = lowered.split()
+            target = parts[1] if len(parts) > 1 else "selected"
+            try:
+                if target in {"red", "red_bin"}:
+                    maybe_test_route_hardware(
+                        data,
+                        ser=ser,
+                        arm=arm,
+                        specs=route_specs_for_bin("RED_BIN"),
+                        label="RED_BIN route",
+                        confirmation="TEST RED",
+                        input_func=input_func,
+                    )
+                elif target in {"blue", "blue_bin"}:
+                    maybe_test_route_hardware(
+                        data,
+                        ser=ser,
+                        arm=arm,
+                        specs=route_specs_for_bin("BLUE_BIN"),
+                        label="BLUE_BIN route",
+                        confirmation="TEST BLUE",
+                        input_func=input_func,
+                    )
+                elif target == "selected":
+                    selected_route = route_specs_for_selected(spec)
+                    selected_bin = spec.bin_name or "selected"
+                    maybe_test_route_hardware(
+                        data,
+                        ser=ser,
+                        arm=arm,
+                        specs=selected_route,
+                        label=f"{selected_bin} route",
+                        confirmation=f"TEST {selected_bin.removesuffix('_BIN')}",
+                        input_func=input_func,
+                    )
+                elif target == "all":
+                    all_specs = route_specs_for_bin("RED_BIN") + route_specs_for_bin("BLUE_BIN")
+                    maybe_test_route_hardware(
+                        data,
+                        ser=ser,
+                        arm=arm,
+                        specs=all_specs,
+                        label="RED_BIN route followed by BLUE_BIN route",
+                        confirmation="TEST ALL",
+                        input_func=input_func,
+                    )
                 else:
-                    try:
-                        cmd = json.dumps({"cmd": "read_pos"})
-                        ser.write((cmd + "\n").encode())
-                        fallback_resp = ser.readline().decode(errors="replace").strip()
-                        fallback_pos = json.loads(fallback_resp)
-                        print(f"       [DEBUG] Fallback goal positions: {fallback_pos}")
-                        send_raw_command(ser, fallback_pos)
-                    except Exception:
-                        print("       [DEBUG] Could not read fallback positions — torque-on may snap!")
-
-                cmd = json.dumps({"cmd": "enable_torque"})
-                ser.write((cmd + "\n").encode())
-                ser.readline()
-                print("       🔒 Torque re-enabled — arm is holding position.")
-            except Exception as e2:
-                print(f"       ⚠️  Failed to re-enable torque: {e2}")
-                print("       ⚠️  MANUALLY support the arm!")
-
-        if positions is None:
-            print("       ⚠️  Could not read positions. Retrying…")
+                    print("  Unknown test target. Use: test red, test blue, test selected, or test all.")
+            except ValueError as exc:
+                print(f"  Route test unavailable: {exc}")
             continue
 
-        # Validate motor keys
-        required_keys = {"m1", "m2", "m3", "m4"}
-        if not required_keys.issubset(positions.keys()):
-            missing = required_keys - set(positions.keys())
-            print(f"       ❌ Missing motor data: {missing}. Response: {positions}")
-            print("       Retrying…")
+        if lowered == "save":
+            results = validate_all_waypoints(data, arm)
+            all_ok = True
+            for waypoint_spec in EDITABLE_WAYPOINTS:
+                result = results[waypoint_spec.key]
+                print_validation_result(waypoint_spec, result)
+                all_ok = all_ok and result["ok"]
+            if not all_ok:
+                print("  Save refused: fix invalid waypoints first.")
+                continue
+            confirm = input_func(f"Type SAVE to overwrite {BIN_CALIBRATION_FILE} with a backed-up two-bin route schema: ").strip()
+            if confirm != "SAVE":
+                print("  Save cancelled.")
+                continue
+            backup = save_route_schema_with_backup(data, BIN_CALIBRATION_FILE)
+            print(f"  Saved {BIN_CALIBRATION_FILE}")
+            if backup is not None:
+                print(f"  Backup written to {backup}")
+            print("  Confirmed: only RED_BIN and BLUE_BIN were written; REJECT_BIN was not added.")
+            dirty = False
+            saved = True
             continue
 
-        # ── Forward kinematics ───────────────────────────────────
-        try:
-            fk = arm.forward_kinematics(positions)
-            fk_x, fk_y, fk_z = fk["x"], fk["y"], fk["z"]
-
-            # Calculate relative m4_offset (delta from IK baseline)
-            try:
-                ik_sol = arm.solve(fk_x, fk_y, fk_z, skip_sag=True)
-                fk_m4_offset = int(positions["m4"] - ik_sol["m4"])
-            except Exception:
-                fk_m4_offset = 0
-        except Exception as e:
-            print(f"       ❌ Forward kinematics error: {e}")
-            print("       Retrying…")
+        if lowered == "last" and last_valid_commands is not None:
+            print(f"  Last valid commands for {last_valid_key}: {json.dumps(last_valid_commands, sort_keys=True)}")
             continue
 
-        print(f"       📐 Motor positions: m1={positions['m1']}, m2={positions['m2']}, "
-              f"m3={positions['m3']}, m4={positions['m4']}")
-        print(f"       📍 Computed:  X={fk_x:.2f} cm,  Y={fk_y:.2f} cm,  "
-              f"Z={fk_z:.2f} cm,  m4_offset={fk_m4_offset:+d}")
-
-        # ── Confirm or retry ─────────────────────────────────────
-        confirm = input("       Accept? (Enter=yes, r=retry, q=cancel): ").strip().lower()
-        if confirm == 'r':
-            print("       🔄 Retrying…")
-            continue
-        elif confirm == 'q':
-            print("       ⛔ Limp mode cancelled.")
-            return None
-
-        print(f"       ✅ Saved {bin_name} at ({fk_x:.2f}, {fk_y:.2f}, "
-              f"z={fk_z:.2f}) cm, m4_offset={fk_m4_offset:+d}")
-        return (fk_x, fk_y, fk_z, fk_m4_offset)
+        print("  Unknown command. Type h for help.")
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Save calibration
-# ══════════════════════════════════════════════════════════════════════
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Create CLI parser for the hardware-default bin calibration tool."""
 
-def _save_calibration(calibrated_bins: dict):
-    """Save all calibrated bin positions to bin_calibration.json."""
-    data = {
-        "bins": calibrated_bins,
-        "calibration_date": date.today().isoformat(),
-        "calibrated_with_scan_pose": {k: int(v) for k, v in SCAN_POSE.items()},
-    }
-    _save_json_atomic(BIN_CALIBRATION_FILE, data)
-    print(f"\n  💾  Calibration saved to {BIN_CALIBRATION_FILE}")
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════════════════
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Calibrate sorting bin positions (RED_BIN, BLUE_BIN, REJECT_BIN)."
+    parser = argparse.ArgumentParser(description="Interactive rear-bin route fine-tuning for RED_BIN and BLUE_BIN only.")
+    parser.add_argument("--file", type=Path, default=BIN_CALIBRATION_FILE, help=f"Calibration JSON path (default: {BIN_CALIBRATION_FILE})")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--hardware",
+        dest="hardware",
+        action="store_true",
+        default=True,
+        help="Connect to serial hardware (default). Movement still requires explicit command confirmations.",
     )
-    parser.add_argument("--port", default=SERIAL_PORT,
-                        help=f"Serial port (default: {SERIAL_PORT})")
-    parser.add_argument("--baud", type=int, default=SERIAL_BAUD,
-                        help=f"Baud rate (default: {SERIAL_BAUD})")
-    args = parser.parse_args()
+    mode_group.add_argument(
+        "--dry-run",
+        "--no-hardware",
+        dest="hardware",
+        action="store_false",
+        help="Offline editing/validation mode with no serial connection or motor movement.",
+    )
+    parser.add_argument("--port", default=SERIAL_PORT, help=f"Serial port for hardware mode (default: {SERIAL_PORT})")
+    parser.add_argument("--baud", type=int, default=SERIAL_BAUD, help=f"Serial baud for hardware mode (default: {SERIAL_BAUD})")
+    parser.add_argument("--validate-only", action="store_true", help="Validate all loaded/initialized waypoints and exit without saving or opening serial.")
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments; hardware is enabled unless dry-run/no-hardware is requested."""
+
+    return build_arg_parser().parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    global BIN_CALIBRATION_FILE
+
+    args = parse_args(argv)
+
+    BIN_CALIBRATION_FILE = args.file
+
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║      REAR BIN ROUTE FINE-TUNING — RED_BIN / BLUE_BIN        ║")
+    print("╠══════════════════════════════════════════════════════════════╣")
+    print("║  Hardware mode is default: serial opens unless --dry-run used.║")
+    print("║  Use limp/capture/lock to hand-guide waypoints like touch cal.║")
+    print("║  Saves require explicit SAVE and create timestamped backups.  ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+
+    data, messages = load_or_initialize_route_schema(BIN_CALIBRATION_FILE)
+    for message in messages:
+        print(f"[LOAD] {message}")
+    print("[LOAD] Editable route is constrained to RED_BIN and BLUE_BIN only.")
+
+    arm = ArmIK(rear_base_yaw_limit_deg=data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG))
+    results = validate_all_waypoints(data, arm)
+    for spec in EDITABLE_WAYPOINTS:
+        print_validation_result(spec, results[spec.key])
+
+    if args.validate_only:
+        return 0 if all(result["ok"] for result in results.values()) else 1
 
     ser = None
     try:
-        print("╔══════════════════════════════════════════════════════════════╗")
-        print("║          BIN CALIBRATION — Sort Bin Positions               ║")
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print("║  This tool calibrates the drop positions for each sorting   ║")
-        print("║  bin (RED_BIN, BLUE_BIN, REJECT_BIN).                      ║")
-        print("║                                                              ║")
-        print("║  For each bin:                                               ║")
-        print("║    1. Arm moves to the hardcoded bin position.              ║")
-        print("║    2. Use WASD to fine-tune, or L for limp mode.            ║")
-        print("║    3. Press ENTER to save the position.                     ║")
-        print("║                                                              ║")
-        print("║  Positions are saved to bin_calibration.json.               ║")
-        print("╚══════════════════════════════════════════════════════════════╝\n")
-
-        # ── Connect arm ────────────────────────────────────────────────
-        try:
-            ser = _open_serial(port=args.port, baud=args.baud)
-        except Exception as e:
-            print(f"❌ Could not connect to arm: {e}")
-            return
-
-        arm = ArmIK()
-
-        # ── Move to scan pose initially ────────────────────────────────
-        _move_to_scan_pose(ser)
-
-        calibrated_bins: dict = {}
-        total_bins = len(BIN_NAMES)
-
-        for idx, bin_name in enumerate(BIN_NAMES):
-            bx, by, bz = BINS[bin_name]
-
-            print(f"\n{'━'*60}")
-            print(f"  🗑️  BIN {idx + 1}/{total_bins}: {bin_name}")
-            print(f"       Hardcoded position: X={bx:.1f}, Y={by:.1f}, Z={bz:.1f}")
-            print(f"       Move the arm to the correct drop position for {bin_name}.")
-            print(f"{'━'*60}")
-
-            # Restore M3 full current for movement
-            if M3_DEFAULT_CURRENT_LIMIT > 0:
-                send_raw_command(ser, {"cmd": "set_current_limit", "id": 3, "value": M3_DEFAULT_CURRENT_LIMIT})
-
-            # Move to home first, then to the bin starting position
-            send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
-            send_ik_command(ser, arm, HOME_POSITION[0], HOME_POSITION[1], HOME_POSITION[2])
-            time.sleep(0.5)
-
-            # Enter WASD control loop starting at the hardcoded bin position
-            result = _wasd_bin_phase(ser, arm, bin_name, idx, total_bins,
-                                     start_x=bx, start_y=by, start_z=bz)
-
-            if result is None:
-                print("\n  ⛔ Calibration aborted by user.")
-                return
-
-            x, y, z, m4_off = result
-            calibrated_bins[bin_name] = {
-                "x": round(x, 2),
-                "y": round(y, 2),
-                "z": round(z, 2),
-                "m4_offset": int(m4_off),
-            }
-
-            # Lift to clearance height and return to home
-            send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
-            send_ik_command(ser, arm, x, y, CLEARANCE_HEIGHT)
-            time.sleep(0.5)
-            send_ik_command(ser, arm, HOME_POSITION[0], HOME_POSITION[1], HOME_POSITION[2])
-            time.sleep(0.5)
-
-        # ── Save all bin positions ─────────────────────────────────────
-        _save_calibration(calibrated_bins)
-
-        # ── Print summary table ────────────────────────────────────────
-        print(f"\n{'═'*60}")
-        print("  📋  BIN CALIBRATION SUMMARY")
-        print(f"{'═'*60}")
-        print(f"  {'Bin':<14} {'X':>7} {'Y':>7} {'Z':>7} {'m4_off':>8}")
-        print(f"  {'─'*14} {'─'*7} {'─'*7} {'─'*7} {'─'*8}")
-        for bn in BIN_NAMES:
-            b = calibrated_bins[bn]
-            print(f"  {bn:<14} {b['x']:>7.2f} {b['y']:>7.2f} {b['z']:>7.2f} {b['m4_offset']:>+8d}")
-        print(f"{'═'*60}")
-
-        # Return to scan pose
-        _move_to_scan_pose(ser)
-        print("\n  Done. Bin calibration complete! ✅\n")
-
+        if args.hardware:
+            print("[MODE] Hardware mode (default). Use --dry-run or --no-hardware for offline editing.")
+            ser = _open_serial(args.port, args.baud)
+        else:
+            print("[MODE] Dry-run/no-hardware mode. No serial connection will be opened and motors cannot move.")
+        interactive_loop(data, hardware=args.hardware, ser=ser)
+    except KeyboardInterrupt:
+        print("\nInterrupted. Unsaved in-memory edits were not written unless SAVE completed earlier.")
+        return 130
     finally:
         if ser is not None:
             try:
                 ser.close()
-                print("\n🔌 Serial connection closed.")
+                print("Serial connection closed.")
             except Exception:
                 pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
