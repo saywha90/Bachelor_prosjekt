@@ -29,6 +29,28 @@ Additional post-processing steps:
 - **Sag compensation:** a linear (or quadratic) correction `z_ik += reach × z_offset_multiplier` counteracts gravity droop, with coefficients loaded from [`sag_calibration.json`](../../src/ik/solver.py:115)
 - **Joint limits:** each motor's output is clamped to safe ranges (`JOINT_LIMITS` dict: m1 0–4095, m2/m3/m4 600–3500) to prevent hardware overload errors
 - **Reach clamping:** targets beyond `L1 + L2` are scaled inward to 99% of maximum reach, preserving the base angle
+- **Strict rear-route solving:** production rear placement uses [`ArmIK.solve_strict()`](../../src/ik/solver.py:525) on every route waypoint before movement. Rear routes are fold-over moves: the shoulder/forearm reach behind the robot over the top while base yaw remains guarded, instead of rotating M1 180°.
+
+## Rear-Placement Route Constraint
+
+Rear bins are represented by a strict route schema loaded from
+[`bin_calibration.json`](../../src/calibration/bin_calibration.json). The schema
+requires shared `front_neutral` and `rear_transfer` waypoints plus per-bin
+`approach` and `drop` poses for `RED_BIN` and `BLUE_BIN`. The real setup does
+not use a reject bin; no-grip / air-pick recovery returns to scan/look-again.
+
+The route yaw guard is configured by
+[`DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG`](../../src/config/arm.py:227), default
+±45°, and may be overridden per calibration file through
+`rear_base_yaw_limit_deg`. Strict validation rejects rear route waypoints whose
+fold-over base yaw would exceed that configured range. This keeps the base near
+front-facing and forces the rear motion to be achieved by the arm links folding
+over, which matches the physical clearance constraints of the current setup.
+
+Strict IK validation only proves the route is geometrically reachable and within
+configured yaw/joint limits. Final real route `x`/`z` values may still need slow
+physical fine-tuning to account for bin wall clearance, payload behaviour, and
+small hardware tolerances.
 
 ## Rationale
 

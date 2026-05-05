@@ -35,14 +35,29 @@ import math
 from collections import deque
 from typing import Optional
 import numpy as np
-import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
-from mpl_toolkits.mplot3d import Axes3D            # noqa: F401  (registers 3D projection)
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from config.arm import BINS, HOME_POSITION, SCAN_POSE
+from config.arm import HOME_POSITION, SCAN_POSE
 from ik.solver import ArmIK
+
+plt = None
+Poly3DCollection = None
+
+
+def _ensure_matplotlib():
+    """Import GUI-only matplotlib modules when a visualizer is constructed."""
+    global plt, Poly3DCollection
+
+    if plt is not None and Poly3DCollection is not None:
+        return
+
+    import matplotlib.pyplot as pyplot
+    from mpl_toolkits.mplot3d import Axes3D as _Axes3D  # noqa: F401  (registers 3D projection)
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection as _Poly3DCollection
+
+    plt = pyplot
+    Poly3DCollection = _Poly3DCollection
 
 # ─── Constants (imported from solver.py to stay in sync) ───────────
 L1 = ArmIK.L1               # shoulder → elbow  (cm)
@@ -57,6 +72,15 @@ SHOULDER_HEIGHT = ArmIK.shoulder_height  # base to shoulder joint (cm)
 
 # Reduced polygon count for cylinders (was 14)
 _CYLINDER_SIDES = 8
+
+
+# Simulation-only rear layout matching the physical demo setup.  Production
+# sorting bin semantics remain in config.arm.BINS; the visualizer intentionally
+# shows only the two real rear bins used by the current route demo.
+SIMULATION_REAR_BINS = {
+    "RED_BIN": (-28.0, -7.0, 16.0),
+    "BLUE_BIN": (-28.0, 7.0, 16.0),
+}
 
 
 # ─── Colour palette ─────────────────────────────────────────────────
@@ -300,15 +324,16 @@ class ArmVisualizer:
     BIN_COLOURS = {
         "RED_BIN":    "#e74c3c",
         "BLUE_BIN":   "#3498db",
-        "REJECT_BIN": "#95a5a6",
     }
 
     def __init__(self):
+        _ensure_matplotlib()
         plt.ion()   # interactive mode — non-blocking show
 
         self.fig = plt.figure(figsize=(10, 8))
         self.fig.patch.set_facecolor("#1a1a2e")
         self.ax = self.fig.add_subplot(111, projection="3d")
+        self._route_artists = []
 
         self._style_axes()
         self._draw_environment()
@@ -344,7 +369,7 @@ class ArmVisualizer:
         ax = self.ax
         ax.set_facecolor("#16213e")
 
-        ax.set_xlim(-25, 60)
+        ax.set_xlim(-40, 50)
         ax.set_ylim(-50, 50)
         ax.set_zlim(-5, 70)
 
@@ -378,14 +403,15 @@ class ArmVisualizer:
         ax = self.ax
 
         # Ground plane (faint grid)
-        gx = np.linspace(-10, 45, 12)
+        gx = np.linspace(-35, 45, 14)
         gy = np.linspace(-35, 35, 14)
         gx, gy = np.meshgrid(gx, gy)
         gz = np.zeros_like(gx)
         ax.plot_surface(gx, gy, gz, alpha=0.06, color="#4fc3f7", zorder=0)
 
-        # Draw each bin as a wireframe box
-        for name, (bx, by, bz) in BINS.items():
+        # Draw the simulation rear bins only: red and blue behind the base,
+        # beside each other left/right.  There is no reject bin in this layout.
+        for name, (bx, by, bz) in SIMULATION_REAR_BINS.items():
             colour = self.BIN_COLOURS.get(name, "#ffffff")
             faces = _box_vertices(bx, by, bz / 2, sx=7, sy=7, sz=bz)
             poly = Poly3DCollection(
@@ -413,6 +439,53 @@ class ArmVisualizer:
                                 facecolor=COLORS['base'],
                                 edgecolor='#C0B89A', linewidth=0.4)
         ax.add_collection3d(poly)
+
+    def draw_route_waypoints(self, waypoints: list[tuple[str, dict]], *,
+                             title: str = "Rear-placement route corridor"):
+        """Overlay a labelled Cartesian route corridor on the simulation.
+
+        Parameters
+        ----------
+        waypoints : list of (name, pose) tuples
+            Ordered strict route waypoints. Each pose must contain ``x``, ``y``,
+            and ``z`` in centimetres.
+        title : str
+            Legend label for the corridor line.
+        """
+        for artist in self._route_artists:
+            try:
+                artist.remove()
+            except (ValueError, AttributeError):
+                pass
+        self._route_artists.clear()
+
+        if not waypoints:
+            return
+
+        xs = [float(pose["x"]) for _name, pose in waypoints]
+        ys = [float(pose["y"]) for _name, pose in waypoints]
+        zs = [float(pose["z"]) for _name, pose in waypoints]
+
+        line, = self.ax.plot(
+            xs, ys, zs, "o--",
+            color="#ffeb3b", linewidth=2.0, markersize=5,
+            markeredgecolor="#111", markeredgewidth=0.6,
+            alpha=0.9, label=title,
+        )
+        self._route_artists.append(line)
+
+        for idx, (name, pose) in enumerate(waypoints, start=1):
+            label = self.ax.text(
+                float(pose["x"]), float(pose["y"]), float(pose["z"]) + 1.5,
+                f"{idx}. {name}",
+                color="#ffeb3b", fontsize=7, ha="center", fontweight="bold",
+            )
+            self._route_artists.append(label)
+
+        legend = self.ax.legend(loc="upper left", fontsize=8)
+        self._route_artists.append(legend)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
 
     # ── Arm shape builders ───────────────────────────────────────────
 

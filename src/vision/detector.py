@@ -334,19 +334,20 @@ class SimpleBallDetector:
         ]
 
         # Multi-range HSV thresholds for BLUE
-        # ✅ Utvidet 2026-04-25 for å dekke mørk marineblå (navy) i tillegg til lyseblå.
-        # Lyseblå (tidligere kalibrert): H=103-110, S=174-255, V=92-200
-        # Mørk marineblå (navy):         H=100-130, S=80-180,  V=20-130
-        #
-        # Adaptive "high" lighting legger til +10 på S_min og V_min, så reelle
-        # effektive gulv under sterkt lys er:
-        #   Range 1: S≥160, V≥60  (lyseblå)
-        #   Range 2: S≥90,  V≥30  (mørk navy)
+        # Dekker både mørk marineblå og lysere/cyan-ish blå baller uten å gjøre
+        # rød/bakgrunn mer permissiv: de lavere S-gulvene brukes kun i blå-masken,
+        # og _validate_contour() krever fortsatt blå hue-dominans for lav-S konturer.
+        # Typiske målinger:
+        #   Lys/cyan-ish blå: H≈85-110,  S≈55-255, V≈60-255
+        #   Standard blå:     H≈100-135, S≈90-255, V≈40-255
+        #   Mørk navy:        H≈95-135,  S≈70-255, V≈20-190
         self.blue_ranges = [
-            # Blå — primær range (lyseblå, høy metning)
-            (np.array([100, 150,  50]), np.array([130, 255, 255])),
+            # Lys/cyan-ish blå — lavere metning, men begrenset hue-vindu.
+            (np.array([ 85,  55,  60]), np.array([115, 255, 255])),
+            # Blå — primær range (standard/mettet blå)
+            (np.array([100,  90,  40]), np.array([135, 255, 255])),
             # Mørk marineblå (navy) — lavere S og V, bredere H
-            (np.array([ 95,  80,  20]), np.array([130, 255, 180])),
+            (np.array([ 95,  70,  20]), np.array([135, 255, 190])),
         ]
         
         # Morphological kernels for noise reduction.
@@ -671,8 +672,8 @@ class SimpleBallDetector:
         red_mask = valid_mask & ((hue_ch <= 25) | (hue_ch >= 145))
         red_pixels = int(np.sum(red_mask))
         
-        # Blå: Hue 95-135
-        blue_mask = valid_mask & (hue_ch >= 95) & (hue_ch <= 135)
+        # Blå: Hue 85-135 — konsistent med blå HSV-maskene (inkl. lys/cyan-ish blå).
+        blue_mask = valid_mask & (hue_ch >= 85) & (hue_ch <= 135)
         blue_pixels = int(np.sum(blue_mask))
         
         # Bestemmelse: klar majoritet av gyldige piksler (30%).
@@ -777,9 +778,11 @@ class SimpleBallDetector:
         # Firkant-ROI inkluderer ~21.5% bakgrunnspikslene i hjørnene og trekker
         # ned sat_score. Konturmask gir rene ballverdier → korrekt confidence.
         sat_score = 0.0
+        blue_hue_ratio = 0.0
         if hsv is not None:
             _cmask = np.zeros(hsv.shape[:2], dtype=np.uint8)
             cv2.drawContours(_cmask, [contour], -1, 255, cv2.FILLED)
+            _hue_flat = hsv[:, :, 0][_cmask > 0]
             _sat_flat = hsv[:, :, 1][_cmask > 0]
             _val_flat = hsv[:, :, 2][_cmask > 0]
             if _sat_flat.size > 0:
@@ -787,8 +790,14 @@ class SimpleBallDetector:
                 _not_glare = ~((_sat_flat < 30) & (_val_flat > 210))
                 if np.sum(_not_glare) > 5:
                     sat_score = float(np.mean(_sat_flat[_not_glare])) / 255.0
+                    if color == BallColor.BLUE:
+                        _blue_hues = (_hue_flat[_not_glare] >= 85) & (_hue_flat[_not_glare] <= 135)
+                        blue_hue_ratio = float(np.mean(_blue_hues))
                 else:
                     sat_score = float(np.mean(_sat_flat)) / 255.0
+                    if color == BallColor.BLUE:
+                        _blue_hues = (_hue_flat >= 85) & (_hue_flat <= 135)
+                        blue_hue_ratio = float(np.mean(_blue_hues))
 
         # Kvalitetsscore: normalisert 0-1 for hver komponent.
         # Bonusen starter fra base-terskelene (0.65/0.75), slik at baller
@@ -805,7 +814,15 @@ class SimpleBallDetector:
         # Shadows from balls on the desk can pass shape checks (roughly circular)
         # but have low saturation. CLAHE can boost shadow sat_score to ~0.30-0.38.
         # Real balls always have sat_score ≥ 0.45+, even matte ones.
-        if sat_score < 0.40:
+        if color == BallColor.BLUE:
+            # Lys/cyan-ish blå baller kan ha lavere snittmetning enn røde baller,
+            # særlig etter highlights/CLAHE. Tillat dette kun når konturen fortsatt
+            # er klart blå i hue, slik at rød og nøytral bakgrunn ikke svekkes.
+            if sat_score < 0.28:
+                return None
+            if sat_score < 0.40 and blue_hue_ratio < 0.65:
+                return None
+        elif sat_score < 0.40:
             return None
 
         # ── Edge-spesifikk fargegate ────────────────────────────────────────
@@ -814,8 +831,12 @@ class SimpleBallDetector:
         # mens kabler/ledninger typisk har sat_score ≈ 0.30-0.40.
         # Ikke-klippede konturer trenger ikke denne sjekken — de passerte allerede
         # circularity ≥ 0.65.
-        if edge_clipped and circularity < 0.65 and sat_score < 0.45:
-            return None
+        if edge_clipped and circularity < 0.65:
+            if color == BallColor.BLUE:
+                if sat_score < 0.35 or blue_hue_ratio < 0.75:
+                    return None
+            elif sat_score < 0.45:
+                return None
 
         # ── Fix 3: Proporsjonal confidence ──────────────────────────────────
         # Erstatter det tidligere 90%-gulvet. Confidence reflekterer nå faktisk
@@ -1386,4 +1407,3 @@ class SimpleBallDetector:
         previous scan do not produce phantom detections in the next scan.
         """
         self._tracker.reset()
-

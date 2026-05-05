@@ -23,14 +23,22 @@ import json
 import logging
 import math
 import os
+from typing import Any
 
-from config.arm import MAX_REACH_PITCH, CLAW_OPEN_POS
+from config.arm import (
+    DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG,
+    MAX_REACH_PITCH,
+    CLAW_OPEN_POS,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ArmIK:
     """Geometric IK for a 4-DOF pick-and-place arm (+ claw motor)."""
+
+    STRICT_INTENTS = {"pickup", "carry", "rear_place"}
+    REAR_FOLD_BACK_MIN_SHOULDER_DEG: float = 90.0
 
     # ── Claw default position ──────────────────────────────────────────
     CLAW_OPEN: int = CLAW_OPEN_POS   # imported from config.arm
@@ -103,6 +111,7 @@ class ArmIK:
         z_offset_constant: float | None = None,
         sag_model: str | None = None,
         shoulder_height: float | None = None,
+        rear_base_yaw_limit_deg: float | None = None,
     ) -> None:
         if l1 is not None:
             self.L1 = l1
@@ -120,6 +129,10 @@ class ArmIK:
             self.sag_model = sag_model
         if shoulder_height is not None:
             self.shoulder_height = shoulder_height
+        if rear_base_yaw_limit_deg is None:
+            self.rear_base_yaw_limit_deg = float(DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)
+        else:
+            self.rear_base_yaw_limit_deg = self._parse_rear_base_yaw_limit(rear_base_yaw_limit_deg)
 
         # Auto-load sag calibration if file exists and no explicit overrides given
         if z_offset_multiplier is None and z_offset_quadratic is None and z_offset_constant is None:
@@ -181,10 +194,147 @@ class ArmIK:
         steps = int(round(centre + radians / self.RAD_PER_STEP))
         return max(0, min(self.STEPS_PER_REV - 1, steps))
 
+    def _rad_to_steps_unclamped(self, radians: float, centre: int | None = None) -> int:
+        """Convert radians to Dynamixel steps without clamping."""
+        if centre is None:
+            centre = self.STEP_CENTRE
+        return int(round(centre + radians / self.RAD_PER_STEP))
+
+    @staticmethod
+    def _normalize_angle_rad(angle: float) -> float:
+        """Normalize an angle to [-π, π]."""
+        return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+    @classmethod
+    def _rear_fold_base_angle(cls, x: float, y: float) -> float:
+        """Return the small-yaw base angle for reaching a rear target by folding over."""
+        if abs(x) < 1e-9 and abs(y) < 1e-9:
+            return 0.0
+        return cls._normalize_angle_rad(math.atan2(y, x) + math.pi)
+
+    @staticmethod
+    def _parse_rear_base_yaw_limit(raw_limit: Any) -> float:
+        """Validate and return a symmetric rear-route base-yaw limit in degrees."""
+        try:
+            limit = abs(float(raw_limit))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"rear base yaw limit must be numeric, got {raw_limit!r}") from exc
+        if not math.isfinite(limit) or limit < 0.0 or limit > 180.0:
+            raise ValueError(f"rear base yaw limit {raw_limit!r} must be finite and within [0, 180] degrees")
+        return limit
+
+    def _select_rear_fold_solution(
+        self,
+        *,
+        x: float,
+        y: float,
+        z: float,
+        intent: str,
+        sag_correction: float,
+        min_reach: float,
+        max_reach: float,
+        m4_offset: int,
+        m5: int,
+    ) -> tuple[float, float, float, float, float, float, float, float, str]:
+        """Select a strict rear fold-over IK branch without spinning the base."""
+        target_r = -math.sqrt(x ** 2 + y ** 2)
+        theta_pitch = -math.pi / 2.0
+        pitch_step = math.radians(1)
+        min_shoulder = math.radians(self.REAR_FOLD_BACK_MIN_SHOULDER_DEG)
+        m4_offset_rad = int(m4_offset or 0) * self.RAD_PER_STEP
+
+        rejection_reason = "no fold-over branch candidate was generated"
+        while True:
+            final_theta_pitch = theta_pitch + m4_offset_rad
+            wrist_r = target_r - self.L3 * math.cos(final_theta_pitch)
+            wrist_z = z - self.L3 * math.sin(final_theta_pitch)
+            wrist_z_ik = wrist_z + sag_correction - self.shoulder_height
+
+            wrist_z_floor = self.Z_MIN - self.L3 * math.sin(final_theta_pitch) - self.shoulder_height
+            if wrist_z_ik < wrist_z_floor:
+                raise ValueError(
+                    f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                    f"sag-corrected wrist_z_ik={wrist_z_ik:.2f} would violate floor "
+                    f"limit {wrist_z_floor:.2f}; strict path does not clamp"
+                )
+
+            d = math.sqrt(wrist_r ** 2 + wrist_z_ik ** 2)
+            if min_reach <= d <= max_reach:
+                cos_elbow = (self.L1 ** 2 + self.L2 ** 2 - d ** 2) / (2 * self.L1 * self.L2)
+                cos_alpha = (self.L1 ** 2 + d ** 2 - self.L2 ** 2) / (2 * self.L1 * d)
+                if -1.0000001 <= cos_elbow <= 1.0000001 and -1.0000001 <= cos_alpha <= 1.0000001:
+                    cos_elbow = max(-1.0, min(1.0, cos_elbow))
+                    cos_alpha = max(-1.0, min(1.0, cos_alpha))
+                    elbow_interior = math.acos(cos_elbow)
+                    theta_elbow = math.pi - elbow_interior
+                    alpha = math.acos(cos_alpha)
+                    phi = math.atan2(wrist_z_ik, wrist_r)
+
+                    for branch_sign, branch_name in ((1.0, "fold_back_high"), (-1.0, "fold_back_low")):
+                        theta_shoulder = phi + branch_sign * alpha
+                        if theta_shoulder < min_shoulder:
+                            rejection_reason = (
+                                f"candidate shoulder angle {math.degrees(theta_shoulder):.1f}° "
+                                f"is below fold-back minimum {self.REAR_FOLD_BACK_MIN_SHOULDER_DEG:.1f}°"
+                            )
+                            continue
+
+                        link2_angle = theta_shoulder - branch_sign * theta_elbow
+                        theta_wrist = self._normalize_angle_rad(theta_pitch - link2_angle)
+                        raw_commands = {
+                            "m2": self._rad_to_steps_unclamped(theta_shoulder - math.pi / 2),
+                            "m3": self._rad_to_steps_unclamped(-branch_sign * theta_elbow),
+                            "m4": self._rad_to_steps_unclamped(theta_wrist, centre=self.M4_CENTRE) + m4_offset,
+                            "m5": m5,
+                        }
+                        invalid = []
+                        for key, value in raw_commands.items():
+                            lo, hi = self.JOINT_LIMITS[key]
+                            if value < lo or value > hi:
+                                invalid.append(f"{key}={value} outside [{lo}, {hi}]")
+                        if invalid:
+                            rejection_reason = "; ".join(invalid)
+                            continue
+
+                        return (
+                            wrist_r,
+                            wrist_z,
+                            wrist_z_ik,
+                            wrist_r,
+                            d,
+                            theta_pitch,
+                            branch_sign,
+                            target_r,
+                            branch_name,
+                        )
+                else:
+                    rejection_reason = "triangle cosine outside [-1, 1]"
+            elif d < min_reach:
+                rejection_reason = f"planar distance {d:.2f} cm is less than min reach {min_reach:.2f} cm"
+            else:
+                rejection_reason = f"planar distance {d:.2f} cm exceeds max reach {max_reach:.2f} cm"
+
+            if theta_pitch >= MAX_REACH_PITCH:
+                break
+            theta_pitch = min(theta_pitch + pitch_step, MAX_REACH_PITCH)
+
+        raise ValueError(
+            f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+            f"target is unreachable by rear fold-over branch within joint limits ({rejection_reason})"
+        )
+
     # ──────────────────────────────────────────────────────────────────
     #  Core IK solver
     # ──────────────────────────────────────────────────────────────────
-    def solve(self, x: float, y: float, z: float, skip_sag: bool = False, strict: bool = False) -> dict:
+    def solve(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        skip_sag: bool = False,
+        strict: bool = False,
+        m4_offset: int = 0,
+    ) -> dict:
         """Compute motor step positions for the given (x, y, z) target.
 
         Parameters
@@ -195,6 +345,11 @@ class ArmIK:
             If True, skip the internal sag/droop compensation.
         strict : bool
             If True, raise ValueError if the target is out of reach instead of clamping.
+        m4_offset : int
+            Wrist trim in Dynamixel steps.  The trim changes the final claw
+            pitch, so it participates in wrist-position geometry instead of
+            being added only after IK.  This keeps limp-mode FK captures
+            replayable at the same claw-tip XYZ.
 
         Returns
         -------
@@ -206,6 +361,9 @@ class ArmIK:
         ValueError
             If the target is unreachable (and strict is True, or if too close).
         """
+
+        m4_offset = int(m4_offset or 0)
+        m4_offset_rad = m4_offset * self.RAD_PER_STEP
 
         # ── 0. Hover / floor-collision prevention ──────────────────────
         #   The claw tip must stay at least Z_MIN (2 cm) above the desk.
@@ -247,9 +405,12 @@ class ArmIK:
         pitch_step = math.radians(1)  # 1° per iteration
 
         while True:
-            # Wrist position derived from pitch angle
-            wrist_x = x - self.L3 * math.cos(theta_pitch)
-            wrist_z = z - self.L3 * math.sin(theta_pitch)
+            # Wrist position derived from final claw pitch. ``m4_offset``
+            # changes that final pitch, so it must be included before
+            # solving the shoulder/elbow geometry.
+            final_theta_pitch = theta_pitch + m4_offset_rad
+            wrist_x = horiz_reach - self.L3 * math.cos(final_theta_pitch)
+            wrist_z = z - self.L3 * math.sin(final_theta_pitch)
 
             # Apply sag compensation and shoulder height offset
             wrist_z_ik = wrist_z + sag_correction - self.shoulder_height
@@ -257,7 +418,7 @@ class ArmIK:
             # ── Floor safety clamp ─────────────────────────────────
             #   Ensure the sag-corrected target doesn't drive the claw
             #   below Z_MIN (accounting for shoulder height).
-            wrist_z_floor = self.Z_MIN - self.L3 * math.sin(theta_pitch) - self.shoulder_height
+            wrist_z_floor = self.Z_MIN - self.L3 * math.sin(final_theta_pitch) - self.shoulder_height
             if wrist_z_ik < wrist_z_floor:
                 logger.warning(
                     "[IK] Sag-corrected wrist_z_ik=%.2f would place claw below Z_MIN=%.1f — "
@@ -266,8 +427,10 @@ class ArmIK:
                 )
                 wrist_z_ik = wrist_z_floor
 
-            # Planar reach from shoulder to wrist in the arm's 2D plane
-            r = math.sqrt(wrist_x ** 2 + y ** 2)
+            # Planar reach from shoulder to wrist in the arm's 2D plane.
+            # ``wrist_x`` is already a radial distance after projecting the
+            # Cartesian target onto the base yaw direction.
+            r = wrist_x
             d = math.sqrt(r ** 2 + wrist_z_ik ** 2)
 
             if d <= max_reach:
@@ -361,7 +524,7 @@ class ArmIK:
         # to "rotation from vertical" (motor convention).
         m2 = self._rad_to_steps(theta_shoulder - math.pi / 2)
         m3 = self._rad_to_steps(-theta_elbow)  # Elbow requires negation for correct direction
-        m4 = self._rad_to_steps(theta_wrist, centre=self.M4_CENTRE)  # NOT negated — real hardware wrist tilts opposite to simulator
+        m4 = self._rad_to_steps(theta_wrist, centre=self.M4_CENTRE) + m4_offset  # NOT negated — real hardware wrist tilts opposite to simulator
 
         # ── 9. Enforce joint limits to prevent overload errors ────────
         #    If a computed position exceeds the safe range, clamp it and
@@ -380,6 +543,276 @@ class ArmIK:
                 result[key] = clamped
 
         return result
+
+    def solve_strict(self, pose: Any, intent: str) -> dict:
+        """Strict IK solve for prevalidated production routes.
+
+        Unlike ``solve()``, this path rejects invalid requests instead of
+        silently clamping floor height, reach, joint limits, or wrist trim.
+        ``intent`` must explicitly be one of ``pickup``, ``carry``, or
+        ``rear_place``.  ``pose`` may be a mapping/object with ``x``, ``y``,
+        ``z`` and optional ``m4_offset``, ``m5``, and ``skip_sag`` fields, or
+        a three-item ``(x, y, z)`` sequence.
+
+        Returns a structured dictionary containing ``commands`` and
+        ``validation``.  Raises ``ValueError`` with a clear reason on failure.
+        """
+        if intent not in self.STRICT_INTENTS:
+            raise ValueError(
+                f"Invalid strict IK intent {intent!r}; expected one of "
+                f"{sorted(self.STRICT_INTENTS)}"
+            )
+
+        x, y, z, m4_offset, m5, skip_sag, rear_base_yaw_limit_override = self._parse_strict_pose(pose)
+        original_pose = {
+            "x": x,
+            "y": y,
+            "z": z,
+            "m4_offset": m4_offset,
+            "m5": m5,
+            "skip_sag": skip_sag,
+        }
+        if rear_base_yaw_limit_override is not None:
+            original_pose["rear_base_yaw_limit_deg"] = rear_base_yaw_limit_override
+
+        if z < self.Z_MIN:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"z is below Z_MIN={self.Z_MIN:.1f}; strict path does not clamp"
+            )
+
+        horiz_reach = math.sqrt(x ** 2 + y ** 2)
+        if skip_sag:
+            sag_correction = 0.0
+        elif self.sag_model == "quadratic" and self.z_offset_quadratic != 0.0:
+            sag_correction = (
+                (horiz_reach ** 2) * self.z_offset_quadratic
+                + horiz_reach * self.z_offset_multiplier
+                + self.z_offset_constant
+            )
+        else:
+            sag_correction = horiz_reach * self.z_offset_multiplier + self.z_offset_constant
+
+        if sag_correction < self.SAG_CORRECTION_MIN or sag_correction > self.SAG_CORRECTION_MAX:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"sag correction {sag_correction:.2f} cm outside feasible range "
+                f"[{self.SAG_CORRECTION_MIN:.1f}, {self.SAG_CORRECTION_MAX:.1f}]"
+            )
+
+        theta_pitch = -math.pi / 2.0
+        max_reach = self.L1 + self.L2
+        min_reach = abs(self.L1 - self.L2)
+        pitch_step = math.radians(1)
+        selected = None
+        m4_offset_rad = m4_offset * self.RAD_PER_STEP
+
+        rear_base_yaw_limit_deg = self._parse_rear_base_yaw_limit(
+            rear_base_yaw_limit_override
+            if rear_base_yaw_limit_override is not None
+            else self.rear_base_yaw_limit_deg
+        )
+        base_yaw_limit_range = (-rear_base_yaw_limit_deg, rear_base_yaw_limit_deg)
+        target_r = horiz_reach
+        shoulder_branch_sign = 1.0
+        ik_branch = "front_forward"
+
+        if intent == "rear_place":
+            theta_base = self._rear_fold_base_angle(x, y)
+            theta_base_deg = math.degrees(theta_base)
+            if theta_base_deg < base_yaw_limit_range[0] - 1e-9 or theta_base_deg > base_yaw_limit_range[1] + 1e-9:
+                raise ValueError(
+                    f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                    f"rear-route base yaw {theta_base_deg:.1f}° outside configured range "
+                    f"[{base_yaw_limit_range[0]:.1f}°, {base_yaw_limit_range[1]:.1f}°]; "
+                    f"strict path does not spin the base around"
+                )
+            selected = self._select_rear_fold_solution(
+                x=x,
+                y=y,
+                z=z,
+                intent=intent,
+                sag_correction=sag_correction,
+                min_reach=min_reach,
+                max_reach=max_reach,
+                m4_offset=m4_offset,
+                m5=m5,
+            )
+            _wrist_x, _wrist_z, z_ik, r, d, theta_pitch, shoulder_branch_sign, target_r, ik_branch = selected
+        else:
+            while True:
+                final_theta_pitch = theta_pitch + m4_offset_rad
+                wrist_x = horiz_reach - self.L3 * math.cos(final_theta_pitch)
+                wrist_z = z - self.L3 * math.sin(final_theta_pitch)
+                wrist_z_ik = wrist_z + sag_correction - self.shoulder_height
+
+                wrist_z_floor = self.Z_MIN - self.L3 * math.sin(final_theta_pitch) - self.shoulder_height
+                if wrist_z_ik < wrist_z_floor:
+                    raise ValueError(
+                        f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                        f"sag-corrected wrist_z_ik={wrist_z_ik:.2f} would violate floor "
+                        f"limit {wrist_z_floor:.2f}; strict path does not clamp"
+                    )
+
+                r = wrist_x
+                d = math.sqrt(r ** 2 + wrist_z_ik ** 2)
+                if d <= max_reach:
+                    selected = (wrist_x, wrist_z, wrist_z_ik, r, d, theta_pitch)
+                    break
+
+                if theta_pitch >= MAX_REACH_PITCH:
+                    break
+                theta_pitch = min(theta_pitch + pitch_step, MAX_REACH_PITCH)
+
+            theta_base = math.atan2(y, x)
+
+        if selected is None:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"target is unreachable without projection/clamping"
+            )
+
+        if intent != "rear_place":
+            _wrist_x, _wrist_z, z_ik, r, d, theta_pitch = selected
+        if d < min_reach:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"planar distance {d:.2f} cm is less than min reach {min_reach:.2f} cm"
+            )
+
+        cos_elbow = (self.L1 ** 2 + self.L2 ** 2 - d ** 2) / (2 * self.L1 * self.L2)
+        if cos_elbow < -1.0000001 or cos_elbow > 1.0000001:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"elbow cosine {cos_elbow:.6f} outside [-1, 1]"
+            )
+        cos_elbow = max(-1.0, min(1.0, cos_elbow))
+        elbow_interior = math.acos(cos_elbow)
+        theta_elbow = math.pi - elbow_interior
+
+        cos_alpha = (self.L1 ** 2 + d ** 2 - self.L2 ** 2) / (2 * self.L1 * d)
+        if cos_alpha < -1.0000001 or cos_alpha > 1.0000001:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"shoulder cosine {cos_alpha:.6f} outside [-1, 1]"
+            )
+        cos_alpha = max(-1.0, min(1.0, cos_alpha))
+        alpha = math.acos(cos_alpha)
+
+        phi = math.atan2(z_ik, r)
+        theta_shoulder = phi + shoulder_branch_sign * alpha
+        if intent == "rear_place" and theta_shoulder < math.radians(self.REAR_FOLD_BACK_MIN_SHOULDER_DEG):
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"selected shoulder angle {math.degrees(theta_shoulder):.1f}° is below "
+                f"fold-back minimum {self.REAR_FOLD_BACK_MIN_SHOULDER_DEG:.1f}°"
+            )
+        link2_angle = theta_shoulder - shoulder_branch_sign * theta_elbow
+        theta_wrist = theta_pitch - link2_angle
+        if intent == "rear_place":
+            theta_wrist = self._normalize_angle_rad(theta_wrist)
+
+        m1 = int(round(self.M1_CENTRE + theta_base / self.RAD_PER_STEP))
+        m2 = self._rad_to_steps_unclamped(theta_shoulder - math.pi / 2)
+        m3 = self._rad_to_steps_unclamped(-shoulder_branch_sign * theta_elbow)
+        raw_m4 = self._rad_to_steps_unclamped(theta_wrist, centre=self.M4_CENTRE)
+        m4 = raw_m4 + m4_offset
+
+        if raw_m4 < 0 or raw_m4 > self.STEPS_PER_REV - 1:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"raw wrist command m4={raw_m4} outside servo range"
+                f"{'; rear fold-over branch rejected' if intent == 'rear_place' else ''}"
+            )
+        if m4 < 0 or m4 > self.STEPS_PER_REV - 1:
+            raise ValueError(
+                f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                f"wrist trim/offset infeasible (raw m4={raw_m4}, offset={m4_offset}, final={m4})"
+                f"{'; rear fold-over branch rejected' if intent == 'rear_place' else ''}"
+            )
+
+        commands = {"m1": m1, "m2": m2, "m3": m3, "m4": m4, "m5": m5}
+        joint_validation = {}
+        for key, val in commands.items():
+            lo, hi = self.JOINT_LIMITS[key]
+            ok = lo <= val <= hi
+            joint_validation[key] = {"value": val, "min": lo, "max": hi, "ok": ok}
+            if not ok:
+                raise ValueError(
+                    f"Strict IK rejected {intent} pose ({x:.1f}, {y:.1f}, {z:.1f}): "
+                    f"joint limit violation {key}={val} outside [{lo}, {hi}]"
+                )
+
+        return {
+            "commands": commands,
+            "validation": {
+                "intent": intent,
+                "pose": original_pose,
+                "horiz_reach_cm": horiz_reach,
+                "sag_correction_cm": sag_correction,
+                "planar_distance_cm": d,
+                "planar_wrist_radius_cm": r,
+                "target_radius_cm": target_r,
+                "max_reach_cm": max_reach,
+                "min_reach_cm": min_reach,
+                "ik_branch": ik_branch,
+                "theta_base_deg": math.degrees(theta_base),
+                "base_yaw_deg": math.degrees(theta_base),
+                "base_yaw_range_deg": list(base_yaw_limit_range) if intent == "rear_place" else None,
+                "base_yaw_within_range": (
+                    base_yaw_limit_range[0] - 1e-9 <= math.degrees(theta_base) <= base_yaw_limit_range[1] + 1e-9
+                    if intent == "rear_place" else True
+                ),
+                "theta_shoulder_deg": math.degrees(theta_shoulder),
+                "shoulder_fold_back_min_deg": self.REAR_FOLD_BACK_MIN_SHOULDER_DEG if intent == "rear_place" else None,
+                "shoulder_in_fold_back_range": (
+                    math.degrees(theta_shoulder) >= self.REAR_FOLD_BACK_MIN_SHOULDER_DEG
+                    if intent == "rear_place" else False
+                ),
+                "theta_pitch_deg": math.degrees(theta_pitch),
+                "final_theta_pitch_deg": math.degrees(theta_pitch + m4_offset_rad),
+                "raw_m4": raw_m4,
+                "m4_offset": m4_offset,
+                "joint_limits": joint_validation,
+            },
+        }
+
+    def _parse_strict_pose(self, pose: Any) -> tuple[float, float, float, int, int, bool, float | None]:
+        """Parse strict IK pose input into typed fields."""
+        if isinstance(pose, dict):
+            getter = pose.get
+        elif isinstance(pose, (tuple, list)) and len(pose) == 3:
+            getter = {"x": pose[0], "y": pose[1], "z": pose[2]}.get
+        else:
+            getter = lambda key, default=None: getattr(pose, key, default)
+
+        missing = [key for key in ("x", "y", "z") if getter(key) is None]
+        if missing:
+            raise ValueError(f"Strict IK pose missing required field(s): {', '.join(missing)}")
+
+        try:
+            x = float(getter("x"))
+            y = float(getter("y"))
+            z = float(getter("z"))
+            m4_offset = int(getter("m4_offset", 0) or 0)
+            m5 = int(getter("m5", self.CLAW_OPEN) or self.CLAW_OPEN)
+            skip_sag = bool(getter("skip_sag", False))
+            raw_rear_base_yaw_limit = getter("rear_base_yaw_limit_deg", None)
+            rear_base_yaw_limit = (
+                None
+                if raw_rear_base_yaw_limit is None
+                else self._parse_rear_base_yaw_limit(raw_rear_base_yaw_limit)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Strict IK pose has invalid numeric field: {exc}") from exc
+
+        for key, value in {"x": x, "y": y, "z": z}.items():
+            if not math.isfinite(value):
+                raise ValueError(f"Strict IK pose field {key} must be finite, got {value!r}")
+        if not 0 <= m5 <= self.STEPS_PER_REV - 1:
+            raise ValueError(f"Strict IK pose m5={m5} outside servo range [0, {self.STEPS_PER_REV - 1}]")
+
+        return x, y, z, m4_offset, m5, skip_sag, rear_base_yaw_limit
 
     # ──────────────────────────────────────────────────────────────────
     #  Forward Kinematics
@@ -454,14 +887,22 @@ class ArmIK:
         x = r_tip * math.cos(theta_base)
         y = r_tip * math.sin(theta_base)
 
-        # ── 4. M4 offset from mechanical neutral ──────────────────────
+        # ── 4. Wrist diagnostics ──────────────────────────────────────
         m4_offset = m4 - self.M4_CENTRE
+        # Replay offset used by IK.  This is intentionally different from
+        # ``m4_offset`` above: it is the final claw pitch's deviation from
+        # IK's default straight-down pitch, so solving the returned XYZ with
+        # this offset preserves the claw-tip location instead of rotating L3
+        # after the Cartesian solve.
+        replay_m4_offset = int(round((theta_pitch - (-math.pi / 2.0)) / self.RAD_PER_STEP))
 
         return {
             "x": round(x, 4),
             "y": round(y, 4),
             "z": round(z, 4),
             "m4_offset": m4_offset,
+            "replay_m4_offset": replay_m4_offset,
+            "theta_pitch_deg": round(math.degrees(theta_pitch), 4),
         }
 
     # ──────────────────────────────────────────────────────────────────

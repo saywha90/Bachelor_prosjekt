@@ -56,6 +56,7 @@ Required packages: `numpy`, `opencv-python`, `pyserial`, `depthai`, `scikit-lear
 
 | **7** | C | `python src/calibration/07_vision_offset.py` | Fine-tune residual camera-to-shoulder offset | ~5 min |
 | **8** | C | `python src/calibration/08_pick_test.py` | End-to-end pick-and-place verification | ~10 min |
+| **9** | C | `PYTHONPATH=src python3 src/calibration/10_bin_calibration.py` | Hardware-first rear-bin route calibration for two-bin fold-over placement | Requires real hardware |
 
 ---
 
@@ -501,7 +502,7 @@ python src/calibration/08_pick_test.py
 
 1. The script connects to the arm and camera.
 2. For each position: you place a ball, the system detects → approaches →
-   lowers → grabs → lifts → places in the correct bin.
+   lowers → grabs → lifts → places in the correct rear bin.
 3. After each pick, rate the result: **pass** / **partial** / **fail**.
 4. The script prints a scored summary with diagnostic hints.
 5. Results are saved to `pick_test_results.json`.
@@ -537,6 +538,103 @@ diagnostic table below.
 
 ---
 
+### Step 9 — Rear-Bin Route Calibration
+
+**What it does:** Fine-tunes the production rear-placement route stored in
+[`bin_calibration.json`](../src/calibration/bin_calibration.json). This is a
+hardware-first tool that mirrors touch calibration: hardware mode is the
+default, dry-run is optional, movements require explicit confirmations, and
+saving requires an explicit `SAVE` confirmation with a timestamped backup.
+
+Rear placement is **fold-over**: the arm reaches behind the robot by folding
+over the top, not by rotating the base 180°. For rear route waypoints the base
+yaw is guarded by [`DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG`](../src/config/arm.py:227),
+defaulting to ±45°, and the JSON field `rear_base_yaw_limit_deg` may override
+that limit.
+
+**Commands:**
+
+```bash
+PYTHONPATH=src python3 src/calibration/10_bin_calibration.py
+PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --dry-run
+PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --validate-only
+```
+
+**Production route schema:**
+
+- Required shared waypoints: `shared_waypoints.front_neutral` and
+  `shared_waypoints.rear_transfer`.
+- Required per-bin poses: `bins.RED_BIN.approach`, `bins.RED_BIN.drop`,
+  `bins.BLUE_BIN.approach`, and `bins.BLUE_BIN.drop`.
+- Editable pose fields are `x`, `y`, `z`, `m4_offset`, and `skip_sag`.
+- The real setup has only two destination bins: `RED_BIN` and `BLUE_BIN`.
+  `REJECT_BIN` is not written by the tool and is not used for real sorting.
+- No-grip / air-pick cases should open the claw, retreat through the
+  prevalidated pickup clearance, then return to scan/look-again rather than
+  route to a reject bin.
+
+**Interactive controls:**
+
+| Command | Action |
+|---------|--------|
+| `select 1-6` or `1`–`6` | Choose `front_neutral`, `rear_transfer`, or one per-bin approach/drop pose |
+| `x+` / `x-`, `y+` / `y-`, `z+` / `z-` | Adjust the selected Cartesian field by the current centimetre step |
+| `m4+` / `m4-` | Adjust the selected wrist trim by the current motor-step size |
+| `step <cm>` / `m4step <n>` | Change adjustment step sizes |
+| `yaw <deg>` | Set `rear_base_yaw_limit_deg` |
+| `v` / `va` | Validate selected waypoint / validate all waypoints with strict IK |
+| `move` | Move to the selected validated waypoint after typing `MOVE` |
+| `test red`, `test blue`, `test selected`, `test all` | Route-test validated waypoints after typing `TEST RED`, `TEST BLUE`, or `TEST ALL` |
+| `limp` | Hardware only: disable torque on motors 1–4 for hand-guiding |
+| `lock` | Hardware only: re-enable torque at current goals |
+| `capture` | Hardware only: read current motor positions, FK-convert, validate, store in memory, then lock |
+| `pos` | Hardware only: read current motor positions |
+| `save` | Validate all, require `SAVE`, create backup, then overwrite [`bin_calibration.json`](../src/calibration/bin_calibration.json) |
+| `q` | Quit; unsaved edits require `DISCARD` |
+
+**Operational notes:**
+
+- Use `--dry-run` for offline editing/validation only; it cannot move hardware,
+  limp, lock, capture, or route-test.
+- Use `--validate-only` before production startup or after manual JSON edits.
+- Strict IK validation proves the route is kinematically valid, but real route
+  `x`/`z` values can still need slow physical fine-tuning to clear bin walls,
+  avoid scraping, and place balls reliably.
+
+---
+
+## Rear Route Simulation Demo
+
+Use the simulation demo to strictly prevalidate and visualize rear placement
+without moving hardware. It loads the same route schema used by production.
+
+**Red + blue sequence:**
+
+```bash
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --sequence
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/simulation/sample_route_calibration.json --sequence
+```
+
+**Single-bin testing:**
+
+```bash
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --destination RED_BIN
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --destination BLUE_BIN
+```
+
+Add `--no-gui` to load and prevalidate without opening the visualizer.
+
+**Air-pick / no-grip path:**
+
+```bash
+PYTHONPATH=src python3 src/simulation/route_demo.py --calibration src/calibration/bin_calibration.json --air-pick
+```
+
+The air-pick demo intentionally contains no bin waypoints: it closes on air,
+opens while retreating, returns to `SCAN_POSE`, and scans/looks again.
+
+---
+
 ## Recalibration Guide
 
 You only need to redo specific steps when something changes:
@@ -549,7 +647,8 @@ You only need to redo specific steps when something changes:
 | Rebuilt or tightened the arm | 2, 2b, 3 |
 | New claw or gripper attachment | 2b |
 | Replaced a motor | 0 (for that motor), 1, 2 |
-| Everything (full recalibration) | 0–8 |
+| Moved rear bins or changed rear route clearance | 9 |
+| Everything (full recalibration) | 0–9 |
 
 ### Quick Recalibration Checklist
 
@@ -559,7 +658,8 @@ If the system was working and accuracy has degraded:
 2. Run `python src/diagnostics/check_motor_errors.py` — check for latched errors.
 3. Run `python src/diagnostics/diagnose_detection.py` — verify HSV masks still isolate balls.
 4. Run `python src/calibration/08_pick_test.py` — get a fresh accuracy score.
-5. Use the diagnostic table above to identify which step(s) to redo.
+5. Run `PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --validate-only` — verify the rear route schema still passes strict IK.
+6. Use the diagnostic table above to identify which step(s) to redo.
 
 ---
 
@@ -569,6 +669,7 @@ If the system was working and accuracy has degraded:
 |------|-----------|-----------|
 | `sag_calibration.json` | Step 3 — [`03_sag.py`](../src/calibration/03_sag.py) | [`ArmIK.__init__()`](../src/ik/solver.py:115) |
 | `homography_calibration.json` | Step 6 — [`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py) | [`VisionBridge`](../src/ik/vision_bridge.py:108), [`compute_grab_height()`](../src/config/arm.py), [`compute_wrist_correction()`](../src/config/arm.py) |
+| `bin_calibration.json` | Step 9 — [`10_bin_calibration.py`](../src/calibration/10_bin_calibration.py) | [`load_transport_route_calibration()`](../src/config/arm.py:517), [`get_transport_route()`](../src/config/arm.py:558), [`prevalidate_transport_plan()`](../src/main.py:290), [`route_demo.py`](../src/simulation/route_demo.py) |
 | `claw_calibration.json` | Step 2b — [`02b_claw.py`](../src/calibration/02b_claw.py) | Manual — update [`config/arm.py`](../src/config/arm.py) |
 | `pick_test_results.json` | Step 8 — [`08_pick_test.py`](../src/calibration/08_pick_test.py) | Reference only |
 
@@ -585,3 +686,4 @@ If the system was working and accuracy has degraded:
 | Homography off by > 2 cm | Detected cm don't match ruler | Re-measure corner positions from shoulder joint; verify arm is at SCAN_POSE |
 | Camera not found in Step 4/6 | `OAKCamera: Could not open camera` | Re-plug USB, check `depthai` install, see [troubleshooting](troubleshooting.md) |
 | Pick test < 80 % | Multiple partial/fail results | Identify the dominant failure mode from the diagnostic table above |
+| Rear route validates but clips bin or misses drop | Strict IK is valid, but physical X/Z route clearance needs tuning | Re-run Step 9 on hardware and adjust slowly with `step 0.1`, route tests, and explicit `SAVE` |

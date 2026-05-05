@@ -145,6 +145,99 @@ class TestJointLimits:
             assert isinstance(result[key], int), f"{key} is {type(result[key])}, expected int"
 
 
+class TestStrictSolve:
+    """Strict production IK path rejects invalid requests instead of clamping."""
+
+    def test_strict_returns_structured_commands_and_validation(self, arm_no_sag):
+        result = arm_no_sag.solve_strict(
+            {"x": 15.0, "y": 0.0, "z": 30.0, "m5": arm_no_sag.CLAW_OPEN},
+            intent="carry",
+        )
+        assert set(result.keys()) == {"commands", "validation"}
+        assert all(k in result["commands"] for k in MOTOR_KEYS)
+        assert result["validation"]["intent"] == "carry"
+
+    def test_strict_rejects_unreachable_rear_target(self, arm_no_sag):
+        with pytest.raises(ValueError, match="unreachable"):
+            arm_no_sag.solve_strict({"x": -200.0, "y": 0.0, "z": 20.0}, intent="rear_place")
+
+    def test_strict_rejects_wrist_infeasible_offset(self, arm_no_sag):
+        with pytest.raises(ValueError, match="wrist trim/offset infeasible"):
+            arm_no_sag.solve_strict(
+                {"x": 20.0, "y": 0.0, "z": 10.0, "m4_offset": 3000},
+                intent="carry",
+            )
+
+    def test_strict_rear_rejects_wrist_infeasible_offset_after_yaw_check(self, arm_no_sag):
+        with pytest.raises(ValueError, match="fold-over branch.*m4="):
+            arm_no_sag.solve_strict(
+                {"x": -24.0, "y": -8.0, "z": 28.0, "m4_offset": 3000, "skip_sag": True},
+                intent="rear_place",
+            )
+
+    def test_strict_rejects_joint_limit_violation(self, arm_no_sag):
+        arm_no_sag.JOINT_LIMITS = arm_no_sag.JOINT_LIMITS.copy()
+        arm_no_sag.JOINT_LIMITS["m1"] = (2048, 2048)
+        with pytest.raises(ValueError, match="joint limit violation m1"):
+            arm_no_sag.solve_strict({"x": 20.0, "y": 10.0, "z": 10.0}, intent="carry")
+
+    def test_strict_rejects_floor_clamp_request(self, arm_no_sag):
+        with pytest.raises(ValueError, match="Z_MIN"):
+            arm_no_sag.solve_strict({"x": 20.0, "y": 0.0, "z": arm_no_sag.Z_MIN - 1.0}, intent="pickup")
+
+    def test_strict_rear_target_requiring_large_base_rotation_is_rejected(self, arm_no_sag):
+        with pytest.raises(ValueError, match="base yaw .*outside configured range"):
+            arm_no_sag.solve_strict(
+                {"x": -20.0, "y": 30.0, "z": 32.0, "rear_base_yaw_limit_deg": 45.0, "skip_sag": True},
+                intent="rear_place",
+            )
+
+    def test_strict_valid_rear_target_uses_fold_over_branch(self, arm_no_sag):
+        result = arm_no_sag.solve_strict(
+            {"x": -24.0, "y": -8.0, "z": 28.0, "rear_base_yaw_limit_deg": 45.0, "skip_sag": True},
+            intent="rear_place",
+        )
+        validation = result["validation"]
+
+        assert validation["base_yaw_within_range"] is True
+        assert -45.0 <= validation["base_yaw_deg"] <= 45.0
+        assert validation["shoulder_in_fold_back_range"] is True
+        assert validation["theta_shoulder_deg"] >= validation["shoulder_fold_back_min_deg"]
+        assert validation["ik_branch"].startswith("fold_back")
+
+    def test_strict_valid_rear_target_commands_decode_behind_base(self, arm_no_sag):
+        target = {"x": -24.0, "y": -8.0, "z": 28.0, "rear_base_yaw_limit_deg": 45.0, "skip_sag": True}
+        result = arm_no_sag.solve_strict(target, intent="rear_place")
+
+        fk = arm_no_sag.forward_kinematics(result["commands"])
+
+        assert result["validation"]["base_yaw_within_range"] is True
+        assert -45.0 <= result["validation"]["base_yaw_deg"] <= 45.0
+        assert fk["x"] == pytest.approx(target["x"], abs=0.5)
+        assert fk["y"] == pytest.approx(target["y"], abs=0.5)
+        assert fk["z"] == pytest.approx(target["z"], abs=0.5)
+        assert fk["x"] < -20.0
+
+    def test_strict_adjacent_rear_bins_have_small_distinct_yaw(self, arm_no_sag):
+        red = arm_no_sag.solve_strict(
+            {"x": -24.0, "y": -8.0, "z": 28.0, "rear_base_yaw_limit_deg": 45.0, "skip_sag": True},
+            intent="rear_place",
+        )
+        blue = arm_no_sag.solve_strict(
+            {"x": -24.0, "y": 8.0, "z": 28.0, "rear_base_yaw_limit_deg": 45.0, "skip_sag": True},
+            intent="rear_place",
+        )
+
+        red_yaw = red["validation"]["base_yaw_deg"]
+        blue_yaw = blue["validation"]["base_yaw_deg"]
+        assert -45.0 <= red_yaw <= 45.0
+        assert -45.0 <= blue_yaw <= 45.0
+        assert abs(red_yaw - blue_yaw) > 5.0
+        assert red_yaw == pytest.approx(-blue_yaw, abs=0.5)
+        assert red["validation"]["shoulder_in_fold_back_range"] is True
+        assert blue["validation"]["shoulder_in_fold_back_range"] is True
+
+
 class TestSymmetry:
     """Points mirrored across Y=0 should produce mirrored motor positions.
 
@@ -235,6 +328,41 @@ class TestGeometricConsistency:
         min_reach = abs(arm.L1 - arm.L2)
         assert min_reach <= d <= max_reach, (
             f"Planar distance {d:.2f} outside [{min_reach:.2f}, {max_reach:.2f}]"
+        )
+
+    def test_limp_capture_replay_offset_preserves_fk_xyz(self, arm_no_sag):
+        """Regression: FK limp captures with wrist trim must replay same XYZ."""
+
+        captured = {"m1": 2350, "m2": 1200, "m3": 1000, "m4": 2500, "m5": arm_no_sag.CLAW_OPEN}
+        fk = arm_no_sag.forward_kinematics(captured)
+
+        replay = arm_no_sag.solve(
+            fk["x"],
+            fk["y"],
+            fk["z"],
+            skip_sag=True,
+            strict=True,
+            m4_offset=fk["replay_m4_offset"],
+        )
+        replay_fk = arm_no_sag.forward_kinematics(replay)
+
+        assert replay_fk["x"] == pytest.approx(fk["x"], abs=0.15)
+        assert replay_fk["y"] == pytest.approx(fk["y"], abs=0.15)
+        assert replay_fk["z"] == pytest.approx(fk["z"], abs=0.15)
+
+    def test_strict_m4_offset_is_geometric_not_posthoc(self, arm_no_sag):
+        """Strict route m4_offset should not move the commanded claw-tip XYZ."""
+
+        target = {"x": 32.0, "y": 8.0, "z": 6.0, "m4_offset": 300, "skip_sag": True}
+
+        result = arm_no_sag.solve_strict(target, intent="pickup")
+        fk = arm_no_sag.forward_kinematics(result["commands"])
+
+        assert fk["x"] == pytest.approx(target["x"], abs=0.2)
+        assert fk["y"] == pytest.approx(target["y"], abs=0.2)
+        assert fk["z"] == pytest.approx(target["z"], abs=0.2)
+        assert result["validation"]["final_theta_pitch_deg"] != pytest.approx(
+            result["validation"]["theta_pitch_deg"], abs=0.1
         )
 
 
