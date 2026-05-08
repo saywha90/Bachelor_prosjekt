@@ -42,20 +42,18 @@ def test_sample_route_demo_plan_prevalidates_ordered_waypoints():
     )
 
     names = [waypoint.name for waypoint in plan]
-    assert names[:9] == [
+    assert names[:8] == [
         "pickup-clearance",
         "pickup",
         "pickup-gripped",
         "pickup-clearance-retreat",
         "front-neutral",
         "rear-transfer",
-        "bin-approach",
         "bin-drop",
         "bin-drop-release",
     ]
-    assert names[-4:] == [
-        "bin-approach-retreat",
-        "rear-transfer-retreat",
+    assert names[-3:] == [
+        "rear-return-lift",
         "front-neutral-retreat",
         "pickup-clearance-home",
     ]
@@ -111,10 +109,8 @@ def test_route_overlay_points_keep_visual_corridor_names():
         "pickup-clearance-retreat",
         "front-neutral",
         "rear-transfer",
-        "bin-approach",
         "bin-drop",
-        "bin-approach-retreat",
-        "rear-transfer-retreat",
+        "rear-return-lift",
         "front-neutral-retreat",
         "pickup-clearance-home",
     ]
@@ -216,7 +212,6 @@ def test_route_demo_reports_strict_waypoint_failure(tmp_path):
             },
             "bins": {
                 "RED_BIN": {
-                    "approach": {"x": -20.0, "y": -8.0, "z": 36.0, "skip_sag": True},
                     "drop": {"x": -999.0, "y": -8.0, "z": 28.0, "skip_sag": True},
                 }
             },

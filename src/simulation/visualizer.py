@@ -65,6 +65,7 @@ L2 = ArmIK.L2               # elbow   → wrist   (cm)
 L3 = ArmIK.L3               # wrist   → claw tip (cm)
 
 STEP_CENTRE    = ArmIK.STEP_CENTRE
+M3_STEP_CENTRE = ArmIK.M3_CENTRE   # elbow tilt (motor 3) mechanical centre
 M4_STEP_CENTRE = ArmIK.M4_CENTRE   # wrist tilt (motor 4) mechanical centre
 RAD_PER_STEP   = ArmIK.RAD_PER_STEP
 
@@ -124,7 +125,7 @@ def forward_kinematics(m1: int, m2: int, m3: int, m4: int, m5: int = 2048):
     # m2=2048 → arm vertical (straight up); add pi/2 to recover IK's
     # "elevation above horizontal" convention where 0 = horizontal.
     theta_shoulder =  steps_to_rad(m2) + math.pi / 2
-    theta_elbow    = -steps_to_rad(m3)   # negative convention (see IK)
+    theta_elbow    = -steps_to_rad(m3, centre=M3_STEP_CENTRE)   # negative convention (see IK)
     theta_wrist    =  steps_to_rad(m4, centre=M4_STEP_CENTRE)
 
     # Base is at the origin

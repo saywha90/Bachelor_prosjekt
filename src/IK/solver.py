@@ -51,9 +51,10 @@ class ArmIK:
 
     # ── Dynamixel constants ────────────────────────────────────────────
     STEPS_PER_REV: int = 4096
-    STEP_CENTRE: int = 2048        # 180° = "neutral" (used by motors 2, 3, 5)
+    STEP_CENTRE: int = 2048        # 180° = "neutral" (used by motors 2, 5)
     M1_CENTRE: int = 2048          # Center for motor 1 (base pan) — same as Dynamixel centre (2048 = straight ahead)
-    M4_CENTRE: int = 1911          # Center for motor 4 (wrist tilt) — 3D-printed mount shifts mechanical centre from 2048 to 1911
+    M3_CENTRE: int = 1980          # Center for motor 3 (elbow tilt) — calibrated physical straight position
+    M4_CENTRE: int = 2048          # Center for motor 4 (wrist tilt) — standard Dynamixel centre (2048 = 180°)
     DEG_PER_STEP: float = 360.0 / 4096.0
     RAD_PER_STEP: float = (2.0 * math.pi) / 4096.0
 
@@ -75,7 +76,7 @@ class ArmIK:
     #   picks from, set this so the Z math references the shoulder as
     #   origin.  Set to 0 if your coordinate frame already accounts for
     #   this.
-    shoulder_height: float = 35.0   # Measured 2026-04-29 (was 11.0 — claw was 20 cm above ground at z=-1.7)
+    shoulder_height: float = 35.0   # cm — measured shoulder joint height above desk/table (2026-05-07)
 
     # ── Floor / hover constraint (cm) ─────────────────────────────────
     #   Minimum allowed Z for the claw tip.  Set to -2.0 so the arm
@@ -96,7 +97,7 @@ class ArmIK:
     JOINT_LIMITS = {
         "m1": (0, 4095),       # Base pan: full range
         "m2": (600, 3500),     # Shoulder: avoid extreme up/down
-        "m3": (600, 3500),     # Elbow: avoid extreme fold-back
+        "m3": (463, 3363),     # Elbow: avoid extreme fold-back (shifted for M3_CENTRE=1980)
         "m4": (500, 3500),     # Wrist: avoid extreme tilt (lowered from 600 on 2026-04-27 — Ball #1 needed ~530)
         "m5": (0, 4095),       # Claw: full range
     }
@@ -186,8 +187,7 @@ class ArmIK:
         centre : int or None
             Step value corresponding to 0 rad.  Defaults to
             ``STEP_CENTRE`` (2048) for most motors.  Pass
-            ``M4_CENTRE`` (1911) for the wrist tilt motor whose
-            3-D-printed mount shifts the mechanical neutral.
+            ``M4_CENTRE`` (2048) for the wrist tilt motor.
         """
         if centre is None:
             centre = self.STEP_CENTRE
@@ -283,7 +283,7 @@ class ArmIK:
                         theta_wrist = self._normalize_angle_rad(theta_pitch - link2_angle)
                         raw_commands = {
                             "m2": self._rad_to_steps_unclamped(theta_shoulder - math.pi / 2),
-                            "m3": self._rad_to_steps_unclamped(-branch_sign * theta_elbow),
+                            "m3": self._rad_to_steps_unclamped(-branch_sign * theta_elbow, centre=self.M3_CENTRE),
                             "m4": self._rad_to_steps_unclamped(theta_wrist, centre=self.M4_CENTRE) + m4_offset,
                             "m5": m5,
                         }
@@ -523,7 +523,7 @@ class ArmIK:
         # Subtract pi/2 to convert from "elevation above horizontal" (IK convention)
         # to "rotation from vertical" (motor convention).
         m2 = self._rad_to_steps(theta_shoulder - math.pi / 2)
-        m3 = self._rad_to_steps(-theta_elbow)  # Elbow requires negation for correct direction
+        m3 = self._rad_to_steps(-theta_elbow, centre=self.M3_CENTRE)  # Elbow requires negation for correct direction
         m4 = self._rad_to_steps(theta_wrist, centre=self.M4_CENTRE) + m4_offset  # NOT negated — real hardware wrist tilts opposite to simulator
 
         # ── 9. Enforce joint limits to prevent overload errors ────────
@@ -714,7 +714,7 @@ class ArmIK:
 
         m1 = int(round(self.M1_CENTRE + theta_base / self.RAD_PER_STEP))
         m2 = self._rad_to_steps_unclamped(theta_shoulder - math.pi / 2)
-        m3 = self._rad_to_steps_unclamped(-shoulder_branch_sign * theta_elbow)
+        m3 = self._rad_to_steps_unclamped(-shoulder_branch_sign * theta_elbow, centre=self.M3_CENTRE)
         raw_m4 = self._rad_to_steps_unclamped(theta_wrist, centre=self.M4_CENTRE)
         m4 = raw_m4 + m4_offset
 
@@ -858,8 +858,8 @@ class ArmIK:
         #   m2 = STEP_CENTRE + (theta_shoulder − π/2) / RAD_PER_STEP
         theta_shoulder = (m2 - self.STEP_CENTRE) * self.RAD_PER_STEP + math.pi / 2.0
 
-        #   m3 = STEP_CENTRE + (−theta_elbow) / RAD_PER_STEP
-        theta_elbow = -(m3 - self.STEP_CENTRE) * self.RAD_PER_STEP
+        #   m3 = M3_CENTRE + (−theta_elbow) / RAD_PER_STEP
+        theta_elbow = -(m3 - self.M3_CENTRE) * self.RAD_PER_STEP
 
         #   m4 = M4_CENTRE + theta_wrist / RAD_PER_STEP
         theta_wrist = (m4 - self.M4_CENTRE) * self.RAD_PER_STEP

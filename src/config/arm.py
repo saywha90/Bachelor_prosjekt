@@ -55,7 +55,6 @@ class RoutePose:
 class BinRoute:
     """Route-oriented production drop data for a single destination bin."""
 
-    approach: RoutePose
     drop: RoutePose
 
 
@@ -176,7 +175,7 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 # Use  python src/calibration/09_touch_calibration.py  to recalibrate.
 CAMERA_OFFSET_X = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
 CAMERA_OFFSET_Y = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
-CAMERA_HEIGHT   = 56.5   # cm – camera lens height above table surface
+CAMERA_HEIGHT   = 58.0   # cm – camera lens height above table surface
 
 # ── Wrist-mounted camera scan pose ──────────────────────────────────
 # Joint positions (Dynamixel steps) where the arm parks the
@@ -194,15 +193,15 @@ CAMERA_HEIGHT   = 56.5   # cm – camera lens height above table surface
 # See docs/calibration.md → Step 02c.
 SCAN_POSE = {
     "m1": 2048,
-    "m2": 2800,   # shoulder raised — wrist ~35 cm above desk
+    "m2": 2550,   # shoulder raised — wrist ~35 cm above desk
     "m3": 950,    # elbow folded — forearm angled down toward desk
     "m4": 800,   # wrist tilted — camera optical axis points at workspace
-    "m5": 2048,   # claw open and out of camera view
+    "m5": 2745,   # claw open and out of camera view
 }
 
 # Tolerance for verifying the arm is actually at SCAN_POSE before
 # running vision (Dynamixel steps; ~1.8° at 4096 steps/360°)
-SCAN_POSE_TOLERANCE = 20
+SCAN_POSE_TOLERANCE = 50
 
 # ── Motion profile for startup home move ─────────────────────────────
 # Dynamixel profile velocity (~0.229 rpm per unit) and acceleration
@@ -227,8 +226,8 @@ MAX_REACH_PITCH = 0.0
 DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG = 45.0
 
 # ── Claw motor positions (Dynamixel steps) ─────────────────────────
-CLAW_OPEN_POS   = 2016    # open/neutral position for gripper
-CLAW_CLOSED_POS = 2890    # closed/grip position (tune on real hardware — must be the EMPTY jaws-touching position)
+CLAW_OPEN_POS   = 2745    # open/neutral position for gripper (XM430-W210 raw goal position)
+CLAW_CLOSED_POS = 3300    # safe closed/grip limit (adaptive grip never commands past this)
 
 # ── Grip verification ──────────────────────────────────────────────
 GRIP_VERIFY_TOLERANCE = 30        # Dynamixel steps: if claw pos is within this of CLAW_CLOSED_POS, grip failed
@@ -242,8 +241,8 @@ GRIP_PROFILE_VEL      = 30        # slow closing velocity (normal is 80)
 GRIP_PROFILE_ACC      = 10        # slow closing acceleration (normal is 20)
 GRIP_POLL_INTERVAL    = 0.05      # seconds between load readings during adaptive grip
 GRIP_TIMEOUT          = 3.0       # max seconds to wait for grip to complete
-GRIP_LOAD_DETECT      = 40        # load threshold to detect object contact (lower than GRIP_LOAD_THRESHOLD)
-GRIP_POSITION_STALL   = 5         # if position changes less than this over 2 readings, consider stalled
+GRIP_LOAD_DETECT      = 15        # sensitive load threshold: light resistance means ball contact
+GRIP_POSITION_STALL   = 8         # sensitive stall threshold: small movement under command means contact
 GRIP_EXTRA_CLOSE      = 30        # extra steps to close past contact point for secure hold
 DEFAULT_PROFILE_VEL   = 80        # normal operating velocity
 DEFAULT_PROFILE_ACC   = 20        # normal operating acceleration
@@ -343,7 +342,9 @@ _route_cal_cache: TransportRouteCalibration | None = None
 _route_cal_loaded: bool = False
 
 REQUIRED_SHARED_ROUTE_WAYPOINTS = ("front_neutral", "rear_transfer")
-REQUIRED_BIN_ROUTE_POSES = ("approach", "drop")
+REAR_RETURN_LIFT_WAYPOINT = "rear_return_lift"
+REQUIRED_BIN_ROUTE_POSES = ("drop",)
+REAR_RETURN_LIFT_Z_INCREMENT_CM = 4.0
 
 
 def load_bin_calibration() -> dict | None:
@@ -455,6 +456,15 @@ def _parse_route_calibration(data: dict, source_schema: str) -> TransportRouteCa
         name: _pose_from_mapping(raw, f"shared_waypoints.{name}")
         for name, raw in shared_raw.items()
     }
+    if REAR_RETURN_LIFT_WAYPOINT not in shared:
+        rear_transfer = shared["rear_transfer"]
+        shared[REAR_RETURN_LIFT_WAYPOINT] = RoutePose(
+            x=rear_transfer.x,
+            y=rear_transfer.y,
+            z=rear_transfer.z + REAR_RETURN_LIFT_Z_INCREMENT_CM,
+            m4_offset=rear_transfer.m4_offset,
+            skip_sag=rear_transfer.skip_sag,
+        )
 
     bins_raw = data.get("bins")
     if not isinstance(bins_raw, dict) or not bins_raw:
@@ -470,14 +480,18 @@ def _parse_route_calibration(data: dict, source_schema: str) -> TransportRouteCa
             raise RouteCalibrationError(
                 f"bins.{key} missing required route pose(s): {', '.join(missing_poses)}"
             )
+        # v2 schemas may still have "approach" — silently ignore it
         bins[key] = BinRoute(
-            approach=_pose_from_mapping(raw_entry["approach"], f"bins.{key}.approach"),
             drop=_pose_from_mapping(raw_entry["drop"], f"bins.{key}.drop"),
         )
 
     _validate_rear_route_yaw("shared_waypoints.rear_transfer", shared["rear_transfer"], rear_base_yaw_limit_deg)
+    _validate_rear_route_yaw(
+        f"shared_waypoints.{REAR_RETURN_LIFT_WAYPOINT}",
+        shared[REAR_RETURN_LIFT_WAYPOINT],
+        rear_base_yaw_limit_deg,
+    )
     for key, route in bins.items():
-        _validate_rear_route_yaw(f"bins.{key}.approach", route.approach, rear_base_yaw_limit_deg)
         _validate_rear_route_yaw(f"bins.{key}.drop", route.drop, rear_base_yaw_limit_deg)
 
     return TransportRouteCalibration(
@@ -504,7 +518,7 @@ def _legacy_route_from_bins(bins: dict) -> TransportRouteCalibration:
     for raw_key, entry in bins.items():
         key = _normalise_bin_key(raw_key)
         pose = _pose_from_mapping(entry, f"bins.{key}")
-        routes[key] = BinRoute(approach=pose, drop=pose)
+        routes[key] = BinRoute(drop=pose)
     return TransportRouteCalibration(
         schema_version=1,
         shared_waypoints=shared,
@@ -565,8 +579,16 @@ def get_transport_route(color_string: str) -> list[tuple[str, RoutePose]]:
     return [
         ("front_neutral", route.shared_waypoints["front_neutral"]),
         ("rear_transfer", route.shared_waypoints["rear_transfer"]),
-        (f"{key}.approach", bin_route.approach),
         (f"{key}.drop", bin_route.drop),
+    ]
+
+
+def get_transport_return_route() -> list[tuple[str, RoutePose]]:
+    """Return the open-claw retreat route from a rear bin back toward front-facing posture."""
+    route = load_transport_route_calibration(require_route_schema=True)
+    return [
+        (REAR_RETURN_LIFT_WAYPOINT, route.shared_waypoints[REAR_RETURN_LIFT_WAYPOINT]),
+        ("front_neutral", route.shared_waypoints["front_neutral"]),
     ]
 
 

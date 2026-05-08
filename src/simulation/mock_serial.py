@@ -33,6 +33,8 @@ import logging
 import math
 import time
 
+from config.arm import CLAW_CLOSED_POS, CLAW_OPEN_POS
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,15 +61,15 @@ class MockSerial:
         self.visualizer = visualizer
         self.anim_frames = anim_frames   # frames per movement
 
-        # Current simulated motor positions (start at centre; m4=1911 due to 3D-printed mount offset)
-        self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911, "m5": 2048}
+        # Current simulated motor positions (start at centre; m4=1911 matches scan pose)
+        self._current_steps = {"m1": 2048, "m2": 2048, "m3": 2048, "m4": 1911, "m5": CLAW_OPEN_POS}
 
         # Goal positions for simulating load during adaptive grip
         self._goal_steps = dict(self._current_steps)
 
         # Claw open/closed constants for load simulation
-        self._claw_open = 2016
-        self._claw_closed = 2675
+        self._claw_open = CLAW_OPEN_POS
+        self._claw_closed = CLAW_CLOSED_POS
 
         # Pending response for special commands (read_pos, set_profile, etc.)
         self._pending_response = None

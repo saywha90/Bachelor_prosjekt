@@ -6,7 +6,9 @@ import pytest
 
 from config.arm import (
     DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG,
+    REAR_RETURN_LIFT_WAYPOINT,
     RouteCalibrationError,
+    get_transport_return_route,
     load_transport_route_calibration,
 )
 
@@ -64,7 +66,8 @@ def test_route_schema_loads_and_is_preferred(tmp_path):
     assert route.schema_version == 2
     assert route.rear_base_yaw_limit_deg == 45.0
     assert route.shared_waypoints["rear_transfer"].m4_offset == -10
-    assert route.bins["RED_BIN"].approach.x == -35.0
+    assert route.shared_waypoints[REAR_RETURN_LIFT_WAYPOINT].z > route.shared_waypoints["rear_transfer"].z
+    assert route.bins["RED_BIN"].drop.x == -42.0
     assert route.bins["RED_BIN"].drop.m4_offset == 50
 
 
@@ -103,8 +106,7 @@ def test_route_schema_rejects_rear_waypoint_outside_base_yaw_limit(tmp_path):
             },
             "bins": {
                 "RED_BIN": {
-                    "approach": {"x": -20.0, "y": 30.0, "z": 35.0},
-                    "drop": {"x": -24.0, "y": 8.0, "z": 28.0},
+                    "drop": {"x": -24.0, "y": 30.0, "z": 28.0},
                 }
             },
         },
@@ -124,7 +126,6 @@ def test_route_schema_missing_shared_waypoint_fails_clearly(tmp_path):
             },
             "bins": {
                 "RED_BIN": {
-                    "approach": {"x": -35.0, "y": -10.0, "z": 35.0},
                     "drop": {"x": -42.0, "y": -10.0, "z": 28.0},
                 }
             },
@@ -145,9 +146,7 @@ def test_route_schema_missing_bin_drop_fails_clearly(tmp_path):
                 "rear_transfer": {"x": -20.0, "y": 0.0, "z": 35.0},
             },
             "bins": {
-                "RED_BIN": {
-                    "approach": {"x": -35.0, "y": -10.0, "z": 35.0},
-                }
+                "RED_BIN": {}
             },
         },
     )
@@ -164,3 +163,28 @@ def test_production_requires_route_schema(tmp_path):
 
     with pytest.raises(RouteCalibrationError, match="requires route schema"):
         load_transport_route_calibration(path, require_route_schema=True)
+
+
+def test_transport_return_route_uses_rear_lift_before_front(monkeypatch, tmp_path):
+    path = _write_json(
+        tmp_path / "bin_calibration.json",
+        {
+            "schema_version": 4,
+            "shared_waypoints": {
+                "front_neutral": {"x": 20.0, "y": 0.0, "z": 25.0},
+                "rear_transfer": {"x": -20.0, "y": 0.0, "z": 35.0},
+                "rear_return_lift": {"x": -20.0, "y": 0.0, "z": 42.0},
+            },
+            "bins": {"RED_BIN": {"drop": {"x": -24.0, "y": -8.0, "z": 28.0}}},
+        },
+    )
+    import config.arm as arm_config
+
+    monkeypatch.setattr(arm_config, "BIN_CALIBRATION_FILE", path)
+    monkeypatch.setattr(arm_config, "_route_cal_loaded", False)
+    monkeypatch.setattr(arm_config, "_route_cal_cache", None)
+
+    route = get_transport_return_route()
+
+    assert [name for name, _pose in route] == ["rear_return_lift", "front_neutral"]
+    assert route[0][1].z > route[1][1].z

@@ -33,6 +33,8 @@ def test_safe_default_schema_is_two_bin_route_and_validates():
     assert all(result["ok"] for result in results.values())
     assert results["front_neutral"]["validation"]["intent"] == "carry"
     assert results["rear_transfer"]["validation"]["intent"] == "rear_place"
+    assert results["rear_return_lift"]["validation"]["intent"] == "rear_place"
+    assert data["shared_waypoints"]["rear_return_lift"]["z"] > data["shared_waypoints"]["rear_transfer"]["z"]
 
 
 def test_cli_defaults_to_hardware_mode():
@@ -89,7 +91,6 @@ def test_dry_run_interactive_quit_does_not_open_serial(tmp_path, monkeypatch):
 def test_load_or_initialize_drops_reject_bin_from_route_schema(tmp_path):
     data = bin_tool._safe_default_route_schema()
     data["bins"]["REJECT_BIN"] = {
-        "approach": {"x": -24.0, "y": 0.0, "z": 38.0},
         "drop": {"x": -24.0, "y": 0.0, "z": 33.0},
     }
     path = _write_json(tmp_path / "bin_calibration.json", data)
@@ -109,7 +110,7 @@ def test_load_or_initialize_uses_safe_defaults_for_legacy_incomplete_file(tmp_pa
 
     loaded, messages = bin_tool.load_or_initialize_route_schema(path)
 
-    assert loaded["schema_version"] == 2
+    assert loaded["schema_version"] == 4
     assert sorted(loaded["bins"]) == ["BLUE_BIN", "RED_BIN"]
     assert "shared_waypoints" in loaded
     assert any("safe two-bin route defaults" in message for message in messages)
@@ -137,21 +138,19 @@ def test_strict_validation_fails_for_rear_yaw_outside_limit():
     assert "base yaw" in result["reason"]
 
 
-def test_save_route_schema_creates_backup_and_writes_no_reject_bin(tmp_path):
+def test_save_route_schema_writes_main_file_without_backup_or_reject_bin(tmp_path):
     path = tmp_path / "bin_calibration.json"
     original = {"bins": {"REJECT_BIN": {"x": 1, "y": 2, "z": 3}}}
     _write_json(path, original)
     data = bin_tool._safe_default_route_schema()
     data["bins"]["REJECT_BIN"] = {
-        "approach": {"x": -24.0, "y": 0.0, "z": 38.0},
         "drop": {"x": -24.0, "y": 0.0, "z": 33.0},
     }
 
-    backup = bin_tool.save_route_schema_with_backup(data, path)
+    result = bin_tool.save_route_schema(data, path)
 
-    assert backup is not None
-    assert backup.exists()
-    assert json.loads(backup.read_text(encoding="utf-8")) == original
+    assert result is None
+    assert not list(tmp_path.glob("bin_calibration.backup_*.json"))
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert sorted(saved["bins"]) == ["BLUE_BIN", "RED_BIN"]
     assert "REJECT_BIN" not in saved["bins"]

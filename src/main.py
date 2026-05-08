@@ -47,6 +47,7 @@ from config.arm import (
     compute_grab_height,
     compute_wrist_correction,
     get_transport_route,
+    get_transport_return_route,
     RouteCalibrationError,
     load_transport_route_calibration,
     load_height_calibration,
@@ -291,6 +292,7 @@ def prevalidate_transport_plan(arm: ArmIK, colour: str, pickup_pose: dict) -> li
     """Strictly solve all pickup recovery and destination route waypoints upfront."""
     route_cal = load_transport_route_calibration(require_route_schema=True)
     route = get_transport_route(colour)
+    return_route = get_transport_return_route()
     plan: list[tuple[str, dict]] = []
 
     pickup_solution = arm.solve_strict(pickup_pose, intent="pickup")
@@ -307,6 +309,13 @@ def prevalidate_transport_plan(arm: ArmIK, colour: str, pickup_pose: dict) -> li
         if name == "rear_transfer" or "." in name:
             strict_pose["rear_base_yaw_limit_deg"] = route_cal.rear_base_yaw_limit_deg
         plan.append((name, arm.solve_strict(strict_pose, intent=intent)))
+
+    for name, route_pose in return_route:
+        intent = "carry" if name == "front_neutral" else "rear_place"
+        strict_pose = route_pose.as_strict_pose(m5=CLAW_OPEN_POS)
+        if name != "front_neutral":
+            strict_pose["rear_base_yaw_limit_deg"] = route_cal.rear_base_yaw_limit_deg
+        plan.append((f"return_{name}", arm.solve_strict(strict_pose, intent=intent)))
 
     return plan
 
@@ -393,6 +402,29 @@ def send_raw_command(ser, cmd_dict: dict) -> str:
     return resp
 
 
+def _claw_close_direction() -> int:
+    """Return the configured M5 direction that closes the claw."""
+    return 1 if CLAW_CLOSED_POS >= CLAW_OPEN_POS else -1
+
+
+def _clamp_claw_position(position: int) -> int:
+    """Clamp an M5 position inside the configured open/closed safety range."""
+    low = min(CLAW_OPEN_POS, CLAW_CLOSED_POS)
+    high = max(CLAW_OPEN_POS, CLAW_CLOSED_POS)
+    return max(low, min(high, int(position)))
+
+
+def _claw_reached_closed(position: int) -> bool:
+    """Return True once *position* has reached the configured safe closed limit."""
+    direction = _claw_close_direction()
+    return (int(position) - CLAW_CLOSED_POS) * direction >= 0
+
+
+def _claw_blocked_from_closed(position: int) -> int:
+    """Return how many steps remain between *position* and the safe closed limit."""
+    return abs(CLAW_CLOSED_POS - int(position))
+
+
 def adaptive_grip(ser, last_solution: dict) -> bool:
     """Gradually close the claw until resistance is detected.
 
@@ -401,11 +433,11 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
     Strategy:
       1. Set a low current limit on M5 to protect the 3D-printed claw
       2. Set slow profile velocity for gentle closing
-      3. Command CLAW_CLOSED_POS as goal position
-      4. Poll read_load every GRIP_POLL_INTERVAL
-      5. When load exceeds GRIP_LOAD_DETECT, object is contacted
+      3. Start at CLAW_OPEN_POS
+      4. Step incrementally toward CLAW_CLOSED_POS, never past that limit
+      5. Poll load/current/position at each step
       6. Close GRIP_EXTRA_CLOSE steps past contact for secure hold
-      7. Restore normal current limit and profile velocity
+      7. Restore normal profile velocity/acceleration
     """
     print("  🤏  [ADAPTIVE GRIP] Starting adaptive grip sequence")
     gripped = False
@@ -418,68 +450,134 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
         print(f"  🤏  [ADAPTIVE GRIP] Setting slow profile (vel={GRIP_PROFILE_VEL}, acc={GRIP_PROFILE_ACC})")
         send_raw_command(ser, {"cmd": "set_profile", "vel": GRIP_PROFILE_VEL, "acc": GRIP_PROFILE_ACC})
 
-        # 3. Command m5 to CLAW_CLOSED_POS while maintaining previous goal positions for m1-m4
+        # 3. Increment M5 from the configured open position toward the configured
+        # safe closed limit while maintaining previous goal positions for m1-m4
         # to prevent the arm from springing up if it was pushing against the desk
         if not last_solution:
             logger.warning("[ADAPTIVE GRIP] No last_solution provided — falling back to verify_grip()")
             return verify_grip(ser, CLAW_CLOSED_POS)
 
         goal = last_solution.copy()
-        goal["m5"] = CLAW_CLOSED_POS
+        direction = _claw_close_direction()
+        travel = _claw_blocked_from_closed(CLAW_OPEN_POS)
+        if travel == 0:
+            logger.warning("[ADAPTIVE GRIP] CLAW_OPEN_POS equals CLAW_CLOSED_POS; cannot adaptive-close")
+            return False
+
+        close_step = max(1, min(abs(GRIP_EXTRA_CLOSE), travel))
+        current_target = CLAW_OPEN_POS
+        goal["m5"] = current_target
+        print(
+            f"  🤏  [ADAPTIVE GRIP] Opening/start position m5={CLAW_OPEN_POS}; "
+            f"closing toward {CLAW_CLOSED_POS} in {close_step}-step increments"
+        )
         ser.write((json.dumps(goal) + "\n").encode())
         ser.readline()  # consume ACK
 
         # 4. Polling loop — watch load + position for contact detection
         start_time = time.time()
-        
+
         # Read initial position for stall detection baseline
         positions = read_positions(ser)
         prev_pos = int(positions.get("m5", last_solution.get("m5", 0))) if positions else int(last_solution.get("m5", 0))
         contact_detected = False
         contact_position = None
+        contact_reason = None
+        stall_reads = 0
 
-        while True:
-            time.sleep(GRIP_POLL_INTERVAL)
+        while not _claw_reached_closed(current_target):
             elapsed = time.time() - start_time
-
-            # Timeout guard
             if elapsed > GRIP_TIMEOUT:
                 logger.warning("[ADAPTIVE GRIP] Timeout after %.1fs", GRIP_TIMEOUT)
                 break
 
-            # Read load
-            loads = read_load(ser)
-            cur_positions = read_positions(ser)
+            current_target = _clamp_claw_position(current_target + direction * close_step)
+            goal["m5"] = current_target
+            print(f"  🤏  [ADAPTIVE GRIP] Closing step target m5={current_target}")
+            ser.write((json.dumps(goal) + "\n").encode())
+            ser.readline()  # consume ACK
 
-            if loads is None or cur_positions is None:
-                continue  # skip this poll cycle on read failure
+            step_start = time.time()
+            while True:
+                time.sleep(GRIP_POLL_INTERVAL)
+                elapsed = time.time() - start_time
 
-            m5_load = abs(int(loads.get("m5", 0)))
-            m5_pos = int(cur_positions.get("m5", 0))
+                # Timeout guard
+                if elapsed > GRIP_TIMEOUT:
+                    logger.warning("[ADAPTIVE GRIP] Timeout after %.1fs", GRIP_TIMEOUT)
+                    break
 
-            # Check for object contact via load
-            if m5_load >= GRIP_LOAD_DETECT:
-                print(f"  🤏  [ADAPTIVE GRIP] Contact detected! load={m5_load}, pos={m5_pos}")
-                contact_detected = True
-                contact_position = m5_pos
+                loads = read_load(ser)
+                currents = read_current(ser)
+                cur_positions = read_positions(ser)
+
+                if cur_positions is None:
+                    continue  # skip this poll cycle on read failure
+
+                m5_load = abs(int(loads.get("m5", 0))) if loads else 0
+                m5_current = abs(int(currents.get("m5", 0))) if currents else 0
+                m5_pos = int(cur_positions.get("m5", prev_pos))
+                blocked = _claw_blocked_from_closed(m5_pos)
+
+                print(
+                    f"  🤏  [ADAPTIVE GRIP] poll pos={m5_pos} target={current_target} "
+                    f"load={m5_load} current={m5_current} blocked={blocked}"
+                )
+
+                # Check for object contact via load or present current.  Keep this
+                # sensitive so a light push from a ball is treated as contact.
+                if m5_load >= GRIP_LOAD_DETECT:
+                    print(f"  🤏  [ADAPTIVE GRIP] Contact detected by load={m5_load}, pos={m5_pos}")
+                    contact_detected = True
+                    contact_position = m5_pos
+                    contact_reason = "load"
+                    break
+
+                current_contact_threshold = max(20, int(GRIP_CURRENT_LIMIT * 0.4))
+                if m5_current >= current_contact_threshold:
+                    print(f"  🤏  [ADAPTIVE GRIP] Contact detected by current={m5_current} mA, pos={m5_pos}")
+                    contact_detected = True
+                    contact_position = m5_pos
+                    contact_reason = "current"
+                    break
+
+                # Reached this incremental target; advance to the next bounded step.
+                if abs(m5_pos - current_target) <= GRIP_POSITION_STALL:
+                    prev_pos = m5_pos
+                    stall_reads = 0
+                    break
+
+                progress = (m5_pos - prev_pos) * direction
+                if progress <= GRIP_POSITION_STALL:
+                    stall_reads += 1
+                else:
+                    stall_reads = 0
+                prev_pos = m5_pos
+
+                # Require two low-progress samples before calling it a stall;
+                # this is sensitive enough to stop on a light ball push while
+                # still ignoring a single slow read during acceleration.
+                if stall_reads >= 2 and elapsed > 0.15:
+                    print(f"  🤏  [ADAPTIVE GRIP] Stall detected at pos={m5_pos} (target={current_target})")
+                    contact_detected = True
+                    contact_position = m5_pos
+                    contact_reason = "stall"
+                    break
+
+                # Do not wait forever on a single small step; issue the next
+                # bounded target once this step had enough time to progress.
+                if time.time() - step_start >= max(0.15, GRIP_POLL_INTERVAL * 3):
+                    break
+
+            if contact_detected or elapsed > GRIP_TIMEOUT:
                 break
-
-            # Check for stall (position not changing)
-            # Only check after 0.4s to allow the motor to accelerate from a dead stop
-            if elapsed > 0.4 and abs(m5_pos - prev_pos) <= GRIP_POSITION_STALL:
-                # Could be stalled against object or at end of travel
-                print(f"  🤏  [ADAPTIVE GRIP] Stall detected at pos={m5_pos} (prev={prev_pos})")
-                contact_detected = True
-                contact_position = m5_pos
-                break
-
-            prev_pos = m5_pos
 
         # 5. If contact was detected, close a bit more for a secure hold
         if contact_detected and contact_position is not None:
-            secure_pos = min(contact_position + GRIP_EXTRA_CLOSE, CLAW_CLOSED_POS)
+            secure_pos = _clamp_claw_position(contact_position + direction * GRIP_EXTRA_CLOSE)
             print(f"  🤏  [ADAPTIVE GRIP] Securing grip: closing to {secure_pos} "
-                  f"(contact at {contact_position} + {GRIP_EXTRA_CLOSE} extra)")
+                  f"(contact at {contact_position}, reason={contact_reason}, "
+                  f"extra={GRIP_EXTRA_CLOSE} steps)")
             goal["m5"] = secure_pos
             ser.write((json.dumps(goal) + "\n").encode())
             ser.readline()  # consume ACK
@@ -489,13 +587,15 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
         final_positions = read_positions(ser)
         if final_positions and "m5" in final_positions:
             final_m5 = int(final_positions["m5"])
-            if abs(final_m5 - CLAW_CLOSED_POS) <= GRIP_VERIFY_TOLERANCE:
+            decisive_m5 = contact_position if contact_detected and contact_position is not None else final_m5
+            if _claw_blocked_from_closed(decisive_m5) <= GRIP_VERIFY_TOLERANCE:
                 logger.warning("[ADAPTIVE GRIP] Claw closed on air (pos=%d, "
-                      "target=%d, tol=%d)", final_m5, CLAW_CLOSED_POS, GRIP_VERIFY_TOLERANCE)
+                      "target=%d, tol=%d)", decisive_m5, CLAW_CLOSED_POS, GRIP_VERIFY_TOLERANCE)
                 gripped = False
             else:
                 print(f"  ✅  [ADAPTIVE GRIP] Object gripped! (pos={final_m5}, "
-                      f"blocked {abs(CLAW_CLOSED_POS - final_m5)} steps from closed)")
+                      f"contact_pos={decisive_m5}, "
+                      f"blocked {_claw_blocked_from_closed(decisive_m5)} steps from closed)")
                 gripped = True
         else:
             # Can't read position — fall back to verify_grip
@@ -755,7 +855,12 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
         logger.error("Production transport route prevalidation failed closed for %s ball: %s", colour.upper(), exc)
         return False
     plan_by_name = {name: solution for name, solution in transport_plan}
-    destination_steps = [(name, solution) for name, solution in transport_plan if name not in {"pickup", "pickup_recovery_clearance"}]
+    destination_steps = [
+        (name, solution)
+        for name, solution in transport_plan
+        if name not in {"pickup", "pickup_recovery_clearance"} and not name.startswith("return_")
+    ]
+    return_steps = [(name, solution) for name, solution in transport_plan if name.startswith("return_")]
 
     # Single full move — descend to grab height in one motion
     last_ik = send_strict_solution(
@@ -837,6 +942,17 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     send_claw(ser, last_ik, CLAW_OPEN_POS, label="OPEN grip (release at rear drop pose)")
     time.sleep(RELEASE_DWELL)
     print(f"  📤  [CLAW] {colour.upper()} ball released at validated rear drop pose")
+
+    # Lift clear of the rear sorting bin before rotating/facing forward again.
+    for idx, (name, solution) in enumerate(return_steps):
+        is_last = idx == len(return_steps) - 1
+        last_ik = send_strict_solution(
+            ser,
+            solution,
+            label=f"Return waypoint {name.removeprefix('return_')}",
+            viz=viz,
+            settle_time=0.5 if not is_last else None,
+        )
 
     log_state(State.DONE, "Cycle complete ✅")
     return True

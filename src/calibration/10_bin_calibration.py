@@ -23,16 +23,18 @@ import argparse
 import copy
 import json
 import os
-import shutil
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 from config.arm import (  # noqa: E402
     BIN_CALIBRATION_FILE as CONFIG_BIN_CALIBRATION_FILE,
@@ -52,10 +54,10 @@ ROUTE_SETTLE_SECONDS = 0.75
 LIMP_MOTOR_IDS = (1, 2, 3, 4)
 MAX_CAPTURE_M4_OFFSET = 1500
 
-ROUTE_SCHEMA_VERSION = 2
+ROUTE_SCHEMA_VERSION = 4
 ONLY_BIN_NAMES = ("RED_BIN", "BLUE_BIN")
-SHARED_WAYPOINTS = ("front_neutral", "rear_transfer")
-BIN_POSES = ("approach", "drop")
+SHARED_WAYPOINTS = ("front_neutral", "rear_transfer", "rear_return_lift")
+BIN_POSES = ("drop",)
 POSE_FIELDS = ("x", "y", "z", "m4_offset")
 
 
@@ -74,9 +76,8 @@ class WaypointSpec:
 EDITABLE_WAYPOINTS = (
     WaypointSpec("front_neutral", "front_neutral", "carry", "shared"),
     WaypointSpec("rear_transfer", "rear_transfer", "rear_place", "shared"),
-    WaypointSpec("RED_BIN.approach", "RED_BIN.approach", "rear_place", "bin", "RED_BIN", "approach"),
+    WaypointSpec("rear_return_lift", "rear_return_lift", "rear_place", "shared"),
     WaypointSpec("RED_BIN.drop", "RED_BIN.drop", "rear_place", "bin", "RED_BIN", "drop"),
-    WaypointSpec("BLUE_BIN.approach", "BLUE_BIN.approach", "rear_place", "bin", "BLUE_BIN", "approach"),
     WaypointSpec("BLUE_BIN.drop", "BLUE_BIN.drop", "rear_place", "bin", "BLUE_BIN", "drop"),
 )
 
@@ -104,16 +105,16 @@ def _safe_default_route_schema() -> dict[str, Any]:
                 "m4_offset": 0,
                 "skip_sag": True,
             },
+            "rear_return_lift": {
+                "x": -22.0,
+                "y": 0.0,
+                "z": 42.0,
+                "m4_offset": 0,
+                "skip_sag": True,
+            },
         },
         "bins": {
             "RED_BIN": {
-                "approach": {
-                    "x": -24.0,
-                    "y": -7.0,
-                    "z": 38.0,
-                    "m4_offset": 0,
-                    "skip_sag": True,
-                },
                 "drop": {
                     "x": -24.0,
                     "y": -7.0,
@@ -123,13 +124,6 @@ def _safe_default_route_schema() -> dict[str, Any]:
                 },
             },
             "BLUE_BIN": {
-                "approach": {
-                    "x": -24.0,
-                    "y": 7.0,
-                    "z": 38.0,
-                    "m4_offset": 0,
-                    "skip_sag": True,
-                },
                 "drop": {
                     "x": -24.0,
                     "y": 7.0,
@@ -168,7 +162,6 @@ def _route_calibration_to_schema(route_calibration: Any) -> dict[str, Any]:
     for bin_name in ONLY_BIN_NAMES:
         bin_route = route_calibration.bins[bin_name]
         schema["bins"][bin_name] = {
-            "approach": pose_to_dict(bin_route.approach),
             "drop": pose_to_dict(bin_route.drop),
         }
     return schema
@@ -217,21 +210,15 @@ def _save_json_atomic(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
-def save_route_schema_with_backup(data: dict[str, Any], path: Path = BIN_CALIBRATION_FILE) -> Path | None:
-    """Save route schema, creating a timestamped backup before overwriting."""
+def save_route_schema(data: dict[str, Any], path: Path = BIN_CALIBRATION_FILE) -> None:
+    """Save route schema to the main calibration JSON file only."""
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    backup_path: Path | None = None
-    if path.exists():
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = path.with_name(f"{path.stem}.backup_{timestamp}{path.suffix}")
-        shutil.copy2(path, backup_path)
     data_to_save = sanitize_two_bin_schema(data)
     data_to_save["calibration_date"] = date.today().isoformat()
     data_to_save["calibrated_with_scan_pose"] = {k: int(v) for k, v in SCAN_POSE.items()}
     _save_json_atomic(path, data_to_save)
-    return backup_path
 
 
 def sanitize_two_bin_schema(data: dict[str, Any]) -> dict[str, Any]:
@@ -593,8 +580,9 @@ def route_specs_for_bin(bin_name: str) -> list[WaypointSpec]:
     return [
         EDITABLE_WAYPOINTS[0],
         EDITABLE_WAYPOINTS[1],
-        next(spec for spec in EDITABLE_WAYPOINTS if spec.key == f"{target}.approach"),
         next(spec for spec in EDITABLE_WAYPOINTS if spec.key == f"{target}.drop"),
+        EDITABLE_WAYPOINTS[2],
+        EDITABLE_WAYPOINTS[0],
     ]
 
 
@@ -646,6 +634,115 @@ def maybe_test_route_hardware(
     return True
 
 
+def _render_hud(
+    selected_index: int,
+    data: dict[str, Any],
+    xyz_step: float,
+    m4_step: int,
+    dirty: bool,
+    hardware: bool,
+    status_msg: str = "",
+    limp_active: bool = False,
+) -> "np.ndarray":
+    """Render the black HUD screen for the bin calibration OpenCV window."""
+
+    hud = np.zeros((700, 900, 3), dtype=np.uint8)
+
+    WHITE = (255, 255, 255)
+    GREEN = (0, 255, 0)
+    YELLOW = (0, 255, 255)
+    RED = (0, 0, 255)
+    CYAN = (255, 255, 0)
+    GRAY = (150, 150, 150)
+    ORANGE = (0, 165, 255)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    y = 35
+
+    # ── Title bar ──────────────────────────────────────────────────────
+    cv2.putText(hud, "BIN CALIBRATION - Route Editor", (20, y),
+                font, 0.85, CYAN, 2, cv2.LINE_AA)
+    mode_text = "HARDWARE" if hardware else "DRY-RUN"
+    mode_color = GREEN if hardware else YELLOW
+    cv2.putText(hud, mode_text, (720, y), font, 0.6, mode_color, 2, cv2.LINE_AA)
+    if limp_active:
+        cv2.putText(hud, "LIMP", (720, y + 25), font, 0.55, RED, 2, cv2.LINE_AA)
+    if dirty:
+        cv2.putText(hud, "* UNSAVED *", (480, y), font, 0.6, YELLOW, 2, cv2.LINE_AA)
+
+    y += 15
+    cv2.line(hud, (20, y), (880, y), GRAY, 1)
+    y += 30
+
+    # ── Selected waypoint info ─────────────────────────────────────────
+    spec = EDITABLE_WAYPOINTS[selected_index]
+    pose = get_waypoint(data, spec)
+    cv2.putText(hud, f"Waypoint {selected_index + 1}/{len(EDITABLE_WAYPOINTS)}: {spec.title}",
+                (20, y), font, 0.75, YELLOW, 2, cv2.LINE_AA)
+    y += 40
+
+    cv2.putText(hud, f"X = {float(pose['x']):>8.2f} cm",
+                (40, y), font, 0.65, GREEN, 1, cv2.LINE_AA)
+    y += 30
+    cv2.putText(hud, f"Y = {float(pose['y']):>8.2f} cm",
+                (40, y), font, 0.65, GREEN, 1, cv2.LINE_AA)
+    y += 30
+    cv2.putText(hud, f"Z = {float(pose['z']):>8.2f} cm",
+                (40, y), font, 0.65, GREEN, 1, cv2.LINE_AA)
+    y += 30
+    cv2.putText(hud, f"m4_offset = {int(pose.get('m4_offset', 0)):>+5d} steps",
+                (40, y), font, 0.65, ORANGE, 1, cv2.LINE_AA)
+    y += 35
+
+    # ── Step sizes ─────────────────────────────────────────────────────
+    cv2.putText(hud, f"XYZ step: {xyz_step:.2f} cm   |   m4 step: {m4_step} steps",
+                (40, y), font, 0.55, GRAY, 1, cv2.LINE_AA)
+    y += 15
+    cv2.line(hud, (20, y), (880, y), GRAY, 1)
+    y += 25
+
+    # ── All waypoints overview ─────────────────────────────────────────
+    cv2.putText(hud, "All Waypoints:", (20, y), font, 0.55, WHITE, 1, cv2.LINE_AA)
+    y += 25
+    for idx, wp_spec in enumerate(EDITABLE_WAYPOINTS):
+        wp_pose = get_waypoint(data, wp_spec)
+        is_selected = (idx == selected_index)
+        color = YELLOW if is_selected else GRAY
+        marker = ">" if is_selected else " "
+        text = (
+            f"{marker} [{idx + 1}] {wp_spec.title:<20s} "
+            f"x={float(wp_pose['x']):>7.2f}  y={float(wp_pose['y']):>7.2f}  "
+            f"z={float(wp_pose['z']):>7.2f}  m4={int(wp_pose.get('m4_offset', 0)):>+5d}"
+        )
+        cv2.putText(hud, text, (30, y), font, 0.42, color, 1, cv2.LINE_AA)
+        y += 22
+
+    y += 5
+    cv2.line(hud, (20, y), (880, y), GRAY, 1)
+    y += 25
+
+    # ── Keyboard controls ──────────────────────────────────────────────
+    cv2.putText(hud, "Keyboard Controls:", (20, y), font, 0.55, WHITE, 1, cv2.LINE_AA)
+    y += 25
+    ctrl_lines = [
+        f"1-{len(EDITABLE_WAYPOINTS)}: Select waypoint       W/S: X (fwd/back)      A/D: Y (left/right)",
+        "U/J: Z (up/down)           I/K: m4 (wrist tilt)   [/]: XYZ step size",
+        "-/=: m4 step size          M: Move to waypoint     T: Test bin route",
+        "L: Toggle limp mode        ENTER: Save to file     Q: Quit",
+    ]
+    for line in ctrl_lines:
+        cv2.putText(hud, line, (30, y), font, 0.42, GREEN, 1, cv2.LINE_AA)
+        y += 20
+
+    # ── Status message ─────────────────────────────────────────────────
+    if status_msg:
+        status_y = 680
+        display_msg = status_msg[:120]
+        cv2.putText(hud, display_msg, (20, status_y), font, 0.5, YELLOW, 1, cv2.LINE_AA)
+
+    return hud
+
+
 def interactive_loop(
     data: dict[str, Any],
     *,
@@ -653,276 +750,207 @@ def interactive_loop(
     ser: Any = None,
     input_func: Callable[[str], str] = input,
 ) -> bool:
-    """Run the terminal interactive route editor.  Returns True if saved."""
+    """Run the OpenCV HUD-based visual route editor.  Returns True if saved."""
+
+    WINDOW_NAME = "Bin Calibration"
+    XYZ_STEPS = [0.1, 0.25, 0.5, 1.0, 2.0]
+    M4_STEPS = [5, 10, 25, 50]
 
     selected_index = 0
-    xyz_step = 0.5
-    m4_step = 25
+    xyz_step_idx = 2   # starts at 0.5 cm
+    m4_step_idx = 2    # starts at 25 steps
     saved = False
     dirty = False
-
-    print("\nInteractive controls")
-    print("  select 1-6     choose waypoint")
-    print("  x+/x- y+/y- z+/z-  adjust Cartesian fields by current cm step")
-    print("  m4+/m4-        adjust wrist trim by current motor-step size")
-    print("  step <cm>      set Cartesian step size, e.g. step 0.1")
-    print("  m4step <n>     set m4_offset step size, e.g. m4step 10")
-    print("  yaw <deg>      set rear base yaw limit, default 45")
-    print("  v              validate selected waypoint")
-    print("  va             validate all waypoints")
-    print("  move           validate and move to selected waypoint after MOVE confirmation")
-    print("  test red/blue  validate and move through one bin route after TEST RED/BLUE confirmation")
-    print("  test selected  validate and move through the selected bin route")
-    print("  test all       validate and move through RED then BLUE routes after TEST ALL confirmation")
-    print("  limp           hardware only: disable torque on motors 1-4 for hand-guiding")
-    print("  lock           hardware only: set current goals and re-enable torque")
-    print("  capture        hardware only: read current motors, FK-convert, store selected waypoint, and lock")
-    print("  pos            hardware only: read current motor positions")
-    print("  save           validate all, confirm, backup, and save")
-    print("  q              quit without saving")
-    print("\nNote: production route schema supports x/y/z/m4_offset/skip_sag here; m5/claw is not saved by config.arm routes.")
+    limp_active = False
+    status_msg = "Ready. Press a key to begin."
 
     arm = ArmIK(rear_base_yaw_limit_deg=data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG))
-    last_valid_commands: dict[str, int] | None = None
-    last_valid_key: str | None = None
 
-    while True:
-        spec = EDITABLE_WAYPOINTS[selected_index]
-        print_route_summary(data, selected_index)
-        print(f"\nSelected: {spec.title} | xyz_step={xyz_step:.2f} cm | m4_step={m4_step} steps")
-        command = input_func("bin-route> ").strip()
-        if not command:
-            continue
-        lowered = command.lower()
+    cv2.namedWindow(WINDOW_NAME)
 
-        if lowered in {"q", "quit", "exit"}:
-            if dirty:
-                confirm = input_func("Unsaved edits exist. Type DISCARD to quit without saving: ").strip()
-                if confirm != "DISCARD":
-                    continue
-            print("Exiting without additional saves.")
-            return saved
+    try:
+        while True:
+            xyz_step = XYZ_STEPS[xyz_step_idx]
+            m4_step = M4_STEPS[m4_step_idx]
+            spec = EDITABLE_WAYPOINTS[selected_index]
 
-        if lowered in {"h", "help", "?"}:
-            print("Commands: 1-6, x+/x-, y+/y-, z+/z-, m4+/m4-, step <cm>, m4step <n>, yaw <deg>, v, va, move, test red/blue/selected/all, limp, lock, capture, pos, save, q")
-            continue
+            hud = _render_hud(
+                selected_index, data, xyz_step, m4_step,
+                dirty, hardware, status_msg, limp_active,
+            )
+            cv2.imshow(WINDOW_NAME, hud)
+            key = cv2.waitKey(0) & 0xFF
 
-        if lowered.isdigit() and 1 <= int(lowered) <= len(EDITABLE_WAYPOINTS):
-            selected_index = int(lowered) - 1
-            last_valid_commands = None
-            last_valid_key = None
-            continue
+            status_msg = ""
 
-        if lowered.startswith("step "):
-            try:
-                xyz_step = max(0.01, min(5.0, abs(float(lowered.split(maxsplit=1)[1]))))
-                print(f"  Cartesian step set to {xyz_step:.2f} cm")
-            except ValueError:
-                print("  Invalid step value")
-            continue
-
-        if lowered.startswith("m4step "):
-            try:
-                m4_step = max(1, min(250, abs(int(lowered.split(maxsplit=1)[1]))))
-                print(f"  m4_offset step set to {m4_step} motor steps")
-            except ValueError:
-                print("  Invalid m4step value")
-            continue
-
-        if lowered.startswith("yaw "):
-            try:
-                data["rear_base_yaw_limit_deg"] = _parse_rear_base_yaw_limit(lowered.split(maxsplit=1)[1])
-                arm = ArmIK(rear_base_yaw_limit_deg=data["rear_base_yaw_limit_deg"])
-                dirty = True
-                last_valid_commands = None
-                last_valid_key = None
-                print(f"  rear_base_yaw_limit_deg set to {data['rear_base_yaw_limit_deg']:.1f}")
-            except ValueError:
-                print("  Invalid yaw value")
-            continue
-
-        field_delta: tuple[str, float] | None = None
-        if lowered in {"x+", "xp"}:
-            field_delta = ("x", xyz_step)
-        elif lowered in {"x-", "xm"}:
-            field_delta = ("x", -xyz_step)
-        elif lowered in {"y+", "yp"}:
-            field_delta = ("y", xyz_step)
-        elif lowered in {"y-", "ym"}:
-            field_delta = ("y", -xyz_step)
-        elif lowered in {"z+", "zp"}:
-            field_delta = ("z", xyz_step)
-        elif lowered in {"z-", "zm"}:
-            field_delta = ("z", -xyz_step)
-        elif lowered in {"m4+", "m4p", "i"}:
-            field_delta = ("m4_offset", m4_step)
-        elif lowered in {"m4-", "m4m", "k"}:
-            field_delta = ("m4_offset", -m4_step)
-
-        if field_delta is not None:
-            field, delta = field_delta
-            old_pose = copy.deepcopy(get_waypoint(data, spec))
-            update_waypoint_field(data, spec, field, delta)
-            result = validate_waypoint(data, spec, arm)
-            print_validation_result(spec, result)
-            if not result["ok"]:
-                get_waypoint(data, spec).clear()
-                get_waypoint(data, spec).update(old_pose)
-                print("  Edit reverted because strict IK validation failed.")
-                last_valid_commands = None
-                last_valid_key = None
-            else:
-                dirty = True
-                last_valid_commands = result["commands"]
-                last_valid_key = spec.key
-                print("  Edit kept in memory. Use 'move' to test on hardware and 'save' to persist it; hardware did not move automatically.")
-            continue
-
-        if lowered == "v":
-            result = validate_waypoint(data, spec, arm)
-            print_validation_result(spec, result)
-            last_valid_commands = result["commands"] if result["ok"] else None
-            last_valid_key = spec.key if result["ok"] else None
-            continue
-
-        if lowered == "va":
-            results = validate_all_waypoints(data, arm)
-            for waypoint_spec in EDITABLE_WAYPOINTS:
-                print_validation_result(waypoint_spec, results[waypoint_spec.key])
-            continue
-
-        if lowered == "move":
-            if not hardware:
-                print("  Dry-run/no-hardware mode: no serial connection is open. Run without --dry-run to enable moves.")
+            # ── Select waypoint 1-N ───────────────────────────────────
+            if ord("1") <= key <= ord(str(len(EDITABLE_WAYPOINTS))):
+                selected_index = key - ord("1")
+                status_msg = f"Selected waypoint {selected_index + 1}: {EDITABLE_WAYPOINTS[selected_index].title}"
                 continue
-            result = validate_waypoint(data, spec, arm)
-            print_validation_result(spec, result)
-            if not result["ok"]:
-                print("  Move refused because selected waypoint is invalid.")
-                continue
-            last_valid_commands = result["commands"]
-            last_valid_key = spec.key
-            maybe_move_hardware(ser, last_valid_commands, input_func)
-            continue
 
-        if lowered in {"limp", "l"}:
-            if not hardware:
-                print("  Dry-run/no-hardware mode: limp mode requires a serial connection. Run without --dry-run.")
-                continue
-            disable_limp_mode(ser, input_func)
-            continue
+            # ── Movement: W/S → X, A/D → Y, U/J → Z, I/K → m4 ──────
+            field_delta: tuple[str, float] | None = None
+            if key in (ord("w"), ord("W")):
+                field_delta = ("x", XYZ_STEPS[xyz_step_idx])
+            elif key in (ord("s"), ord("S")):
+                field_delta = ("x", -XYZ_STEPS[xyz_step_idx])
+            elif key in (ord("a"), ord("A")):
+                field_delta = ("y", XYZ_STEPS[xyz_step_idx])
+            elif key in (ord("d"), ord("D")):
+                field_delta = ("y", -XYZ_STEPS[xyz_step_idx])
+            elif key in (ord("u"), ord("U")):
+                field_delta = ("z", XYZ_STEPS[xyz_step_idx])
+            elif key in (ord("j"), ord("J")):
+                field_delta = ("z", -XYZ_STEPS[xyz_step_idx])
+            elif key in (ord("i"), ord("I")):
+                field_delta = ("m4_offset", float(M4_STEPS[m4_step_idx]))
+            elif key in (ord("k"), ord("K")):
+                field_delta = ("m4_offset", float(-M4_STEPS[m4_step_idx]))
 
-        if lowered in {"lock", "torque", "torque on"}:
-            if not hardware:
-                print("  Dry-run/no-hardware mode: torque control requires a serial connection. Run without --dry-run.")
-                continue
-            enable_limp_mode(ser)
-            continue
-
-        if lowered in {"capture", "cap", "read capture"}:
-            if not hardware:
-                print("  Dry-run/no-hardware mode: current-position capture requires a serial connection. Run without --dry-run.")
-                continue
-            if capture_current_waypoint(data, spec, ser, arm):
-                dirty = True
+            if field_delta is not None:
+                field, delta = field_delta
+                old_pose = copy.deepcopy(get_waypoint(data, spec))
+                update_waypoint_field(data, spec, field, delta)
                 result = validate_waypoint(data, spec, arm)
-                last_valid_commands = result["commands"] if result["ok"] else None
-                last_valid_key = spec.key if result["ok"] else None
-            continue
-
-        if lowered in {"pos", "read", "read_pos"}:
-            if not hardware:
-                print("  Dry-run/no-hardware mode: motor readout requires a serial connection. Run without --dry-run.")
-                continue
-            positions = read_motor_positions(ser)
-            if positions is not None:
-                print(f"  Current motor positions: {json.dumps(positions, sort_keys=True)}")
-            continue
-
-        if lowered.startswith("test"):
-            if not hardware:
-                print("  Dry-run/no-hardware mode: route movement requires a serial connection. Run without --dry-run.")
-                continue
-            parts = lowered.split()
-            target = parts[1] if len(parts) > 1 else "selected"
-            try:
-                if target in {"red", "red_bin"}:
-                    maybe_test_route_hardware(
-                        data,
-                        ser=ser,
-                        arm=arm,
-                        specs=route_specs_for_bin("RED_BIN"),
-                        label="RED_BIN route",
-                        confirmation="TEST RED",
-                        input_func=input_func,
-                    )
-                elif target in {"blue", "blue_bin"}:
-                    maybe_test_route_hardware(
-                        data,
-                        ser=ser,
-                        arm=arm,
-                        specs=route_specs_for_bin("BLUE_BIN"),
-                        label="BLUE_BIN route",
-                        confirmation="TEST BLUE",
-                        input_func=input_func,
-                    )
-                elif target == "selected":
-                    selected_route = route_specs_for_selected(spec)
-                    selected_bin = spec.bin_name or "selected"
-                    maybe_test_route_hardware(
-                        data,
-                        ser=ser,
-                        arm=arm,
-                        specs=selected_route,
-                        label=f"{selected_bin} route",
-                        confirmation=f"TEST {selected_bin.removesuffix('_BIN')}",
-                        input_func=input_func,
-                    )
-                elif target == "all":
-                    all_specs = route_specs_for_bin("RED_BIN") + route_specs_for_bin("BLUE_BIN")
-                    maybe_test_route_hardware(
-                        data,
-                        ser=ser,
-                        arm=arm,
-                        specs=all_specs,
-                        label="RED_BIN route followed by BLUE_BIN route",
-                        confirmation="TEST ALL",
-                        input_func=input_func,
-                    )
+                if not result["ok"]:
+                    get_waypoint(data, spec).clear()
+                    get_waypoint(data, spec).update(old_pose)
+                    status_msg = f"REVERTED: {result['reason'][:90]}"
                 else:
-                    print("  Unknown test target. Use: test red, test blue, test selected, or test all.")
-            except ValueError as exc:
-                print(f"  Route test unavailable: {exc}")
-            continue
-
-        if lowered == "save":
-            results = validate_all_waypoints(data, arm)
-            all_ok = True
-            for waypoint_spec in EDITABLE_WAYPOINTS:
-                result = results[waypoint_spec.key]
-                print_validation_result(waypoint_spec, result)
-                all_ok = all_ok and result["ok"]
-            if not all_ok:
-                print("  Save refused: fix invalid waypoints first.")
+                    dirty = True
+                    pose = get_waypoint(data, spec)
+                    val = pose.get(field, 0)
+                    status_msg = f"{field} -> {val} | IK OK"
+                    if hardware and ser:
+                        try:
+                            send_validated_commands(ser, result["commands"], label=spec.title)
+                            status_msg = f"Moved to {spec.title}"
+                        except Exception as e:
+                            status_msg = f"Move error: {e}"
                 continue
-            confirm = input_func(f"Type SAVE to overwrite {BIN_CALIBRATION_FILE} with a backed-up two-bin route schema: ").strip()
-            if confirm != "SAVE":
-                print("  Save cancelled.")
+
+            # ── Step size: [ / ] for XYZ ──────────────────────────────
+            if key == ord("["):
+                xyz_step_idx = max(0, xyz_step_idx - 1)
+                status_msg = f"XYZ step: {XYZ_STEPS[xyz_step_idx]:.2f} cm"
                 continue
-            backup = save_route_schema_with_backup(data, BIN_CALIBRATION_FILE)
-            print(f"  Saved {BIN_CALIBRATION_FILE}")
-            if backup is not None:
-                print(f"  Backup written to {backup}")
-            print("  Confirmed: only RED_BIN and BLUE_BIN were written; REJECT_BIN was not added.")
-            dirty = False
-            saved = True
-            continue
+            if key == ord("]"):
+                xyz_step_idx = min(len(XYZ_STEPS) - 1, xyz_step_idx + 1)
+                status_msg = f"XYZ step: {XYZ_STEPS[xyz_step_idx]:.2f} cm"
+                continue
 
-        if lowered == "last" and last_valid_commands is not None:
-            print(f"  Last valid commands for {last_valid_key}: {json.dumps(last_valid_commands, sort_keys=True)}")
-            continue
+            # ── Step size: - / = for m4 ───────────────────────────────
+            if key == ord("-"):
+                m4_step_idx = max(0, m4_step_idx - 1)
+                status_msg = f"m4 step: {M4_STEPS[m4_step_idx]} steps"
+                continue
+            if key == ord("="):
+                m4_step_idx = min(len(M4_STEPS) - 1, m4_step_idx + 1)
+                status_msg = f"m4 step: {M4_STEPS[m4_step_idx]} steps"
+                continue
 
-        print("  Unknown command. Type h for help.")
+            # ── M: Move to current waypoint ───────────────────────────
+            if key in (ord("m"), ord("M")):
+                if not hardware:
+                    status_msg = "DRY-RUN: No hardware. Run without --dry-run."
+                    continue
+                result = validate_waypoint(data, spec, arm)
+                if not result["ok"]:
+                    status_msg = f"MOVE REFUSED: {result['reason'][:80]}"
+                    continue
+                try:
+                    send_validated_commands(ser, result["commands"], label=spec.title)
+                    status_msg = f"Moved to {spec.title}"
+                except Exception as exc:
+                    status_msg = f"MOVE ERROR: {exc}"
+                continue
+
+            # ── T: Test bin route ─────────────────────────────────────
+            if key in (ord("t"), ord("T")):
+                if not hardware:
+                    status_msg = "DRY-RUN: No hardware. Run without --dry-run."
+                    continue
+                try:
+                    if spec.bin_name is not None:
+                        specs = route_specs_for_bin(spec.bin_name)
+                    else:
+                        status_msg = "Select a bin waypoint (3-4) to test a route."
+                        continue
+                    all_ok = True
+                    route_commands: list[tuple[WaypointSpec, dict[str, Any]]] = []
+                    for rs in specs:
+                        r = validate_waypoint(data, rs, arm)
+                        all_ok = all_ok and r["ok"]
+                        if r["ok"]:
+                            route_commands.append((rs, r["commands"]))
+                    if not all_ok:
+                        status_msg = "TEST REFUSED: validation failed for one or more waypoints."
+                        continue
+                    send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
+                    for rs, cmds in route_commands:
+                        send_validated_commands(ser, cmds, label=rs.title, settle_seconds=ROUTE_SETTLE_SECONDS)
+                    status_msg = f"Route test complete: {spec.bin_name}"
+                except Exception as exc:
+                    status_msg = f"TEST ERROR: {exc}"
+                continue
+
+            # ── L: Toggle limp mode ───────────────────────────────────
+            if key in (ord("l"), ord("L")):
+                if not hardware:
+                    status_msg = "DRY-RUN: Limp mode requires hardware."
+                    continue
+                if limp_active:
+                    enable_limp_mode(ser)
+                    limp_active = False
+                    status_msg = "Torque re-enabled. Arm holding position."
+                else:
+                    for motor_id in LIMP_MOTOR_IDS:
+                        resp = send_raw_command(ser, {"cmd": "set_torque", "id": motor_id, "enable": False})
+                        if "ERR" in resp.upper():
+                            print(f"  Warning: Motor {motor_id} torque disable issue: {resp}")
+                    limp_active = True
+                    status_msg = "LIMP: Motors 1-4 disabled. Support the arm! Press L to lock."
+                continue
+
+            # ── ENTER: Save calibration ───────────────────────────────
+            if key == 13:
+                results = validate_all_waypoints(data, arm)
+                all_ok = all(r["ok"] for r in results.values())
+                if not all_ok:
+                    failed = [k for k, r in results.items() if not r["ok"]]
+                    status_msg = f"SAVE REFUSED: invalid waypoints: {', '.join(failed)}"
+                    continue
+                try:
+                    save_route_schema(data, BIN_CALIBRATION_FILE)
+                    dirty = False
+                    saved = True
+                    status_msg = f"SAVED to {BIN_CALIBRATION_FILE}"
+                except Exception as exc:
+                    status_msg = f"SAVE ERROR: {exc}"
+                continue
+
+            # ── Q: Quit ───────────────────────────────────────────────
+            if key in (ord("q"), ord("Q")):
+                if dirty:
+                    confirm_hud = np.zeros((200, 500, 3), dtype=np.uint8)
+                    cv2.putText(confirm_hud, "Unsaved changes exist!",
+                                (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(confirm_hud, "Y = quit without saving",
+                                (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+                    cv2.putText(confirm_hud, "N = cancel and keep editing",
+                                (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+                    cv2.imshow(WINDOW_NAME, confirm_hud)
+                    confirm_key = cv2.waitKey(0) & 0xFF
+                    if confirm_key not in (ord("y"), ord("Y")):
+                        status_msg = "Quit cancelled."
+                        continue
+                print("Exiting bin calibration.")
+                break
+    finally:
+        cv2.destroyAllWindows()
+
+    return saved
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -969,7 +997,7 @@ def main(argv: list[str] | None = None) -> int:
     print("╠══════════════════════════════════════════════════════════════╣")
     print("║  Hardware mode is default: serial opens unless --dry-run used.║")
     print("║  Use limp/capture/lock to hand-guide waypoints like touch cal.║")
-    print("║  Saves require explicit SAVE and create timestamped backups.  ║")
+    print("║  Saves require explicit SAVE and update bin_calibration.json. ║")
     print("╚══════════════════════════════════════════════════════════════╝")
 
     data, messages = load_or_initialize_route_schema(BIN_CALIBRATION_FILE)

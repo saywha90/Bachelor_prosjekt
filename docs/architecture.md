@@ -189,7 +189,7 @@ Key features:
 - **End-effector offset**: adds `L3` (22.0 cm) to Z so the wrist hovers correctly while the claw points straight down
 - **Sag compensation**: corrects for gravity droop using a linear or quadratic model loaded from `sag_calibration.json`
 - **`skip_sag` parameter**: when touch calibration data exists, grab moves call [`solve()`](../src/ik/solver.py) with `skip_sag=True` to avoid double-compensating (the touch-calibrated Z already includes real droop). All other move types use sag compensation normally.
-- **Shoulder height**: subtracts `shoulder_height` (33.0 cm) to convert workspace Z to the shoulder-relative frame
+- **Shoulder height**: subtracts `shoulder_height` (35.0 cm) to convert workspace Z to the shoulder-relative frame
 - **Joint limits**: clamps motor positions to safe ranges to prevent hardware overload errors
 - **Partial-move interpolation**: `calculate_partial_move()` interpolates in Cartesian space (utility for tests/demos; production uses a single direct move — see ADR-003)
 - **Strict route solving**: [`solve_strict()`](../src/ik/solver.py:525) is used for production route prevalidation, including rear fold-over placement with a configured base-yaw guard.
@@ -239,7 +239,7 @@ Configuration is split into two modules:
 - `CLEARANCE_HEIGHT` = 15.0 cm — clearance Z used for pickup recovery and route planning
 - `VERIFY_HEIGHT` = 8.0 cm — Z to lift to for grip verification
 - `CAMERA_OFFSET_X/Y` = 0.0 cm — fine-tuning offset (homography maps directly to shoulder frame)
-- Production rear transport route loading from [`bin_calibration.json`](../src/calibration/bin_calibration.json): required shared waypoints `front_neutral` and `rear_transfer`, plus `approach` and `drop` poses for `RED_BIN` and `BLUE_BIN`.
+- Production rear transport route loading from [`bin_calibration.json`](../src/calibration/bin_calibration.json): required shared waypoints `front_neutral`, `rear_transfer`, and `rear_return_lift`, plus `drop` poses for `RED_BIN` and `BLUE_BIN`.
 - `DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG` = 45.0° — default symmetric yaw guard for rear fold-over route waypoints; the route schema may override it with `rear_base_yaw_limit_deg`.
 - The real setup uses only `RED_BIN` and `BLUE_BIN` for rear placement. No `REJECT_BIN` is used in production routing; no-grip / air-pick cases return to scan/look-again.
 - Timing: `GRAB_DWELL` = 0.8 s, `RELEASE_DWELL` = 0.5 s
@@ -274,8 +274,8 @@ The state machine in [`src/main.py`](../src/main.py) is defined by the `State` e
 | `APPROACHING` | Single direct move to the computed grab pose using touch-calibrated or formula fallback Z plus wrist correction. |
 | `GRABBING` | Run adaptive grip by closing the claw gently and watching load/position feedback. |
 | `VERIFY_GRIP` | If adaptive grip is inconclusive, use position/load fallback verification. On failure, open claw, retreat through the prevalidated pickup recovery waypoint, then return to scan/look-again. |
-| `SORTING` | Move the confirmed ball through the prevalidated rear route: `front_neutral` → `rear_transfer` → bin `approach` → bin `drop`. |
-| `DROPPING` | Open the claw at the validated rear drop pose, wait `RELEASE_DWELL`. |
+| `SORTING` | Move the confirmed ball through the prevalidated rear route: `front_neutral` → `rear_transfer` → bin `drop`. |
+| `DROPPING` | Open the claw at the validated rear drop pose, wait `RELEASE_DWELL`, then retreat via `rear_return_lift` before `front_neutral` so the claw clears the rear sorting bin before facing forward. |
 | `DONE` | Cycle complete. Control returns to the main loop for the next scan. |
 
 ### 3.2 State Diagram
@@ -365,11 +365,11 @@ Production sorting uses [`prevalidate_transport_plan()`](../src/main.py:290) bef
 
 The production route schema is loaded by [`load_transport_route_calibration()`](../src/config/arm.py:517) with `require_route_schema=True`. Required route data is:
 
-- Shared waypoints: `front_neutral` and `rear_transfer`.
-- Per-bin route poses: `RED_BIN.approach`, `RED_BIN.drop`, `BLUE_BIN.approach`, and `BLUE_BIN.drop`.
+- Shared waypoints: `front_neutral`, `rear_transfer`, and `rear_return_lift`.
+- Per-bin route poses: `RED_BIN.drop` and `BLUE_BIN.drop`.
 - Rear-yaw guard: `rear_base_yaw_limit_deg`, defaulting to [`DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG`](../src/config/arm.py:227) = ±45°.
 
-Rear placement is a fold-over move. The rear waypoints are behind the base in Cartesian space, but strict IK keeps base yaw within the configured symmetric guard so the shoulder/forearm fold over the top instead of using a 180° base rotation. The real setup has no reject bin; failed/no-grip picks return to scan/look-again.
+Rear placement is a fold-over move. The rear waypoints are behind the base in Cartesian space, but strict IK keeps base yaw within the configured symmetric guard so the shoulder/forearm fold over the top instead of using a 180° base rotation. After release, the open-claw return path first moves to `rear_return_lift` and only then to `front_neutral`, which keeps the claw above the rear sorting bin before the arm faces forward. The real setup has no reject bin; failed/no-grip picks return to scan/look-again.
 
 Route simulation support lives in [`route_demo.py`](../src/simulation/route_demo.py), [`visualizer.py`](../src/simulation/visualizer.py), and [`sample_route_calibration.json`](../src/simulation/sample_route_calibration.json). Typical checks:
 
@@ -423,7 +423,7 @@ The `OAKCamera` captures frames at 640 × 400 resolution using the DepthAI v3 pi
 1. Clamp Z to `Z_MIN` (6.0 cm) — floor collision prevention
 2. Add `L3` (22.0 cm) to Z — end-effector offset so claw tip reaches target
 3. Add sag compensation: `z_ik += reach × z_offset_multiplier` (linear model, loaded from `sag_calibration.json`). **Skipped when `skip_sag=True`** — used for grab moves when touch calibration data is available, because the touch-calibrated Z already accounts for droop.
-4. Subtract `shoulder_height` (33.0 cm) to convert to the shoulder-relative frame
+4. Subtract `shoulder_height` (35.0 cm) to convert to the shoulder-relative frame
 5. For normal front-workspace picks, base angle is `θ_base = atan2(y, x)`.
 6. For strict rear-placement route poses, fold-over yaw validation keeps base yaw within the route guard instead of using a 180° base turn.
 7. Planar distance: `d = sqrt(r² + z_ik²)`, with reachability clamping.
