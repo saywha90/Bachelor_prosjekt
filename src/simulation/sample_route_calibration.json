@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "description": "Simulation-only rear-placement route calibration. Use explicitly with scripts/demos; do not copy to production without real calibration.",
   "rear_base_yaw_limit_deg": 45.0,
   "shared_waypoints": {
@@ -16,17 +16,17 @@
       "z": 38.0,
       "m4_offset": 0,
       "skip_sag": true
+    },
+    "rear_return_lift": {
+      "x": -22.0,
+      "y": 0.0,
+      "z": 42.0,
+      "m4_offset": 0,
+      "skip_sag": true
     }
   },
   "bins": {
     "RED_BIN": {
-      "approach": {
-        "x": -24.0,
-        "y": -7.0,
-        "z": 34.0,
-        "m4_offset": 0,
-        "skip_sag": true
-      },
       "drop": {
         "x": -28.0,
         "y": -7.0,
@@ -36,13 +36,6 @@
       }
     },
     "BLUE_BIN": {
-      "approach": {
-        "x": -24.0,
-        "y": 7.0,
-        "z": 34.0,
-        "m4_offset": 0,
-        "skip_sag": true
-      },
       "drop": {
         "x": -28.0,
         "y": 7.0,

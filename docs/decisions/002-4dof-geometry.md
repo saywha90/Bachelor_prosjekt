@@ -13,7 +13,7 @@ The arm's link lengths are:
 - L2 = 23.0 cm (elbow → wrist pivot)
 - L3 = 22.0 cm (wrist pivot → claw tip)
 
-The shoulder joint is elevated 33.0 cm above the workspace surface. The arm needs to reach positions 10–28 cm forward and ±22 cm left/right, picking balls from the table (Z ≈ 6–13 cm) and placing them in bins (Z ≈ 10–12 cm).
+The shoulder joint is elevated 35.0 cm above the workspace surface. The arm needs to reach positions 10–28 cm forward and ±22 cm left/right, picking balls from the table (Z ≈ 6–13 cm) and placing them in bins (Z ≈ 10–12 cm).
 
 ## Decision
 
@@ -22,7 +22,7 @@ Use a **closed-form geometric IK solution** as implemented in [`ArmIK.solve()`](
 1. **Base angle** (motor 1): `θ_base = atan2(y, x)` — decouples the base rotation from the planar arm problem
 2. **Planar IK** (motors 2, 3): Law of Cosines on the triangle formed by L1, L2, and the distance `d` from the shoulder to the (adjusted) target point in the arm's vertical plane
 3. **Wrist compensation** (motor 4): `θ_wrist = −π/2 − (θ_shoulder − θ_elbow)` — ensures the claw always points straight down
-4. **Claw** (motor 5): pass-through, set independently to open (`CLAW_OPEN` = 2048) or close (`CLAW_CLOSED_POS` = 1600)
+4. **Claw** (motor 5): pass-through, set independently to open (`CLAW_OPEN` = 2745) or close (`CLAW_CLOSED_POS` = 3300)
 
 Additional post-processing steps:
 - **End-effector offset:** Z is increased by L3 so the IK solves for the wrist pivot while the claw tip reaches the actual target
@@ -35,9 +35,12 @@ Additional post-processing steps:
 
 Rear bins are represented by a strict route schema loaded from
 [`bin_calibration.json`](../../src/calibration/bin_calibration.json). The schema
-requires shared `front_neutral` and `rear_transfer` waypoints plus per-bin
-`approach` and `drop` poses for `RED_BIN` and `BLUE_BIN`. The real setup does
-not use a reject bin; no-grip / air-pick recovery returns to scan/look-again.
+requires shared `front_neutral`, `rear_transfer`, and `rear_return_lift`
+waypoints plus per-bin `drop` poses for `RED_BIN` and `BLUE_BIN`.
+`rear_return_lift` is the open-claw retreat waypoint used before returning to
+`front_neutral`, so the claw clears the rear sorting bin before the arm faces
+forward. The real setup does not use a reject bin; no-grip / air-pick recovery
+returns to scan/look-again.
 
 The route yaw guard is configured by
 [`DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG`](../../src/config/arm.py:227), default

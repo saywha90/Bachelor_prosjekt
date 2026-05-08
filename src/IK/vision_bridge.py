@@ -56,7 +56,7 @@ from config import vision as vcfg
 
 from config.arm import (
     CAMERA_OFFSET_X, CAMERA_OFFSET_Y, SCAN_POSE, SCAN_POSE_TOLERANCE,
-    CALIBRATION_FILE,
+    CALIBRATION_FILE, CLAW_OPEN_POS,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,10 +161,20 @@ class VisionBridge:
                 workspace_px, workspace_cm
             )
 
-        # Scan-pose verification data (backwards-compatible with older JSONs)
-        self._calibrated_scan_pose: dict = cal.get(
-            "calibrated_at_scan_pose", SCAN_POSE
-        )
+        # Scan-pose verification data (backwards-compatible with older JSONs).
+        # M1-M4 remain tied to the calibrated homography pose, while M5 is
+        # always the configured open-claw position used by SCAN_POSE commands.
+        self._calibrated_scan_pose: dict = dict(SCAN_POSE)
+        self._calibrated_scan_pose.update(cal.get("calibrated_at_scan_pose", {}))
+        calibrated_m5 = self._calibrated_scan_pose.get("m5")
+        self._calibrated_scan_pose["m5"] = CLAW_OPEN_POS
+        if calibrated_m5 is not None and int(calibrated_m5) != CLAW_OPEN_POS:
+            logger.warning(
+                "[VISION] Calibration metadata has stale SCAN_POSE m5=%d; "
+                "using CLAW_OPEN_POS=%d for scan-pose validation",
+                int(calibrated_m5),
+                CLAW_OPEN_POS,
+            )
         self._scan_pose_tolerance: int = cal.get(
             "tolerance", SCAN_POSE_TOLERANCE
         )

@@ -51,7 +51,7 @@ from config.arm import (
     GRIP_CURRENT_LIMIT, GRIP_PROFILE_VEL, GRIP_PROFILE_ACC,
     GRIP_POLL_INTERVAL, GRIP_TIMEOUT, GRIP_LOAD_DETECT,
     GRIP_POSITION_STALL, GRIP_EXTRA_CLOSE, GRIP_VERIFY_TOLERANCE,
-    M5_DEFAULT_CURRENT_LIMIT,
+    M5_DEFAULT_CURRENT_LIMIT, CLAW_OPEN_POS,
 )
 
 # ── Serial wrapper ──────────────────────────────────────────────────
@@ -374,7 +374,7 @@ def main():
         print("Adjust m5 until the claw is fully open without straining")
         print("the motor (no buzzing / high current draw).")
 
-        claw_open = tune_m5(safe_pos, 2048, "CLAW_OPEN")
+        claw_open = tune_m5(safe_pos, CLAW_OPEN_POS, "CLAW_OPEN")
         print(f"\n  ✅ CLAW_OPEN = {claw_open}")
 
         # ════════════════════════════════════════════════════════════

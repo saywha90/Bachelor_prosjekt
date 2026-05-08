@@ -15,6 +15,7 @@ if __package__ in (None, ""):
 from config.arm import (  # noqa: E402
     CLAW_CLOSED_POS,
     CLAW_OPEN_POS,
+    REAR_RETURN_LIFT_WAYPOINT,
     RouteCalibrationError,
     load_transport_route_calibration,
 )
@@ -152,10 +153,9 @@ def build_rear_placement_demo_plan(
     rear_transfer_loaded = route_cal.shared_waypoints["rear_transfer"].as_strict_pose(
         m5=CLAW_CLOSED_POS
     )
-    bin_approach_loaded = bin_route.approach.as_strict_pose(m5=CLAW_CLOSED_POS)
     bin_drop_loaded = bin_route.drop.as_strict_pose(m5=CLAW_CLOSED_POS)
     bin_drop_released = bin_route.drop.as_strict_pose(m5=CLAW_OPEN_POS)
-    for rear_pose in (rear_transfer_loaded, bin_approach_loaded, bin_drop_loaded, bin_drop_released):
+    for rear_pose in (rear_transfer_loaded, bin_drop_loaded, bin_drop_released):
         rear_pose["rear_base_yaw_limit_deg"] = route_cal.rear_base_yaw_limit_deg
 
     pickup_specs = _pickup_sequence_specs(
@@ -169,20 +169,16 @@ def build_rear_placement_demo_plan(
         *pickup_specs,
         ("front-neutral", front_neutral_loaded, "carry"),
         ("rear-transfer", rear_transfer_loaded, "rear_place"),
-        ("bin-approach", bin_approach_loaded, "rear_place"),
         ("bin-drop", bin_drop_loaded, "rear_place"),
         ("bin-drop-release", bin_drop_released, "rear_place"),
     ]
 
     if include_retreat:
-        bin_approach_released = bin_route.approach.as_strict_pose(m5=CLAW_OPEN_POS)
-        rear_transfer_released = route_cal.shared_waypoints["rear_transfer"].as_strict_pose(m5=CLAW_OPEN_POS)
-        for rear_pose in (bin_approach_released, rear_transfer_released):
-            rear_pose["rear_base_yaw_limit_deg"] = route_cal.rear_base_yaw_limit_deg
+        rear_return_lift = route_cal.shared_waypoints[REAR_RETURN_LIFT_WAYPOINT].as_strict_pose(m5=CLAW_OPEN_POS)
+        rear_return_lift["rear_base_yaw_limit_deg"] = route_cal.rear_base_yaw_limit_deg
         specs.extend(
             [
-                ("bin-approach-retreat", bin_approach_released, "rear_place"),
-                ("rear-transfer-retreat", rear_transfer_released, "rear_place"),
+                ("rear-return-lift", rear_return_lift, "rear_place"),
                 ("front-neutral-retreat", route_cal.shared_waypoints["front_neutral"].as_strict_pose(m5=CLAW_OPEN_POS), "carry"),
                 ("pickup-clearance-home", pickup_specs[0][1], "carry"),
             ]
@@ -244,10 +240,8 @@ def route_overlay_points(plan: list[RouteDemoWaypoint]) -> list[tuple[str, dict]
         "pickup-clearance-retreat",
         "front-neutral",
         "rear-transfer",
-        "bin-approach",
         "bin-drop",
-        "bin-approach-retreat",
-        "rear-transfer-retreat",
+        "rear-return-lift",
         "front-neutral-retreat",
         "pickup-clearance-home",
     }

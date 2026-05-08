@@ -28,13 +28,14 @@ def _forward_kinematics_xy(arm: ArmIK, result: dict) -> tuple[float, float, floa
     """
     RAD_PER_STEP = arm.RAD_PER_STEP
     CENTRE = arm.STEP_CENTRE
+    M3_CENTRE = arm.M3_CENTRE
 
     # Recover angles from steps (inverse of _rad_to_steps)
     theta_base = (result["m1"] - CENTRE) * RAD_PER_STEP
     # m2 was stored as rad_to_steps(theta_shoulder - pi/2)
     theta_shoulder = (result["m2"] - CENTRE) * RAD_PER_STEP + math.pi / 2
     # m3 was stored as rad_to_steps(-theta_elbow)
-    theta_elbow = -((result["m3"] - CENTRE) * RAD_PER_STEP)
+    theta_elbow = -((result["m3"] - M3_CENTRE) * RAD_PER_STEP)
 
     # Planar FK (in the arm's 2-D plane)
     # The shoulder angle is measured from horizontal; the elbow opens up.
@@ -315,9 +316,10 @@ class TestGeometricConsistency:
         result = arm.solve(x=20.0, y=5.0, z=0.0)
         RAD = arm.RAD_PER_STEP
         C = arm.STEP_CENTRE
+        M3_CENTRE = arm.M3_CENTRE
 
         theta_shoulder = (result["m2"] - C) * RAD + math.pi / 2
-        theta_elbow = -((result["m3"] - C) * RAD)
+        theta_elbow = -((result["m3"] - M3_CENTRE) * RAD)
 
         # End of link-2 relative to shoulder
         x2 = arm.L1 * math.cos(theta_shoulder) + arm.L2 * math.cos(theta_shoulder - theta_elbow)

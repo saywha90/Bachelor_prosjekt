@@ -187,8 +187,8 @@ and saves them to `claw_calibration.json`.
 **Configuration:** Update these constants in [`src/config/arm.py`](../src/config/arm.py) if needed:
 
 ```python
-CLAW_OPEN_POS   = 2048   # fully open without motor strain
-CLAW_CLOSED_POS = 1600   # grips a 50 mm ball without crushing
+CLAW_OPEN_POS   = 2745   # fully open without motor strain (XM430-W210 raw goal position)
+CLAW_CLOSED_POS = 3300   # safe closed/grip limit for adaptive close
 ```
 
 ---
@@ -562,10 +562,12 @@ PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --validate-only
 
 **Production route schema:**
 
-- Required shared waypoints: `shared_waypoints.front_neutral` and
-  `shared_waypoints.rear_transfer`.
-- Required per-bin poses: `bins.RED_BIN.approach`, `bins.RED_BIN.drop`,
-  `bins.BLUE_BIN.approach`, and `bins.BLUE_BIN.drop`.
+- Required shared waypoints: `shared_waypoints.front_neutral`,
+  `shared_waypoints.rear_transfer`, and `shared_waypoints.rear_return_lift`.
+- Required per-bin poses: `bins.RED_BIN.drop` and `bins.BLUE_BIN.drop`.
+- The return route after opening the claw is `rear_return_lift` →
+  `front_neutral`, so the arm lifts clear of the rear sorting bin before facing
+  forward again.
 - Editable pose fields are `x`, `y`, `z`, `m4_offset`, and `skip_sag`.
 - The real setup has only two destination bins: `RED_BIN` and `BLUE_BIN`.
   `REJECT_BIN` is not written by the tool and is not used for real sorting.
@@ -577,7 +579,7 @@ PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --validate-only
 
 | Command | Action |
 |---------|--------|
-| `select 1-6` or `1`–`6` | Choose `front_neutral`, `rear_transfer`, or one per-bin approach/drop pose |
+| `1`–`5` | Choose `front_neutral`, `rear_transfer`, `rear_return_lift`, or one per-bin drop pose |
 | `x+` / `x-`, `y+` / `y-`, `z+` / `z-` | Adjust the selected Cartesian field by the current centimetre step |
 | `m4+` / `m4-` | Adjust the selected wrist trim by the current motor-step size |
 | `step <cm>` / `m4step <n>` | Change adjustment step sizes |

@@ -188,11 +188,11 @@ def test_5_known_geometry():
     print("and the claw continue straight down from the wrist.")
     print()
     print("Expected claw tip position (if L1=25.5, L2=23.0, L3=22.0,")
-    print("shoulder_height=33.0):")
+    print("shoulder_height=35.0):")
     print("    x = L1 = 25.5 cm")
     print("    y = 0")
-    print("    z = shoulder_height - L2 - L3 = 33 - 23 - 22.0 = -12.0 cm")
-    print("    (i.e. the claw tip would be 12.0 cm BELOW the desk;")
+    print("    z = shoulder_height - L2 - L3 = 35 - 23 - 22.0 = -10.0 cm")
+    print("    (i.e. the claw tip would be 10.0 cm BELOW the desk;")
     print("     the arm will hit the desk first — that's fine, just")
     print("     measure the claw tip height above the desk when stopped.)")
     print()
@@ -200,7 +200,7 @@ def test_5_known_geometry():
         "m1": 2048,
         "m2": 2048 + 1024,
         "m3": 2048 - 1024,
-        "m4": 1911,    # M4 mechanical centre (3D-printed mount offset)
+        "m4": 1911,    # M4 wrist tilt position
         "m5": 2048,
     }
     print(f"Commanding: {pose}")
