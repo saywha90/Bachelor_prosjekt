@@ -44,6 +44,14 @@ from config.arm import (  # noqa: E402
     load_transport_route_calibration,
 )
 from ik.solver import ArmIK  # noqa: E402
+from simulation.bin_safety import (  # noqa: E402
+    BinVolume,
+    SAG_AWARE_BIN_CLEARANCE_CM,
+    bin_volumes_from_centres,
+    find_claw_bin_point_clearance_violation,
+    find_claw_bin_segment_clearance_violation,
+    format_claw_bin_clearance_reason,
+)
 
 
 BIN_CALIBRATION_FILE = Path(CONFIG_BIN_CALIBRATION_FILE)
@@ -118,7 +126,7 @@ def _safe_default_route_schema() -> dict[str, Any]:
                 "drop": {
                     "x": -24.0,
                     "y": -7.0,
-                    "z": 33.0,
+                    "z": 37.0,
                     "m4_offset": 0,
                     "skip_sag": True,
                 },
@@ -127,7 +135,7 @@ def _safe_default_route_schema() -> dict[str, Any]:
                 "drop": {
                     "x": -24.0,
                     "y": 7.0,
-                    "z": 33.0,
+                    "z": 37.0,
                     "m4_offset": 0,
                     "skip_sag": True,
                 },
@@ -320,6 +328,49 @@ def strict_pose_for_validation(data: dict[str, Any], spec: WaypointSpec) -> dict
     return pose
 
 
+def _bin_volumes_for_schema(data: dict[str, Any]) -> tuple[BinVolume, ...]:
+    bins_raw = data.get("bins") if isinstance(data.get("bins"), dict) else {}
+    centres: dict[str, dict[str, Any]] = {}
+    for bin_name in ONLY_BIN_NAMES:
+        raw_bin = bins_raw.get(bin_name) if isinstance(bins_raw.get(bin_name), dict) else {}
+        drop_pose = raw_bin.get("drop") if isinstance(raw_bin.get("drop"), dict) else None
+        if drop_pose is not None:
+            centres[bin_name] = drop_pose
+    return bin_volumes_from_centres(centres)
+
+
+def _validate_claw_bin_clearance_for_pose(
+    data: dict[str, Any],
+    spec: WaypointSpec,
+    pose: dict[str, Any],
+) -> None:
+    violation = find_claw_bin_point_clearance_violation(pose, _bin_volumes_for_schema(data))
+    if violation is None:
+        return
+    reason = format_claw_bin_clearance_reason(
+        violation,
+        context=f"waypoint {spec.key!r} claw pose",
+    )
+    raise ValueError(reason)
+
+
+def _validate_claw_bin_clearance_for_segment(
+    data: dict[str, Any],
+    previous_spec: WaypointSpec,
+    previous_pose: dict[str, Any],
+    spec: WaypointSpec,
+    pose: dict[str, Any],
+) -> None:
+    violation = find_claw_bin_segment_clearance_violation(previous_pose, pose, _bin_volumes_for_schema(data))
+    if violation is None:
+        return
+    reason = format_claw_bin_clearance_reason(
+        violation,
+        context=f"segment {previous_spec.key!r} → {spec.key!r} claw path",
+    )
+    raise ValueError(reason)
+
+
 def validate_waypoint(data: dict[str, Any], spec: WaypointSpec, arm: ArmIK | None = None) -> dict[str, Any]:
     """Validate a waypoint with ArmIK.solve_strict() and return a result dict."""
 
@@ -327,6 +378,7 @@ def validate_waypoint(data: dict[str, Any], spec: WaypointSpec, arm: ArmIK | Non
         arm = ArmIK(rear_base_yaw_limit_deg=data.get("rear_base_yaw_limit_deg", DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG))
     pose = strict_pose_for_validation(data, spec)
     try:
+        _validate_claw_bin_clearance_for_pose(data, spec, pose)
         solved = arm.solve_strict(pose, intent=spec.intent)
         validation = solved["validation"]
         return {
@@ -879,11 +931,18 @@ def interactive_loop(
                         continue
                     all_ok = True
                     route_commands: list[tuple[WaypointSpec, dict[str, Any]]] = []
+                    previous_rs: WaypointSpec | None = None
+                    previous_pose: dict[str, Any] | None = None
                     for rs in specs:
+                        pose = strict_pose_for_validation(data, rs)
+                        if previous_rs is not None and previous_pose is not None:
+                            _validate_claw_bin_clearance_for_segment(data, previous_rs, previous_pose, rs, pose)
                         r = validate_waypoint(data, rs, arm)
                         all_ok = all_ok and r["ok"]
                         if r["ok"]:
                             route_commands.append((rs, r["commands"]))
+                        previous_rs = rs
+                        previous_pose = pose
                     if not all_ok:
                         status_msg = "TEST REFUSED: validation failed for one or more waypoints."
                         continue

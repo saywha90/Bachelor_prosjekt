@@ -532,8 +532,8 @@ envelope (|L1 − L2| = 2.5 cm):
 ### `[IK WARNING] ⚠️ Target ... is beyond max reach`
 
 The target is outside the arm's maximum reach (L1 + L2 = 48.5 cm). The
-solver automatically clamps to 99 % of max reach and preserves the
-direction:
+non-strict solver path automatically clamps to 99 % of max reach and preserves
+the direction. Strict paths fail closed instead of projecting the point inward:
 
 1. Check that the homography isn't mapping edge pixels to extreme
    coordinates.
@@ -542,13 +542,50 @@ direction:
 
 ### `[IK WARNING] ⚠️ m2=600 is AT JOINT LIMIT`
 
-A motor step value has been clamped to a joint safety limit. This prevents
-overload errors but means the arm can't reach the exact target:
+A motor step value has been clamped to a joint safety limit on a non-strict IK
+solve. This prevents overload errors but means the arm can't reach the exact
+target. Strict IK solves now reject the same condition with a `ValueError`
+instead of silently clamping:
 
 1. If this happens frequently, the workspace may extend beyond the arm's
    comfortable range. Reduce the homography's physical extent.
-2. Review [`JOINT_LIMITS`](../src/ik/solver.py:78) — the defaults are
+2. Review [`JOINT_LIMITS`](../src/ik/solver.py:97) — the defaults are
    conservative (m2/m3/m4: [600, 3500]).
+
+### `❌ Limp-to-WASD safety stop`
+
+Touch calibration starts WASD fine-tuning from a limp-mode coarse point by first
+moving to a clearance/start pose. [`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py)
+uses [`ArmIK.solve()`](../src/ik/solver.py:329) with `strict=True` for those
+initial moves, then validates FK X/Y against the recorded limp X/Y. If the
+clearance or descent command would start more than
+[`LIMP_FINE_TUNE_XY_TOLERANCE_CM`](../src/calibration/09_touch_calibration.py:100)
+(1.0 cm) away, it aborts before WASD refinement.
+
+Typical output:
+
+```text
+❌  Limp-to-WASD safety stop: limp fine-tune approach target X=..., Y=..., Z=... cm solved to FK X=..., Y=... cm (XY error ... cm; limit 1.0 cm).
+    Target is unreachable at the current clearance/start height; refinement would start at the wrong XY. Aborting before WASD refinement.
+```
+
+What it means:
+
+- The recorded limp point may be reachable near the desk, but not at the
+  calculated clearance/start height without violating reach or joint limits.
+- Strict IK intentionally refuses to hide this by clamping, because clamping
+  changes the physical X/Y and would make the operator refine the wrong point.
+
+Fix:
+
+1. Move the calibration ball/corner inward to a more comfortable part of the
+   workspace and repeat the limp capture.
+2. Keep the calibration workspace inside the arm's reachable envelope at both
+   touch height and clearance height.
+3. If the point should be reachable, re-check Step 2 joint calibration and the
+   configured [`JOINT_LIMITS`](../src/ik/solver.py:97).
+4. Do not increase the 1.0 cm tolerance unless you are deliberately changing the
+   safety policy and updating the corresponding tests.
 
 ### `[VISION] ❌ Vision bridge failed to open real camera`
 

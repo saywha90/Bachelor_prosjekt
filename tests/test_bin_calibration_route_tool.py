@@ -7,7 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from config.arm import load_transport_route_calibration
+from simulation.bin_safety import ROBOT_BASE_HEIGHT_CM, SAG_AWARE_BIN_CLEARANCE_CM
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "calibration" / "10_bin_calibration.py"
@@ -136,6 +139,41 @@ def test_strict_validation_fails_for_rear_yaw_outside_limit():
 
     assert not result["ok"]
     assert "base yaw" in result["reason"]
+
+
+def test_validation_fails_when_claw_pose_touches_bin_volume():
+    data = bin_tool._safe_default_route_schema()
+    spec = next(item for item in bin_tool.EDITABLE_WAYPOINTS if item.key == "RED_BIN.drop")
+    data["bins"]["RED_BIN"]["drop"]["z"] = round(ROBOT_BASE_HEIGHT_CM, 2)
+
+    result = bin_tool.validate_waypoint(data, spec)
+
+    assert not result["ok"]
+    assert "arm could sit in the bin and break" in result["reason"]
+    assert f"height {ROBOT_BASE_HEIGHT_CM:.2f} cm" in result["reason"]
+
+
+def test_validation_fails_when_claw_pose_has_only_125cm_bin_clearance():
+    data = bin_tool._safe_default_route_schema()
+    spec = next(item for item in bin_tool.EDITABLE_WAYPOINTS if item.key == "RED_BIN.drop")
+    data["bins"]["RED_BIN"]["drop"]["z"] = round(ROBOT_BASE_HEIGHT_CM + 1.25, 2)
+
+    result = bin_tool.validate_waypoint(data, spec)
+
+    assert not result["ok"]
+    assert "1.25 cm" in result["reason"]
+    assert "sag-aware clearance" in result["reason"]
+
+
+def test_default_route_bin_drops_clear_base_height():
+    data = bin_tool._safe_default_route_schema()
+
+    red_clearance = data["bins"]["RED_BIN"]["drop"]["z"] - ROBOT_BASE_HEIGHT_CM
+    blue_clearance = data["bins"]["BLUE_BIN"]["drop"]["z"] - ROBOT_BASE_HEIGHT_CM
+    assert red_clearance >= SAG_AWARE_BIN_CLEARANCE_CM
+    assert blue_clearance >= SAG_AWARE_BIN_CLEARANCE_CM
+    assert red_clearance == pytest.approx(5.25)
+    assert blue_clearance == pytest.approx(5.25)
 
 
 def test_save_route_schema_writes_main_file_without_backup_or_reject_bin(tmp_path):

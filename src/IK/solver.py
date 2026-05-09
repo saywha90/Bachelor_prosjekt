@@ -517,14 +517,16 @@ class ArmIK:
 
         # ── 8. Convert to Dynamixel steps ────────────────────────────
         # Motor 1 uses M1_CENTRE (2048) — Dynamixel centre = straight ahead.
-        m1 = max(0, min(self.STEPS_PER_REV - 1,
-                        int(round(self.M1_CENTRE + theta_base / self.RAD_PER_STEP))))
+        # Keep raw/unclamped commands until the joint-limit pass below so
+        # ``strict=True`` can fail closed instead of silently accepting a pose
+        # whose final FK no longer matches the requested target.
+        m1 = int(round(self.M1_CENTRE + theta_base / self.RAD_PER_STEP))
         # m2=2048 is upper arm VERTICAL (straight up), not horizontal.
         # Subtract pi/2 to convert from "elevation above horizontal" (IK convention)
         # to "rotation from vertical" (motor convention).
-        m2 = self._rad_to_steps(theta_shoulder - math.pi / 2)
-        m3 = self._rad_to_steps(-theta_elbow, centre=self.M3_CENTRE)  # Elbow requires negation for correct direction
-        m4 = self._rad_to_steps(theta_wrist, centre=self.M4_CENTRE) + m4_offset  # NOT negated — real hardware wrist tilts opposite to simulator
+        m2 = self._rad_to_steps_unclamped(theta_shoulder - math.pi / 2)
+        m3 = self._rad_to_steps_unclamped(-theta_elbow, centre=self.M3_CENTRE)  # Elbow requires negation for correct direction
+        m4 = self._rad_to_steps_unclamped(theta_wrist, centre=self.M4_CENTRE) + m4_offset  # NOT negated — real hardware wrist tilts opposite to simulator
 
         # ── 9. Enforce joint limits to prevent overload errors ────────
         #    If a computed position exceeds the safe range, clamp it and
@@ -534,6 +536,11 @@ class ArmIK:
         for key, val in result.items():
             lo, hi = self.JOINT_LIMITS[key]
             if val < lo or val > hi:
+                if strict:
+                    raise ValueError(
+                        f"Target ({x:.1f}, {y:.1f}, {z:.1f}) violates joint limits: "
+                        f"{key}={val} outside [{lo}, {hi}]; strict path does not clamp"
+                    )
                 clamped = max(lo, min(hi, val))
                 logger.warning(
                     "[IK] %s=%d outside safe limits [%d, %d] — clamped to %d "

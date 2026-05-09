@@ -14,6 +14,7 @@ from simulation.route_demo import (
     route_overlay_points,
     scan_look_again_command,
 )
+from simulation.bin_safety import ROBOT_BASE_HEIGHT_CM, SAG_AWARE_BIN_CLEARANCE_CM
 from simulation.visualizer import (
     SIMULATION_REAR_BINS,
     forward_kinematics as visualizer_forward_kinematics,
@@ -92,6 +93,21 @@ def test_sample_route_bins_are_behind_robot_and_beside_each_other():
     assert blue_visual[0] < 0.0
     assert red_visual[0] == pytest.approx(blue_visual[0])
     assert red_visual[1] < 0.0 < blue_visual[1]
+
+
+def test_visual_bins_use_robot_base_height():
+    assert ROBOT_BASE_HEIGHT_CM == pytest.approx(ArmIK.shoulder_height - 1.5 - 3.5 / 2.0)
+    assert SIMULATION_REAR_BINS["RED_BIN"][2] == pytest.approx(ROBOT_BASE_HEIGHT_CM)
+    assert SIMULATION_REAR_BINS["BLUE_BIN"][2] == pytest.approx(ROBOT_BASE_HEIGHT_CM)
+
+
+def test_sample_route_drop_poses_clear_bins_by_sag_margin():
+    route_cal = load_transport_route_calibration(SAMPLE_ROUTE_CALIBRATION, require_route_schema=True)
+
+    for bin_route in route_cal.bins.values():
+        clearance_cm = bin_route.drop.z - ROBOT_BASE_HEIGHT_CM
+        assert clearance_cm >= SAG_AWARE_BIN_CLEARANCE_CM
+        assert clearance_cm == pytest.approx(5.25)
 
 
 def test_route_overlay_points_keep_visual_corridor_names():
@@ -220,3 +236,59 @@ def test_route_demo_reports_strict_waypoint_failure(tmp_path):
 
     with pytest.raises(ValueError, match="bin-drop"):
         build_rear_placement_demo_plan(_deterministic_arm(), invalid_path, destination="RED_BIN")
+
+
+def test_route_demo_rejects_claw_contact_inside_bin_volume(tmp_path):
+    unsafe_path = _write_json(
+        tmp_path / "unsafe_bin_contact_route.json",
+        {
+            "schema_version": 4,
+            "rear_base_yaw_limit_deg": 45.0,
+            "shared_waypoints": {
+                "front_neutral": {"x": 22.0, "y": 0.0, "z": 30.0, "skip_sag": True},
+                "rear_transfer": {"x": -22.0, "y": 0.0, "z": 38.0, "skip_sag": True},
+                "rear_return_lift": {"x": -22.0, "y": 0.0, "z": 42.0, "skip_sag": True},
+            },
+            "bins": {
+                "RED_BIN": {
+                    "drop": {
+                        "x": -28.0,
+                        "y": -7.0,
+                        "z": ROBOT_BASE_HEIGHT_CM - 1.0,
+                        "skip_sag": True,
+                    },
+                },
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="arm could sit in the bin and break"):
+        build_rear_placement_demo_plan(_deterministic_arm(), unsafe_path, destination="RED_BIN")
+
+
+def test_route_demo_rejects_125cm_bin_clearance_as_sag_unsafe(tmp_path):
+    unsafe_path = _write_json(
+        tmp_path / "unsafe_125cm_clearance_route.json",
+        {
+            "schema_version": 4,
+            "rear_base_yaw_limit_deg": 45.0,
+            "shared_waypoints": {
+                "front_neutral": {"x": 22.0, "y": 0.0, "z": 30.0, "skip_sag": True},
+                "rear_transfer": {"x": -22.0, "y": 0.0, "z": 38.0, "skip_sag": True},
+                "rear_return_lift": {"x": -22.0, "y": 0.0, "z": 42.0, "skip_sag": True},
+            },
+            "bins": {
+                "RED_BIN": {
+                    "drop": {
+                        "x": -28.0,
+                        "y": -7.0,
+                        "z": ROBOT_BASE_HEIGHT_CM + 1.25,
+                        "skip_sag": True,
+                    },
+                },
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="1.25 cm.*sag-aware clearance"):
+        build_rear_placement_demo_plan(_deterministic_arm(), unsafe_path, destination="RED_BIN")

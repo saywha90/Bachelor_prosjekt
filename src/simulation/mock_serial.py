@@ -200,6 +200,8 @@ class MockSerial:
         else:
             logger.debug("[MOCK SERIAL] Simulating motor movement (%.1fs)...", self.move_delay)
             time.sleep(self.move_delay)
+            if parsed and isinstance(parsed, dict) and all(k in parsed for k in ("m1", "m2", "m3", "m4", "m5")):
+                self._current_steps = {k: parsed[k] for k in ("m1", "m2", "m3", "m4", "m5")}
 
         logger.debug("[MOCK SERIAL] Motors reached target position")
         self._pending_response = None  # clear; readline will return "OK\n"

@@ -186,6 +186,19 @@ class TestStrictSolve:
         with pytest.raises(ValueError, match="Z_MIN"):
             arm_no_sag.solve_strict({"x": 20.0, "y": 0.0, "z": arm_no_sag.Z_MIN - 1.0}, intent="pickup")
 
+    def test_solve_strict_rejects_joint_limit_clamp_that_would_shift_xy(self, arm_no_sag):
+        """Regression: strict solve must fail instead of clamping to wrong XY."""
+        with pytest.raises(ValueError, match="violates joint limits: m3=.*strict path does not clamp"):
+            arm_no_sag.solve(x=10.0, y=10.0, z=20.0, skip_sag=True, strict=True)
+
+    def test_solve_non_strict_still_clamps_joint_limit_violation(self, arm_no_sag):
+        """The legacy non-strict path still clamps out-of-limit joints."""
+        result = arm_no_sag.solve(x=10.0, y=10.0, z=20.0, skip_sag=True, strict=False)
+
+        assert result["m3"] == arm_no_sag.JOINT_LIMITS["m3"][0]
+        assert all(arm_no_sag.JOINT_LIMITS[key][0] <= result[key] <= arm_no_sag.JOINT_LIMITS[key][1]
+                   for key in MOTOR_KEYS)
+
     def test_strict_rear_target_requiring_large_base_rotation_is_rejected(self, arm_no_sag):
         with pytest.raises(ValueError, match="base yaw .*outside configured range"):
             arm_no_sag.solve_strict(
