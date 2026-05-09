@@ -70,6 +70,8 @@ from config.arm import (
     GRIP_LOAD_DETECT,
     GRIP_POSITION_STALL,
     GRIP_EXTRA_CLOSE,
+    EXPECTED_BALL_DIAMETER_CM,
+    GRIP_MIN_BALL_BLOCKED_STEPS,
     DEFAULT_PROFILE_VEL,
     DEFAULT_PROFILE_ACC,
     M5_DEFAULT_CURRENT_LIMIT,
@@ -425,6 +427,137 @@ def _claw_blocked_from_closed(position: int) -> int:
     return abs(CLAW_CLOSED_POS - int(position))
 
 
+def _grip_current_contact_threshold() -> int:
+    """Return the M5 current threshold used as contact/grip feedback."""
+    return max(20, int(GRIP_CURRENT_LIMIT * 0.4))
+
+
+def _claw_position_indicates_5cm_ball(position: int) -> bool:
+    """Return True when M5 is blocked far enough from empty-closed for a 5 cm ball."""
+    return _claw_blocked_from_closed(position) > GRIP_MIN_BALL_BLOCKED_STEPS
+
+
+def _read_claw_feedback(ser, fallback_position: int | None = None) -> dict:
+    """Read M5 position/load/current feedback, tolerating unavailable sensors."""
+    loads = read_load(ser)
+    currents = read_current(ser)
+    positions = read_positions(ser)
+
+    position = None
+    if positions and "m5" in positions:
+        position = int(positions["m5"])
+    elif fallback_position is not None:
+        position = int(fallback_position)
+
+    load = abs(int(loads.get("m5", 0))) if loads and "m5" in loads else None
+    current = abs(int(currents.get("m5", 0))) if currents and "m5" in currents else None
+    return {
+        "position": position,
+        "load": load,
+        "current": current,
+        "has_position": bool(positions and "m5" in positions),
+        "has_load": bool(loads and "m5" in loads),
+        "has_current": bool(currents and "m5" in currents),
+    }
+
+
+def _feedback_confirms_grip(feedback: dict) -> bool:
+    """Return True only when sensor feedback confirms an object is actually held."""
+    load = feedback.get("load")
+    if load is not None and load >= GRIP_LOAD_THRESHOLD:
+        print(f"  ✅ Grip check passed (load): claw load = {load}")
+        return True
+
+    current = feedback.get("current")
+    current_threshold = _grip_current_contact_threshold()
+    if current is not None and current >= current_threshold:
+        print(f"  ✅ Grip check passed (current): claw current = {current} mA")
+        return True
+
+    position = feedback.get("position")
+    if position is None:
+        logger.warning("Grip check FAILED: no claw position/load/current feedback available")
+        return False
+
+    blocked = _claw_blocked_from_closed(position)
+    if _claw_position_indicates_5cm_ball(position):
+        print(
+            f"  ✅ Grip check passed (position): claw at {position}, "
+            f"blocked {blocked} steps from empty-closed "
+            f"(min {GRIP_MIN_BALL_BLOCKED_STEPS} for {EXPECTED_BALL_DIAMETER_CM:.0f} cm ball)"
+        )
+        return True
+
+    logger.warning(
+        "Grip check FAILED (position): claw at %s, only %s steps from empty-closed %s "
+        "(need > %s for %.0f cm ball)",
+        position,
+        blocked,
+        CLAW_CLOSED_POS,
+        GRIP_MIN_BALL_BLOCKED_STEPS,
+        EXPECTED_BALL_DIAMETER_CM,
+    )
+    return False
+
+
+def wait_for_claw_settled_feedback(
+    ser,
+    target_position: int,
+    *,
+    previous_position: int | None = None,
+    timeout: float | None = None,
+    label: str = "claw close",
+) -> tuple[bool, dict]:
+    """Poll M5 feedback until the close command has reached/settled or timed out.
+
+    A gripped 5 cm ball may prevent the servo from reaching the commanded
+    extra-close target.  In that case, stable position plus load/current or a
+    position blocked far from empty-closed is treated as settled feedback.
+    """
+    deadline = time.time() + (GRIP_TIMEOUT if timeout is None else timeout)
+    last_feedback: dict = {"position": previous_position}
+    last_position = previous_position
+    stable_reads = 0
+    target_position = _clamp_claw_position(target_position)
+
+    while True:
+        time.sleep(GRIP_POLL_INTERVAL)
+        feedback = _read_claw_feedback(ser, fallback_position=last_position)
+        last_feedback = feedback
+        position = feedback.get("position")
+
+        if position is not None:
+            reached_target = abs(position - target_position) <= GRIP_POSITION_STALL
+            if last_position is not None and abs(position - last_position) <= GRIP_POSITION_STALL:
+                stable_reads += 1
+            else:
+                stable_reads = 0
+            last_position = position
+
+            load = feedback.get("load") or 0
+            current = feedback.get("current") or 0
+            contact_feedback = (
+                load >= GRIP_LOAD_DETECT
+                or current >= _grip_current_contact_threshold()
+                or _claw_position_indicates_5cm_ball(position)
+            )
+            if reached_target or (stable_reads >= 2 and contact_feedback):
+                print(
+                    f"  ✅  [CLAW] Settled after {label}: pos={position}, "
+                    f"target={target_position}, load={load}, current={current}"
+                )
+                return True, feedback
+
+        if time.time() >= deadline:
+            logger.warning(
+                "[CLAW] Timed out waiting for %s to settle at target m5=%s; last feedback=%s",
+                label,
+                target_position,
+                last_feedback,
+            )
+            return False, last_feedback
+
+
 def adaptive_grip(ser, last_solution: dict) -> bool:
     """Gradually close the claw until resistance is detected.
 
@@ -533,7 +666,7 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
                     contact_reason = "load"
                     break
 
-                current_contact_threshold = max(20, int(GRIP_CURRENT_LIMIT * 0.4))
+                current_contact_threshold = _grip_current_contact_threshold()
                 if m5_current >= current_contact_threshold:
                     print(f"  🤏  [ADAPTIVE GRIP] Contact detected by current={m5_current} mA, pos={m5_pos}")
                     contact_detected = True
@@ -581,26 +714,32 @@ def adaptive_grip(ser, last_solution: dict) -> bool:
             goal["m5"] = secure_pos
             ser.write((json.dumps(goal) + "\n").encode())
             ser.readline()  # consume ACK
-            time.sleep(0.3)  # brief dwell for the extra close
-
-        # 6. Check final position to determine if we actually gripped something
-        final_positions = read_positions(ser)
-        if final_positions and "m5" in final_positions:
-            final_m5 = int(final_positions["m5"])
-            decisive_m5 = contact_position if contact_detected and contact_position is not None else final_m5
-            if _claw_blocked_from_closed(decisive_m5) <= GRIP_VERIFY_TOLERANCE:
-                logger.warning("[ADAPTIVE GRIP] Claw closed on air (pos=%d, "
-                      "target=%d, tol=%d)", decisive_m5, CLAW_CLOSED_POS, GRIP_VERIFY_TOLERANCE)
+            settled, settled_feedback = wait_for_claw_settled_feedback(
+                ser,
+                secure_pos,
+                previous_position=contact_position,
+                timeout=max(GRAB_DWELL, min(GRIP_TIMEOUT, 1.5)),
+                label="secure extra-close",
+            )
+            if not settled:
+                logger.warning("[ADAPTIVE GRIP] Secure close did not settle; refusing to lift")
                 gripped = False
-            else:
-                print(f"  ✅  [ADAPTIVE GRIP] Object gripped! (pos={final_m5}, "
-                      f"contact_pos={decisive_m5}, "
-                      f"blocked {_claw_blocked_from_closed(decisive_m5)} steps from closed)")
-                gripped = True
+                return gripped
         else:
-            # Can't read position — fall back to verify_grip
-            logger.warning("[ADAPTIVE GRIP] Cannot read final position — falling back to verify_grip()")
-            gripped = verify_grip(ser, CLAW_CLOSED_POS)
+            settled_feedback = None
+
+        # 6. Check settled final feedback to determine if we actually gripped a 5 cm ball.
+        final_feedback = settled_feedback or _read_claw_feedback(ser)
+        gripped = _feedback_confirms_grip(final_feedback)
+        if gripped:
+            final_m5 = final_feedback.get("position")
+            blocked = _claw_blocked_from_closed(final_m5) if final_m5 is not None else "unknown"
+            print(
+                f"  ✅  [ADAPTIVE GRIP] Object gripped and verified! "
+                f"(pos={final_m5}, blocked={blocked} steps from closed)"
+            )
+        else:
+            logger.warning("[ADAPTIVE GRIP] Grip verification failed after claw settled; refusing to lift")
 
     except Exception as e:
         logger.error("[ADAPTIVE GRIP] Error during adaptive grip: %s", e)
@@ -632,33 +771,8 @@ def verify_grip(ser, claw_closed_pos: int) -> bool:
 
     Returns True if grip is confirmed, False if grip failed.
     """
-    # Check 1: Load-based verification (Primary)
-    loads = read_load(ser)
-    if loads and "m5" in loads:
-        claw_load = abs(loads["m5"])
-        if claw_load >= GRIP_LOAD_THRESHOLD:
-            print(f"  ✅ Grip check passed (load): claw load = {claw_load}")
-            return True
-        else:
-            logger.warning("Grip check warning (load): claw load = %s "
-                  "(below threshold %s)", claw_load, GRIP_LOAD_THRESHOLD)
-
-    # Check 2: Position-based verification (Fallback)
-    positions = read_positions(ser)
-    if positions and "m5" in positions:
-        claw_pos = positions["m5"]
-        if abs(claw_pos - claw_closed_pos) <= GRIP_VERIFY_TOLERANCE:
-            logger.warning("Grip check FAILED (position): claw at %s, "
-                  "target was %s (within %s tolerance)", claw_pos, claw_closed_pos, GRIP_VERIFY_TOLERANCE)
-            return False
-        else:
-            print(f"  ✅ Grip check passed (position): claw at {claw_pos}, "
-                  f"blocked {abs(claw_closed_pos - claw_pos)} steps from closed")
-            return True
-
-    # Fallback: assume grip succeeded if we can't read anything
-    logger.warning("Grip verification unavailable (no sensor data), assuming success")
-    return True
+    feedback = _read_claw_feedback(ser)
+    return _feedback_confirms_grip(feedback)
 
 
 def send_scan_pose(ser, viz=None, claw_override=None, settle_time: float | None = None):
@@ -883,7 +997,7 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     grip_ok = adaptive_grip(ser, last_ik)
 
     # ── 3b. VERIFY_GRIP ──────────────────────────────────────────────
-    log_state(State.VERIFY_GRIP, "Checking grip instantly")
+    log_state(State.VERIFY_GRIP, "Checking settled claw feedback before lift")
 
     # Verify grip only as fallback if adaptive_grip didn't confirm grip
     if not grip_ok:

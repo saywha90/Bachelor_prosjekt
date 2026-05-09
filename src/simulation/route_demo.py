@@ -20,6 +20,13 @@ from config.arm import (  # noqa: E402
     load_transport_route_calibration,
 )
 from ik.solver import ArmIK  # noqa: E402
+from simulation.bin_safety import (  # noqa: E402
+    BinVolume,
+    bin_volumes_from_centres,
+    find_claw_bin_point_clearance_violation,
+    find_claw_bin_segment_clearance_violation,
+    format_claw_bin_clearance_reason,
+)
 from simulation.mock_serial import MockSerial  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -54,6 +61,44 @@ def _normalise_bin_key(destination: str) -> str:
     if not key.endswith("_BIN"):
         key += "_BIN"
     return key
+
+
+def _route_bin_volumes(route_cal) -> tuple[BinVolume, ...]:
+    return bin_volumes_from_centres(
+        {name: route.drop for name, route in route_cal.bins.items()}
+    )
+
+
+def validate_claw_bin_clearance(
+    plan: list[RouteDemoWaypoint],
+    bin_volumes: tuple[BinVolume, ...],
+) -> None:
+    """Fail closed if any claw waypoint or route segment is too close to a bin."""
+
+    previous: RouteDemoWaypoint | None = None
+    for waypoint in plan:
+        point_violation = find_claw_bin_point_clearance_violation(waypoint.pose, bin_volumes)
+        if point_violation is not None:
+            reason = format_claw_bin_clearance_reason(
+                point_violation,
+                context=f"waypoint {waypoint.name!r} claw pose",
+            )
+            raise ValueError(f"Route demo safety rejected {waypoint.name!r}: {reason}")
+
+        if previous is not None:
+            segment_violation = find_claw_bin_segment_clearance_violation(
+                previous.pose,
+                waypoint.pose,
+                bin_volumes,
+            )
+            if segment_violation is not None:
+                reason = format_claw_bin_clearance_reason(
+                    segment_violation,
+                    context=f"segment {previous.name!r} → {waypoint.name!r} claw path",
+                )
+                raise ValueError(f"Route demo safety rejected {waypoint.name!r}: {reason}")
+
+        previous = waypoint
 
 
 def _solve_demo_waypoint(
@@ -184,7 +229,9 @@ def build_rear_placement_demo_plan(
             ]
         )
 
-    return [_solve_demo_waypoint(arm, name, pose, intent) for name, pose, intent in specs]
+    plan = [_solve_demo_waypoint(arm, name, pose, intent) for name, pose, intent in specs]
+    validate_claw_bin_clearance(plan, _route_bin_volumes(route_cal))
+    return plan
 
 
 def build_air_pick_scan_demo_plan(
@@ -205,7 +252,9 @@ def build_air_pick_scan_demo_plan(
         close_name="pickup-no-grip-close",
         loaded=False,
     )
-    return [_solve_demo_waypoint(arm, name, pose, intent) for name, pose, intent in specs]
+    plan = [_solve_demo_waypoint(arm, name, pose, intent) for name, pose, intent in specs]
+    validate_claw_bin_clearance(plan, tuple())
+    return plan
 
 
 def build_sort_sequence_demo_plans(

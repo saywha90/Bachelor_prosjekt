@@ -97,6 +97,7 @@ LIMP_FINE_TUNE_ABOVE_COARSE_Z = 5.0
 LIMP_FINE_TUNE_SAG_Z_PER_CM = 0.55
 LIMP_FINE_TUNE_FAR_REACH_CM = 50.0
 LIMP_FINE_TUNE_FAR_MIN_Z = 30.0
+LIMP_FINE_TUNE_XY_TOLERANCE_CM = 1.0
 
 
 def _limp_fine_tune_start_height(x: float, y: float, coarse_z: float) -> Tuple[float, float]:
@@ -162,13 +163,23 @@ def send_raw_command(ser, positions: dict):
 
 
 def send_ik_command(ser, arm: ArmIK, x: float, y: float, z: float,
-                    claw_override: int = 2048):
-    try:
-        solution = arm.solve(x, y, z, skip_sag=True, strict=True)
-    except ValueError as e:
-        print(f"  ⚠️  Target unreachable: {e}")
+                    claw_override: int = 2048,
+                    validate_xy: bool = False,
+                    xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
+                    context: str = "IK command"):
+    solution = _solve_ik_for_command(
+        arm,
+        x,
+        y,
+        z,
+        m4_offset=0,
+        claw_override=claw_override,
+        validate_xy=validate_xy,
+        xy_tolerance_cm=xy_tolerance_cm,
+        context=context,
+    )
+    if solution is None:
         return None
-    solution["m5"] = claw_override
     cmd_json = json.dumps(solution)
     ser.write((cmd_json + "\n").encode())
     resp = ser.readline().decode(errors="replace").strip()
@@ -176,7 +187,10 @@ def send_ik_command(ser, arm: ArmIK, x: float, y: float, z: float,
 
 
 def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
-                           m4_offset: int = 0, claw_override: int = 2048):
+                           m4_offset: int = 0, claw_override: int = 2048,
+                           validate_xy: bool = False,
+                           xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
+                           context: str = "IK command"):
     """Solve IK, apply an m4 offset, clamp, send command, and return (solution, response).
 
     Parameters
@@ -197,16 +211,90 @@ def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
     tuple[dict, str]
         (solution_dict, firmware_response)
     """
-    try:
-        solution = arm.solve(x, y, z, skip_sag=True, strict=True, m4_offset=m4_offset)
-    except ValueError as e:
-        print(f"  ⚠️  Target unreachable: {e}")
+    solution = _solve_ik_for_command(
+        arm,
+        x,
+        y,
+        z,
+        m4_offset=m4_offset,
+        claw_override=claw_override,
+        validate_xy=validate_xy,
+        xy_tolerance_cm=xy_tolerance_cm,
+        context=context,
+    )
+    if solution is None:
         return None, None
-    solution["m5"] = claw_override
     cmd_json = json.dumps(solution)
     ser.write((cmd_json + "\n").encode())
     resp = ser.readline().decode(errors="replace").strip()
     return solution, resp
+
+
+def _solve_ik_for_command(arm: ArmIK, x: float, y: float, z: float,
+                          m4_offset: int = 0, claw_override: int = 2048,
+                          validate_xy: bool = False,
+                          xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
+                          context: str = "IK command") -> Optional[dict]:
+    """Solve strict, sag-disabled IK and optionally reject FK XY mismatch."""
+    try:
+        solution = arm.solve(x, y, z, skip_sag=True, strict=True, m4_offset=m4_offset)
+    except ValueError as e:
+        if validate_xy:
+            _print_limp_refinement_unreachable_error(context, x, y, z, e)
+        else:
+            print(f"  ⚠️  Target unreachable: {e}")
+        return None
+
+    solution["m5"] = claw_override
+    if validate_xy and not _validate_ik_fk_xy(
+        arm,
+        solution,
+        x,
+        y,
+        z,
+        xy_tolerance_cm=xy_tolerance_cm,
+        context=context,
+    ):
+        return None
+    return solution
+
+
+def _validate_ik_fk_xy(arm: ArmIK, solution: dict, x: float, y: float, z: float,
+                       xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
+                       context: str = "IK command") -> bool:
+    """Return False if solved command FK would start refinement at wrong XY."""
+    fk = arm.forward_kinematics(solution)
+    dx = float(fk["x"]) - float(x)
+    dy = float(fk["y"]) - float(y)
+    dxy = math.hypot(dx, dy)
+    if dxy <= xy_tolerance_cm:
+        return True
+
+    print(
+        "  ❌  Limp-to-WASD safety stop: "
+        f"{context} target X={x:.2f}, Y={y:.2f}, Z={z:.2f} cm solved to "
+        f"FK X={fk['x']:.2f}, Y={fk['y']:.2f}, Z={fk['z']:.2f} cm "
+        f"(XY error {dxy:.2f} cm; dx={dx:+.2f}, dy={dy:+.2f}; "
+        f"limit {xy_tolerance_cm:.1f} cm)."
+    )
+    print(
+        "      Target is unreachable at the current clearance/start height; "
+        "refinement would start at the wrong XY. Aborting before WASD refinement."
+    )
+    return False
+
+
+def _print_limp_refinement_unreachable_error(context: str, x: float, y: float, z: float,
+                                             error: ValueError) -> None:
+    print(
+        "  ❌  Limp-to-WASD safety stop: "
+        f"{context} target X={x:.2f}, Y={y:.2f}, Z={z:.2f} cm is unreachable "
+        f"at the current clearance/start height: {error}"
+    )
+    print(
+        "      Refinement would otherwise start at the wrong XY. "
+        "Aborting before WASD refinement."
+    )
 
 
 def _move_to_scan_pose(ser):
@@ -543,14 +631,37 @@ def _touch_phase(ser, arm: ArmIK,
         if coarse_cm_points is not None:
             print(f"       Initial approach: Z={approach_z:.1f} cm "
                   f"(max of clearance {CLEARANCE_HEIGHT:.1f} and safe start {fine_tune_start_z:.1f})")
-        send_ik_command(ser, arm, target_x, target_y, approach_z)
+        approach_resp = send_ik_command(
+            ser,
+            arm,
+            target_x,
+            target_y,
+            approach_z,
+            validate_xy=coarse_cm_points is not None,
+            context="limp fine-tune approach",
+        )
+        if coarse_cm_points is not None and approach_resp is None:
+            cv2.destroyAllWindows()
+            raise RuntimeError("Limp-to-WASD refinement aborted: unsafe approach target XY")
         time.sleep(0.5)
         
         # Lower down and apply the wrist offset gently.
         # When fine-tuning from limp-mode coarse data, use the safe starting
         # height instead of the raw coarse Z (which is near the desk surface).
         descent_z = fine_tune_start_z if coarse_cm_points is not None else target_z
-        send_ik_with_m4_offset(ser, arm, target_x, target_y, descent_z, m4_offset)
+        descent_solution, _descent_resp = send_ik_with_m4_offset(
+            ser,
+            arm,
+            target_x,
+            target_y,
+            descent_z,
+            m4_offset,
+            validate_xy=coarse_cm_points is not None,
+            context="limp fine-tune descent",
+        )
+        if coarse_cm_points is not None and descent_solution is None:
+            cv2.destroyAllWindows()
+            raise RuntimeError("Limp-to-WASD refinement aborted: unsafe descent target XY")
         time.sleep(0.5)
         # Update target_z so the keyboard loop starts at the safe height
         if coarse_cm_points is not None:

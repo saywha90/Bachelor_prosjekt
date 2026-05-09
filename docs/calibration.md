@@ -375,6 +375,49 @@ python src/calibration/09_touch_calibration.py
    along with the height and wrist arrays — to
    `homography_calibration.json`.
 
+#### Limp-mode to WASD refinement safety
+
+When the calibration is started from limp-mode coarse captures,
+[`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py)
+does not blindly trust that the same X/Y can be replayed at a higher clearance
+or fine-tune start height. Before entering the interactive WASD refinement loop,
+the script:
+
+1. Computes a conservative reach-aware start height with
+   [`_limp_fine_tune_start_height()`](../src/calibration/09_touch_calibration.py:103).
+2. Solves the clearance approach and first descent using strict, sag-disabled IK.
+3. Runs FK on the resulting motor commands and compares the solved claw X/Y with
+   the recorded limp X/Y.
+4. Aborts before WASD refinement if the FK X/Y differs by more than
+   [`LIMP_FINE_TUNE_XY_TOLERANCE_CM`](../src/calibration/09_touch_calibration.py:100),
+   currently **1.0 cm**.
+
+This protects against the previous failure mode where an unreachable clearance
+or start pose was silently projected to a different location, so WASD refinement
+began more than 1 cm away from the physical limp position.
+
+The underlying IK behavior also changed for this path: [`ArmIK.solve()`](../src/ik/solver.py:329)
+with `strict=True` now fails closed on joint-limit violations instead of
+silently clamping to [`JOINT_LIMITS`](../src/ik/solver.py:97). Non-strict runtime
+moves can still clamp and warn, but strict calibration/refinement moves must be
+geometrically reachable and inside the configured joint limits because clamping
+would make FK no longer match the requested X/Y.
+
+If a target is unreachable at clearance or at the fine-tune start height, the
+operator sees a message like:
+
+```text
+❌  Limp-to-WASD safety stop: limp fine-tune approach target X=..., Y=..., Z=... cm ...
+    Target is unreachable at the current clearance/start height; refinement would start at the wrong XY.
+    Aborting before WASD refinement.
+```
+
+When this happens, do **not** continue by increasing the tolerance. Move the
+calibration ball/corner inward to a comfortably reachable workspace area, repeat
+the limp capture for that point, and re-run Step 6. If the point should be
+reachable, verify Step 2 joint calibration and the configured
+[`JOINT_LIMITS`](../src/ik/solver.py:97) before retrying.
+
 **Before running this step:** confirm Step 02c passed a real hold test.
 If `SCAN_POSE` drifts while parked, the camera calibration will be tied to a
 pose the runtime cannot reliably reproduce.

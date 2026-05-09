@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 from config.arm import HOME_POSITION, SCAN_POSE
 from ik.solver import ArmIK
+from simulation.bin_safety import (  # noqa: E402
+    ROBOT_BASE_HEIGHT_CM,
+    SIMULATION_BIN_FOOTPRINT_CM,
+    SIMULATION_REAR_BINS,
+)
 
 plt = None
 Poly3DCollection = None
@@ -73,15 +78,6 @@ SHOULDER_HEIGHT = ArmIK.shoulder_height  # base to shoulder joint (cm)
 
 # Reduced polygon count for cylinders (was 14)
 _CYLINDER_SIDES = 8
-
-
-# Simulation-only rear layout matching the physical demo setup.  Production
-# sorting bin semantics remain in config.arm.BINS; the visualizer intentionally
-# shows only the two real rear bins used by the current route demo.
-SIMULATION_REAR_BINS = {
-    "RED_BIN": (-28.0, -7.0, 16.0),
-    "BLUE_BIN": (-28.0, 7.0, 16.0),
-}
 
 
 # ─── Colour palette ─────────────────────────────────────────────────
@@ -414,7 +410,14 @@ class ArmVisualizer:
         # beside each other left/right.  There is no reject bin in this layout.
         for name, (bx, by, bz) in SIMULATION_REAR_BINS.items():
             colour = self.BIN_COLOURS.get(name, "#ffffff")
-            faces = _box_vertices(bx, by, bz / 2, sx=7, sy=7, sz=bz)
+            faces = _box_vertices(
+                bx,
+                by,
+                bz / 2,
+                sx=SIMULATION_BIN_FOOTPRINT_CM,
+                sy=SIMULATION_BIN_FOOTPRINT_CM,
+                sz=bz,
+            )
             poly = Poly3DCollection(
                 faces, alpha=0.15, facecolor=colour,
                 edgecolor=colour, linewidth=0.8,
@@ -431,8 +434,7 @@ class ArmVisualizer:
                 ha="center", fontweight="bold")
 
         # ── Static base cylinder (never changes, drawn once) ─────
-        servo_bottom_z = SHOULDER_HEIGHT - 1.5 - 3.5 / 2.0
-        base_h = servo_bottom_z
+        base_h = ROBOT_BASE_HEIGHT_CM
         base_center = np.array([0.0, 0.0, base_h / 2.0])
         cyl_faces = _create_cylinder(base_center, radius=4.0, height=base_h,
                                      axis='z', n_sides=_CYLINDER_SIDES)
