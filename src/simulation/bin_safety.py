@@ -13,15 +13,15 @@ SHOULDER_SERVO_CENTER_BELOW_SHOULDER_CM = 1.5
 SHOULDER_SERVO_HEIGHT_CM = 3.5
 
 # The static base cylinder in the visualizer reaches from the table plane to the
-# bottom of the shoulder servo.  Bin models intentionally use the same height so
-# a claw pose inside a bin footprint below this height is treated as physical
-# bin contact rather than a harmless visual marker overlap.
+# bottom of the shoulder servo.  Bin collision models use the separately measured
+# physical bin height so the safety boundary matches the desk-to-rim distance.
 ROBOT_BASE_HEIGHT_CM = (
     ArmIK.shoulder_height
     - SHOULDER_SERVO_CENTER_BELOW_SHOULDER_CM
     - SHOULDER_SERVO_HEIGHT_CM / 2.0
 )
 
+PHYSICAL_BIN_HEIGHT_CM = 30.5
 SIMULATION_BIN_FOOTPRINT_CM = 7.0
 CLAW_BIN_COLLISION_TOLERANCE_CM = 1e-9
 SAG_AWARE_BIN_CLEARANCE_CM = 5.0
@@ -34,7 +34,7 @@ class BinVolume:
     name: str
     x: float
     y: float
-    height: float = ROBOT_BASE_HEIGHT_CM
+    height: float = PHYSICAL_BIN_HEIGHT_CM
     footprint_cm: float = SIMULATION_BIN_FOOTPRINT_CM
 
     @property
@@ -156,8 +156,8 @@ class BinClearanceViolation:
 
 
 SIMULATION_REAR_BINS = {
-    "RED_BIN": (-28.0, -7.0, ROBOT_BASE_HEIGHT_CM),
-    "BLUE_BIN": (-28.0, 7.0, ROBOT_BASE_HEIGHT_CM),
+    "RED_BIN": (-28.0, -7.0, PHYSICAL_BIN_HEIGHT_CM),
+    "BLUE_BIN": (-28.0, 7.0, PHYSICAL_BIN_HEIGHT_CM),
 }
 
 
@@ -176,7 +176,7 @@ def pose_xyz(pose: Any) -> tuple[float, float, float]:
 def bin_volumes_from_centres(
     centres: Mapping[str, Any],
     *,
-    height_cm: float = ROBOT_BASE_HEIGHT_CM,
+    height_cm: float = PHYSICAL_BIN_HEIGHT_CM,
     footprint_cm: float = SIMULATION_BIN_FOOTPRINT_CM,
 ) -> tuple[BinVolume, ...]:
     """Build bin volumes from calibrated/demonstration bin centre poses."""
@@ -285,7 +285,7 @@ def format_claw_bin_collision_reason(bin_volume: BinVolume, *, context: str) -> 
     return (
         f"{context} touches/intersects {bin_volume.name} bin volume "
         f"(footprint {bin_volume.footprint_cm:.1f}×{bin_volume.footprint_cm:.1f} cm, "
-        f"height {bin_volume.height:.2f} cm equal to robot base height); "
+        f"height {bin_volume.height:.2f} cm measured from desk); "
         "arm would sit in the bin and break"
     )
 
@@ -298,7 +298,7 @@ def format_claw_bin_clearance_reason(violation: BinClearanceViolation, *, contex
         f"{context} clearance to {bin_volume.name} bin volume is only "
         f"{violation.clearance_cm:.2f} cm "
         f"(footprint {bin_volume.footprint_cm:.1f}×{bin_volume.footprint_cm:.1f} cm, "
-        f"height {bin_volume.height:.2f} cm equal to robot base height); "
+        f"height {bin_volume.height:.2f} cm measured from desk); "
         f"requires at least {violation.min_clearance_cm:.2f} cm sag-aware clearance "
         "because real arm sag makes smaller margins unsafe; "
         "arm could sit in the bin and break"

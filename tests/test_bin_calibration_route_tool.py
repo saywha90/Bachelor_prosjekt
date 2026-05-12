@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import json
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from config.arm import load_transport_route_calibration
-from simulation.bin_safety import ROBOT_BASE_HEIGHT_CM, SAG_AWARE_BIN_CLEARANCE_CM
+from simulation.bin_safety import PHYSICAL_BIN_HEIGHT_CM, SAG_AWARE_BIN_CLEARANCE_CM
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "calibration" / "10_bin_calibration.py"
@@ -144,19 +145,19 @@ def test_strict_validation_fails_for_rear_yaw_outside_limit():
 def test_validation_fails_when_claw_pose_touches_bin_volume():
     data = bin_tool._safe_default_route_schema()
     spec = next(item for item in bin_tool.EDITABLE_WAYPOINTS if item.key == "RED_BIN.drop")
-    data["bins"]["RED_BIN"]["drop"]["z"] = round(ROBOT_BASE_HEIGHT_CM, 2)
+    data["bins"]["RED_BIN"]["drop"]["z"] = round(PHYSICAL_BIN_HEIGHT_CM, 2)
 
     result = bin_tool.validate_waypoint(data, spec)
 
     assert not result["ok"]
     assert "arm could sit in the bin and break" in result["reason"]
-    assert f"height {ROBOT_BASE_HEIGHT_CM:.2f} cm" in result["reason"]
+    assert f"height {PHYSICAL_BIN_HEIGHT_CM:.2f} cm" in result["reason"]
 
 
 def test_validation_fails_when_claw_pose_has_only_125cm_bin_clearance():
     data = bin_tool._safe_default_route_schema()
     spec = next(item for item in bin_tool.EDITABLE_WAYPOINTS if item.key == "RED_BIN.drop")
-    data["bins"]["RED_BIN"]["drop"]["z"] = round(ROBOT_BASE_HEIGHT_CM + 1.25, 2)
+    data["bins"]["RED_BIN"]["drop"]["z"] = round(PHYSICAL_BIN_HEIGHT_CM + 1.25, 2)
 
     result = bin_tool.validate_waypoint(data, spec)
 
@@ -165,15 +166,46 @@ def test_validation_fails_when_claw_pose_has_only_125cm_bin_clearance():
     assert "sag-aware clearance" in result["reason"]
 
 
-def test_default_route_bin_drops_clear_base_height():
+def test_rear_bin_capture_normalizes_full_turn_replay_offset_and_validates(monkeypatch, capsys):
+    data = bin_tool._safe_default_route_schema()
+    spec = next(item for item in bin_tool.EDITABLE_WAYPOINTS if item.key == "RED_BIN.drop")
+    arm = bin_tool.ArmIK()
+    captured_positions = {"m1": 2104, "m2": 2207, "m3": 2878, "m4": 3024, "m5": 2527}
+
+    monkeypatch.setattr(bin_tool, "read_motor_positions", lambda _ser: captured_positions)
+    monkeypatch.setattr(bin_tool, "enable_limp_mode", lambda _ser: True)
+
+    captured = bin_tool.capture_current_waypoint(data, spec, object(), arm)
+
+    assert captured is True
+    pose = data["bins"]["RED_BIN"]["drop"]
+    assert pose["x"] == pytest.approx(-29.53)
+    assert pose["y"] == pytest.approx(-2.54)
+    assert pose["z"] == pytest.approx(36.59)
+    assert pose["m4_offset"] == -15
+
+    validation = bin_tool.validate_waypoint(data, spec, arm)
+    assert validation["ok"] is True
+    assert validation["commands"]["m1"] == captured_positions["m1"]
+    assert validation["commands"]["m2"] == captured_positions["m2"]
+    assert validation["commands"]["m3"] == captured_positions["m3"]
+    assert validation["commands"]["m4"] == captured_positions["m4"]
+
+    output = capsys.readouterr().out
+    assert "normalized from +4081" in output
+    assert "servo-equivalent -15" in output
+    assert "clipped from +4081 to +1500" not in output
+
+
+def test_default_route_bin_drops_clear_physical_bin_height():
     data = bin_tool._safe_default_route_schema()
 
-    red_clearance = data["bins"]["RED_BIN"]["drop"]["z"] - ROBOT_BASE_HEIGHT_CM
-    blue_clearance = data["bins"]["BLUE_BIN"]["drop"]["z"] - ROBOT_BASE_HEIGHT_CM
+    red_clearance = data["bins"]["RED_BIN"]["drop"]["z"] - PHYSICAL_BIN_HEIGHT_CM
+    blue_clearance = data["bins"]["BLUE_BIN"]["drop"]["z"] - PHYSICAL_BIN_HEIGHT_CM
     assert red_clearance >= SAG_AWARE_BIN_CLEARANCE_CM
     assert blue_clearance >= SAG_AWARE_BIN_CLEARANCE_CM
-    assert red_clearance == pytest.approx(5.25)
-    assert blue_clearance == pytest.approx(5.25)
+    assert red_clearance == pytest.approx(6.5)
+    assert blue_clearance == pytest.approx(6.5)
 
 
 def test_save_route_schema_writes_main_file_without_backup_or_reject_bin(tmp_path):
@@ -195,3 +227,59 @@ def test_save_route_schema_writes_main_file_without_backup_or_reject_bin(tmp_pat
 
     route = load_transport_route_calibration(path, require_route_schema=True)
     assert sorted(route.bins) == ["BLUE_BIN", "RED_BIN"]
+
+
+def test_gui_captures_current_pose_with_c_key_and_saves_unsaved_data(monkeypatch):
+    data = bin_tool._safe_default_route_schema()
+    captured_calls = []
+    saved_payloads = []
+    keys = iter([ord("c"), 13, ord("q")])
+
+    monkeypatch.setattr(bin_tool.cv2, "namedWindow", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bin_tool.cv2, "imshow", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bin_tool.cv2, "destroyAllWindows", lambda: None)
+    monkeypatch.setattr(bin_tool.cv2, "waitKey", lambda _delay=0: next(keys))
+
+    def fake_capture(route_data, spec, ser, arm):
+        captured_calls.append((spec.key, ser, arm))
+        bin_tool.get_waypoint(route_data, spec).update(
+            {"x": 23.5, "y": 1.25, "z": 31.0, "m4_offset": 42, "skip_sag": True}
+        )
+        return True
+
+    def fake_save(route_data, path):
+        saved_payloads.append(copy.deepcopy(route_data))
+
+    monkeypatch.setattr(bin_tool, "capture_current_waypoint", fake_capture)
+    monkeypatch.setattr(bin_tool, "save_route_schema", fake_save)
+
+    saved = bin_tool.interactive_loop(data, hardware=True, ser=object())
+
+    assert saved is True
+    assert len(captured_calls) == 1
+    assert captured_calls[0][0] == "front_neutral"
+    saved_pose = saved_payloads[0]["shared_waypoints"]["front_neutral"]
+    assert saved_pose == {"x": 23.5, "y": 1.25, "z": 31.0, "m4_offset": 42, "skip_sag": True}
+
+
+def test_gui_c_key_refuses_dry_run_capture(monkeypatch):
+    data = bin_tool._safe_default_route_schema()
+    capture_called = False
+    keys = iter([ord("c"), ord("q")])
+
+    monkeypatch.setattr(bin_tool.cv2, "namedWindow", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bin_tool.cv2, "imshow", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bin_tool.cv2, "destroyAllWindows", lambda: None)
+    monkeypatch.setattr(bin_tool.cv2, "waitKey", lambda _delay=0: next(keys))
+
+    def fake_capture(*_args, **_kwargs):
+        nonlocal capture_called
+        capture_called = True
+        return True
+
+    monkeypatch.setattr(bin_tool, "capture_current_waypoint", fake_capture)
+
+    saved = bin_tool.interactive_loop(data, hardware=False, ser=None)
+
+    assert saved is False
+    assert capture_called is False

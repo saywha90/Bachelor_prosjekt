@@ -51,7 +51,7 @@ from config.arm import (
     GRIP_CURRENT_LIMIT, GRIP_PROFILE_VEL, GRIP_PROFILE_ACC,
     GRIP_POLL_INTERVAL, GRIP_TIMEOUT, GRIP_LOAD_DETECT,
     GRIP_POSITION_STALL, GRIP_EXTRA_CLOSE, GRIP_VERIFY_TOLERANCE,
-    M5_DEFAULT_CURRENT_LIMIT, CLAW_OPEN_POS,
+    GRAB_DWELL, M5_DEFAULT_CURRENT_LIMIT, CLAW_OPEN_POS,
 )
 
 # ── Serial wrapper ──────────────────────────────────────────────────
@@ -228,17 +228,19 @@ def adaptive_grip(claw_closed: int) -> bool:
 
             prev_pos = m5_pos
 
-        # 5. If contact, close extra steps for secure hold
-        #    Higher step values = more closed (matches main.py direction)
+        # 5. If contact, still command the configured closed target and give
+        #    the servo time to finish/settle before reporting success.  The
+        #    ball may block the jaws physically, but the command must be the
+        #    calibrated close target so calibration does not validate the old
+        #    half-close-before-lift behaviour.
         if contact and contact_position is not None:
-            extra_target = min(contact_position + GRIP_EXTRA_CLOSE, claw_closed)
             cur_positions = read_positions()
             if cur_positions is not None:
                 extra_goal = {k: int(v) for k, v in cur_positions.items() if k.startswith("m")}
-                extra_goal["m5"] = extra_target
+                extra_goal["m5"] = claw_closed
                 send_command(extra_goal)
-                time.sleep(0.3)
-            print(f"  🔧 Extra close: {contact_position} → {extra_target}")
+                time.sleep(max(GRAB_DWELL, GRIP_POLL_INTERVAL * 3))
+            print(f"  🔧 Secure close command: {contact_position} → {claw_closed}")
 
         # 6. Final position check — closed on air?
         final_positions = read_positions()

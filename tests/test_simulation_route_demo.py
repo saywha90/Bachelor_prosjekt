@@ -14,7 +14,7 @@ from simulation.route_demo import (
     route_overlay_points,
     scan_look_again_command,
 )
-from simulation.bin_safety import ROBOT_BASE_HEIGHT_CM, SAG_AWARE_BIN_CLEARANCE_CM
+from simulation.bin_safety import PHYSICAL_BIN_HEIGHT_CM, ROBOT_BASE_HEIGHT_CM, SAG_AWARE_BIN_CLEARANCE_CM
 from simulation.visualizer import (
     SIMULATION_REAR_BINS,
     forward_kinematics as visualizer_forward_kinematics,
@@ -95,19 +95,20 @@ def test_sample_route_bins_are_behind_robot_and_beside_each_other():
     assert red_visual[1] < 0.0 < blue_visual[1]
 
 
-def test_visual_bins_use_robot_base_height():
+def test_visual_bins_use_physical_bin_height():
     assert ROBOT_BASE_HEIGHT_CM == pytest.approx(ArmIK.shoulder_height - 1.5 - 3.5 / 2.0)
-    assert SIMULATION_REAR_BINS["RED_BIN"][2] == pytest.approx(ROBOT_BASE_HEIGHT_CM)
-    assert SIMULATION_REAR_BINS["BLUE_BIN"][2] == pytest.approx(ROBOT_BASE_HEIGHT_CM)
+    assert PHYSICAL_BIN_HEIGHT_CM == pytest.approx(30.5)
+    assert SIMULATION_REAR_BINS["RED_BIN"][2] == pytest.approx(PHYSICAL_BIN_HEIGHT_CM)
+    assert SIMULATION_REAR_BINS["BLUE_BIN"][2] == pytest.approx(PHYSICAL_BIN_HEIGHT_CM)
 
 
 def test_sample_route_drop_poses_clear_bins_by_sag_margin():
     route_cal = load_transport_route_calibration(SAMPLE_ROUTE_CALIBRATION, require_route_schema=True)
 
     for bin_route in route_cal.bins.values():
-        clearance_cm = bin_route.drop.z - ROBOT_BASE_HEIGHT_CM
+        clearance_cm = bin_route.drop.z - PHYSICAL_BIN_HEIGHT_CM
         assert clearance_cm >= SAG_AWARE_BIN_CLEARANCE_CM
-        assert clearance_cm == pytest.approx(5.25)
+        assert clearance_cm == pytest.approx(6.5)
 
 
 def test_route_overlay_points_keep_visual_corridor_names():
@@ -254,7 +255,7 @@ def test_route_demo_rejects_claw_contact_inside_bin_volume(tmp_path):
                     "drop": {
                         "x": -28.0,
                         "y": -7.0,
-                        "z": ROBOT_BASE_HEIGHT_CM - 1.0,
+                        "z": PHYSICAL_BIN_HEIGHT_CM - 1.0,
                         "skip_sag": True,
                     },
                 },
@@ -282,7 +283,7 @@ def test_route_demo_rejects_125cm_bin_clearance_as_sag_unsafe(tmp_path):
                     "drop": {
                         "x": -28.0,
                         "y": -7.0,
-                        "z": ROBOT_BASE_HEIGHT_CM + 1.25,
+                        "z": PHYSICAL_BIN_HEIGHT_CM + 1.25,
                         "skip_sag": True,
                     },
                 },

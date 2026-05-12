@@ -8,7 +8,9 @@ from config.arm import (
     CLAW_OPEN_POS,
     GRIP_EXTRA_CLOSE,
     GRIP_LOAD_DETECT,
+    GRIP_LOAD_THRESHOLD,
     GRIP_MIN_BALL_BLOCKED_STEPS,
+    GRIP_MIN_BLOCKED_WITH_SENSOR,
 )
 
 
@@ -85,7 +87,7 @@ def test_adaptive_grip_steps_from_configured_open_to_closed_limit(monkeypatch):
     assert m5_goals[1:-1] == list(range(CLAW_OPEN_POS + GRIP_EXTRA_CLOSE, CLAW_CLOSED_POS, GRIP_EXTRA_CLOSE))
 
 
-def test_adaptive_grip_stops_on_load_and_secures_without_passing_closed(monkeypatch):
+def test_adaptive_grip_stops_on_load_then_commands_configured_close_before_success(monkeypatch):
     monkeypatch.setattr(main_module, "GRIP_POLL_INTERVAL", 0)
     contact_position = CLAW_OPEN_POS + GRIP_EXTRA_CLOSE + 15
     ser = AdaptiveGripSerial(contact_position=contact_position)
@@ -96,14 +98,13 @@ def test_adaptive_grip_stops_on_load_and_secures_without_passing_closed(monkeypa
     assert gripped is True
     m5_goals = [goal["m5"] for goal in ser.motor_goals]
     assert m5_goals[0] == CLAW_OPEN_POS
-    assert m5_goals[-1] == contact_position + GRIP_EXTRA_CLOSE
-    assert m5_goals[-1] <= CLAW_CLOSED_POS
+    assert m5_goals[-1] == CLAW_CLOSED_POS
     assert ser.positions["m5"] == contact_position
 
 
 def test_adaptive_grip_waits_for_secure_close_feedback_before_success(monkeypatch):
     monkeypatch.setattr(main_module, "GRIP_POLL_INTERVAL", 0)
-    contact_position = CLAW_CLOSED_POS - GRIP_MIN_BALL_BLOCKED_STEPS - 20
+    contact_position = CLAW_CLOSED_POS - GRIP_MIN_BLOCKED_WITH_SENSOR - 20
     ser = AdaptiveGripSerial(contact_position=contact_position, settling_reads=3)
     last_solution = {"m1": 2100, "m2": 2200, "m3": 2300, "m4": 2400, "m5": CLAW_OPEN_POS}
 
@@ -111,11 +112,137 @@ def test_adaptive_grip_waits_for_secure_close_feedback_before_success(monkeypatc
 
     assert gripped is True
     assert ser.secure_target_read_pos_count >= 3
-    assert ser.motor_goals[-1]["m5"] == min(contact_position + GRIP_EXTRA_CLOSE, CLAW_CLOSED_POS)
+    assert ser.motor_goals[-1]["m5"] == CLAW_CLOSED_POS
+
+
+def test_adaptive_grip_detects_ball_when_secure_close_reaches_configured_closed_position(monkeypatch):
+    monkeypatch.setattr(main_module, "GRIP_POLL_INTERVAL", 0)
+    ser = AdaptiveGripSerial(contact_position=CLAW_CLOSED_POS)
+    last_solution = {"m1": 2100, "m2": 2200, "m3": 2300, "m4": 2400, "m5": CLAW_OPEN_POS}
+
+    gripped = main_module.adaptive_grip(ser, last_solution)
+
+    # Reaching fully closed means NO ball was present — the claw closed on air.
+    assert gripped is False
+    assert ser.positions["m5"] == CLAW_CLOSED_POS
+    assert ser.motor_goals[-1]["m5"] == CLAW_CLOSED_POS
+    assert ser.secure_target_read_pos_count >= 3
+
+
+def test_settled_low_contact_load_requires_repeated_secure_close_confirmation():
+    # At CLAW_CLOSED_POS the claw is fully closed (no ball), so even with
+    # settled contact confirmations the grip check must reject — the load is
+    # just end-stop friction, not an actual ball.
+    weak_single_contact_feedback = {
+        "position": CLAW_CLOSED_POS,
+        "load": GRIP_LOAD_DETECT,
+        "current": 0,
+        "settled_contact_confirmed": False,
+    }
+    repeated_secure_contact_feedback = {
+        **weak_single_contact_feedback,
+        "settled_contact_confirmed": True,
+    }
+
+    assert main_module._feedback_confirms_grip(
+        weak_single_contact_feedback,
+        allow_settled_contact_load=True,
+    ) is False
+    # Fully-closed position → not blocked → must be False despite settled contact
+    assert main_module._feedback_confirms_grip(
+        repeated_secure_contact_feedback,
+        allow_settled_contact_load=True,
+    ) is False
+
+    # When the claw IS minimally blocked (ball present), settled contact load should pass
+    blocked_position = CLAW_CLOSED_POS - GRIP_MIN_BLOCKED_WITH_SENSOR - 10
+    blocked_contact_feedback = {
+        "position": blocked_position,
+        "load": GRIP_LOAD_DETECT,
+        "current": 0,
+        "settled_contact_confirmed": True,
+    }
+    assert main_module._feedback_confirms_grip(
+        blocked_contact_feedback,
+        allow_settled_contact_load=True,
+    ) is True
 
 
 def test_adaptive_grip_uses_sensitive_light_load_threshold():
-    assert GRIP_LOAD_DETECT == 15
+    assert GRIP_LOAD_DETECT == 5
+
+
+# ── Two-tier position threshold tests ─────────────────────────────────
+
+def test_two_tier_small_ball_with_high_load_detects():
+    """Ball at CLAW_CLOSED_POS - 20 with high load → should detect (minimally blocked + load)."""
+    feedback = {
+        "position": CLAW_CLOSED_POS - 20,
+        "load": GRIP_LOAD_THRESHOLD,
+        "current": 0,
+    }
+    assert main_module._feedback_confirms_grip(feedback) is True
+
+
+def test_two_tier_at_endstop_with_high_load_rejects():
+    """Ball at CLAW_CLOSED_POS - 3 with high load → should NOT detect (too close to fully closed)."""
+    feedback = {
+        "position": CLAW_CLOSED_POS - 3,
+        "load": GRIP_LOAD_THRESHOLD,
+        "current": 0,
+    }
+    assert main_module._feedback_confirms_grip(feedback) is False
+
+
+def test_two_tier_position_only_strongly_blocked_with_some_current_detects():
+    """Ball at CLAW_CLOSED_POS - 35 with some current → should detect (strongly blocked + current evidence)."""
+    feedback = {
+        "position": CLAW_CLOSED_POS - 35,
+        "load": 0,
+        "current": 15,  # non-trivial current proves motor is pushing against something
+    }
+    assert main_module._feedback_confirms_grip(feedback) is True
+
+
+def test_two_tier_position_only_strongly_blocked_zero_resistance_rejects():
+    """Ball at CLAW_CLOSED_POS - 35 with zero load + near-zero current → no resistance = no ball."""
+    feedback = {
+        "position": CLAW_CLOSED_POS - 35,
+        "load": 0,
+        "current": 0,
+    }
+    assert main_module._feedback_confirms_grip(feedback) is False
+
+
+def test_two_tier_fully_closed_with_high_load_rejects():
+    """Claw at CLAW_CLOSED_POS with high load → should NOT detect (at fully closed = no ball)."""
+    feedback = {
+        "position": CLAW_CLOSED_POS,
+        "load": GRIP_LOAD_THRESHOLD,
+        "current": 0,
+    }
+    assert main_module._feedback_confirms_grip(feedback) is False
+
+
+def test_two_tier_small_ball_with_high_current_detects():
+    """Ball at CLAW_CLOSED_POS - 20 with high current → should detect (minimally blocked + current)."""
+    current_threshold = main_module._grip_current_contact_threshold()
+    feedback = {
+        "position": CLAW_CLOSED_POS - 20,
+        "load": 0,
+        "current": current_threshold,
+    }
+    assert main_module._feedback_confirms_grip(feedback) is True
+
+
+def test_two_tier_position_only_not_enough_rejects():
+    """Ball at CLAW_CLOSED_POS - 20 with no sensors → should NOT detect (below position-only threshold)."""
+    feedback = {
+        "position": CLAW_CLOSED_POS - 20,
+        "load": 0,
+        "current": 0,
+    }
+    assert main_module._feedback_confirms_grip(feedback) is False
 
 
 def _sorting_plan():
@@ -189,3 +316,37 @@ def test_sorting_cycle_starts_sort_route_only_after_grip_verification(monkeypatc
     verify_index = calls.index(("verify", "adaptive_grip_complete"))
     first_sort_index = calls.index(("move", "front_neutral"))
     assert verify_index < first_sort_index
+
+
+def test_sorting_cycle_waits_for_real_drop_pose_before_release(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    _patch_sorting_cycle_dependencies(monkeypatch, calls)
+    monkeypatch.setattr(main_module, "adaptive_grip", lambda _ser, _last_ik: True)
+    monkeypatch.setattr(main_module, "USE_REAL_SERIAL", True)
+
+    def fake_wait_for_arm_position(_ser, target_solution, *, label="", timeout=None, **_kwargs):
+        calls.append(("wait", label))
+        assert target_solution["m5"] == CLAW_CLOSED_POS
+        assert timeout == main_module.ARM_REACH_TIMEOUT
+        return True
+
+    monkeypatch.setattr(main_module, "wait_for_arm_position", fake_wait_for_arm_position)
+
+    success = main_module.run_sorting_cycle(
+        ser=SimpleNamespace(),
+        arm=SimpleNamespace(),
+        detection={"colour": "red", "x": 20.0, "y": 0.0, "z": 0.0},
+        vision=SimpleNamespace(),
+    )
+
+    assert success is True
+    drop_move_index = calls.index(("move", "RED_BIN.drop"))
+    wait_index = calls.index(("wait", "validated rear drop pose"))
+    release_index = calls.index(("claw", "OPEN grip (release at rear drop pose)"))
+    assert drop_move_index < wait_index < release_index
+
+
+def test_zero_load_zero_current_always_rejects():
+    """Even with blocked position, zero load + low current = no ball."""
+    fb = {"position": CLAW_CLOSED_POS - 200, "load": 0, "current": 4}
+    assert main_module._feedback_confirms_grip(fb) is False

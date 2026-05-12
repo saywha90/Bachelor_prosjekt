@@ -193,9 +193,9 @@ CAMERA_HEIGHT   = 58.0   # cm – camera lens height above table surface
 # See docs/calibration.md → Step 02c.
 SCAN_POSE = {
     "m1": 2048,
-    "m2": 2550,   # shoulder raised — wrist ~35 cm above desk
+    "m2": 2600,   # shoulder raised — wrist ~35 cm above desk (synced with homography_calibration.json)
     "m3": 950,    # elbow folded — forearm angled down toward desk
-    "m4": 800,   # wrist tilted — camera optical axis points at workspace
+    "m4": 850,    # wrist tilted — camera optical axis points at workspace (synced with homography_calibration.json)
     "m5": 2745,   # claw open and out of camera view
 }
 
@@ -227,25 +227,26 @@ DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG = 45.0
 
 # ── Claw motor positions (Dynamixel steps) ─────────────────────────
 CLAW_OPEN_POS   = 2745    # open/neutral position for gripper (XM430-W210 raw goal position)
-CLAW_CLOSED_POS = 3300    # safe closed/grip limit (adaptive grip never commands past this)
+CLAW_CLOSED_POS = 3350    # safe closed/grip limit (extended to 3350 for tighter grip on small balls)
 
 # ── Grip verification ──────────────────────────────────────────────
 GRIP_VERIFY_TOLERANCE = 30        # Dynamixel steps: if claw pos is within this of CLAW_CLOSED_POS, grip failed
-GRIP_LOAD_THRESHOLD   = 50        # Minimum absolute load value to confirm grip (from read_load)
+GRIP_LOAD_THRESHOLD   = 15        # Minimum absolute load value to confirm grip (lowered: 50 mA limit makes motor more sensitive)
 MAX_PICK_RETRIES      = 2         # Number of re-grab attempts before skipping a ball
 VERIFY_HEIGHT         = 8.0       # cm – height to lift to for grip verification (between GRAB_HEIGHT and CLEARANCE_HEIGHT)
 
 # ── Adaptive grip settings ──────────────────────────────────────────
-GRIP_CURRENT_LIMIT    = 200       # mA – max current for M5 during grip (protects 3D-printed claw)
-GRIP_PROFILE_VEL      = 30        # slow closing velocity (normal is 80)
-GRIP_PROFILE_ACC      = 10        # slow closing acceleration (normal is 20)
+GRIP_CURRENT_LIMIT    = 50        # mA – max current for M5 during grip (low for sensitivity; protects 3D-printed claw)
+GRIP_PROFILE_VEL      = 80        # fast closing velocity (matches normal operating speed)
+GRIP_PROFILE_ACC      = 20        # moderate closing acceleration (normal is 20; was 10)
 GRIP_POLL_INTERVAL    = 0.05      # seconds between load readings during adaptive grip
-GRIP_TIMEOUT          = 3.0       # max seconds to wait for grip to complete
-GRIP_LOAD_DETECT      = 15        # sensitive load threshold: light resistance means ball contact
+GRIP_TIMEOUT          = 15.0      # max seconds to wait for grip to complete (555 steps ÷ 30/step ≈ 18 increments × ~0.4s ≈ 7.5s minimum)
+GRIP_LOAD_DETECT      = 5         # sensitive load threshold: light resistance means ball contact (lowered for 50 mA limit)
 GRIP_POSITION_STALL   = 8         # sensitive stall threshold: small movement under command means contact
-GRIP_EXTRA_CLOSE      = 30        # extra steps to close past contact point for secure hold
+GRIP_EXTRA_CLOSE      = 50        # step increment size during adaptive close (was 30; larger = faster close)
 EXPECTED_BALL_DIAMETER_CM = 5.0   # production balls are 50 mm / 5 cm diameter
-GRIP_MIN_BALL_BLOCKED_STEPS = GRIP_VERIFY_TOLERANCE + GRIP_EXTRA_CLOSE  # min gap from empty-closed for a 5 cm ball
+GRIP_MIN_BALL_BLOCKED_STEPS = 30  # position-only detection: min gap from empty-closed (was 60, too strict for smaller balls)
+GRIP_MIN_BLOCKED_WITH_SENSOR = 5  # sensor-assisted threshold: when load/current confirm, accept very small gaps (not at end-stop)
 DEFAULT_PROFILE_VEL   = 80        # normal operating velocity
 DEFAULT_PROFILE_ACC   = 20        # normal operating acceleration
 M5_DEFAULT_CURRENT_LIMIT = 1193   # XM430-W350 factory default current limit in mA
