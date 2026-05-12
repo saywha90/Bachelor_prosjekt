@@ -47,7 +47,7 @@ from ik.solver import ArmIK
 from config.arm import (HOME_POSITION, BINS,
                         GRAB_HEIGHT, APPROACH_HEIGHT, CLEARANCE_HEIGHT,
                         GRIP_CURRENT_LIMIT, M5_DEFAULT_CURRENT_LIMIT,
-                        CLAW_OPEN_POS, CLAW_CLOSED_POS)
+                        GRAB_DWELL, CLAW_OPEN_POS, CLAW_CLOSED_POS)
 
 RED_BIN    = BINS["RED_BIN"]
 BLUE_BIN   = BINS["BLUE_BIN"]
@@ -302,7 +302,7 @@ def main():
 
         print("  Closing claw...")
         send_claw(CLAW_CLOSED_POS)
-        time.sleep(0.5)
+        time.sleep(max(GRAB_DWELL, 0.8))
 
         # Restore default current limit
         print(f"  Restoring M5 current limit to {M5_DEFAULT_CURRENT_LIMIT} mA")

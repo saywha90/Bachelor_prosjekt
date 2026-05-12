@@ -61,6 +61,7 @@ MOVE_SETTLE_SECONDS = 0.75
 ROUTE_SETTLE_SECONDS = 0.75
 LIMP_MOTOR_IDS = (1, 2, 3, 4)
 MAX_CAPTURE_M4_OFFSET = 1500
+M4_STEPS_PER_REV = ArmIK.STEPS_PER_REV
 
 ROUTE_SCHEMA_VERSION = 4
 ONLY_BIN_NAMES = ("RED_BIN", "BLUE_BIN")
@@ -264,6 +265,13 @@ def _parse_rear_base_yaw_limit(raw: Any) -> float:
     if not 0.0 <= limit <= 180.0:
         return float(DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG)
     return limit
+
+
+def normalize_replay_m4_offset(raw_offset: int) -> int:
+    """Return the nearest signed servo-equivalent wrist replay offset."""
+
+    half_rev = M4_STEPS_PER_REV // 2
+    return ((int(raw_offset) + half_rev) % M4_STEPS_PER_REV) - half_rev
 
 
 def _sanitize_pose(raw_pose: dict[str, Any], default_pose: dict[str, Any]) -> dict[str, Any]:
@@ -560,13 +568,19 @@ def capture_current_waypoint(
     # L3 claw-tip link after the Cartesian solve.
     try:
         raw_offset = int(fk.get("replay_m4_offset", 0))
+        normalized_offset = normalize_replay_m4_offset(raw_offset)
         candidate["m4_offset"] = max(
             -MAX_CAPTURE_M4_OFFSET,
-            min(MAX_CAPTURE_M4_OFFSET, raw_offset),
+            min(MAX_CAPTURE_M4_OFFSET, normalized_offset),
         )
-        if candidate["m4_offset"] != raw_offset:
+        if normalized_offset != raw_offset:
             print(
-                f"  ⚠️  Wrist replay offset clipped from {raw_offset:+d} "
+                f"  ℹ️  Wrist replay offset normalized from {raw_offset:+d} "
+                f"to servo-equivalent {normalized_offset:+d} steps."
+            )
+        if candidate["m4_offset"] != normalized_offset:
+            print(
+                f"  ⚠️  Wrist replay offset clipped from normalized {normalized_offset:+d} "
                 f"to {candidate['m4_offset']:+d} steps for safety."
             )
     except Exception as exc:
@@ -780,7 +794,8 @@ def _render_hud(
         f"1-{len(EDITABLE_WAYPOINTS)}: Select waypoint       W/S: X (fwd/back)      A/D: Y (left/right)",
         "U/J: Z (up/down)           I/K: m4 (wrist tilt)   [/]: XYZ step size",
         "-/=: m4 step size          M: Move to waypoint     T: Test bin route",
-        "L: Toggle limp mode        ENTER: Save to file     Q: Quit",
+        "L: Toggle limp mode        C: Capture current pose ENTER: Save to file",
+        "Q: Quit",
     ]
     for line in ctrl_lines:
         cv2.putText(hud, line, (30, y), font, 0.42, GREEN, 1, cv2.LINE_AA)
@@ -970,6 +985,29 @@ def interactive_loop(
                             print(f"  Warning: Motor {motor_id} torque disable issue: {resp}")
                     limp_active = True
                     status_msg = "LIMP: Motors 1-4 disabled. Support the arm! Press L to lock."
+                continue
+
+            # ── C: Capture current physical pose into selected waypoint ──
+            if key in (ord("c"), ord("C")):
+                if not hardware or ser is None:
+                    status_msg = "DRY-RUN: Capture requires hardware."
+                    continue
+                try:
+                    captured = capture_current_waypoint(data, spec, ser, arm)
+                except Exception as exc:
+                    status_msg = f"CAPTURE ERROR: {exc}"
+                    continue
+                if captured:
+                    dirty = True
+                    limp_active = False
+                    pose = get_waypoint(data, spec)
+                    status_msg = (
+                        f"Captured {spec.title}: x={float(pose['x']):.2f} "
+                        f"y={float(pose['y']):.2f} z={float(pose['z']):.2f} "
+                        f"m4={int(pose.get('m4_offset', 0)):+d} (unsaved)"
+                    )
+                else:
+                    status_msg = "CAPTURE REFUSED: current pose was not stored; see terminal."
                 continue
 
             # ── ENTER: Save calibration ───────────────────────────────

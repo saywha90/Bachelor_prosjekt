@@ -60,7 +60,7 @@ termal-beskyttelse og feilsøking."*
 - Touch-kalibrering med sub-piksel deteksjon og RANSAC
 - **SCAN_POSE-design** — fast pose for wrist-mounted OAK-D, hvorfor fast fremfor adaptiv (ADR-003)
 - Feilsøking av IK-relaterte problemer (rekkevidde, joint limits, sag)
-- **Hardware-valg** — hvorfor XM540 i skulder (høy stall-torque), XM430 i albue, XL430 i håndledd/klo (lett/billig der lasten er lav)
+- **Hardware-valg** — hvorfor XM540 i skulder (høy stall-torque), XM430 i albue og klo (høyt dreiemoment for grep), XL430 i håndledd (lett/billig der lasten er lav)
 - Link-lengder L1/L2/L3 — hvordan de ble målt og hvilken arbeidsromsdekning de gir
 - **M3 termal-beskyttelse** — XM430 i albue blir varm i SCAN_POSE (0.47 A kontinuerlig), redusert hold-strøm (300 mA), torque-relax-mekanisme
 - **Hardware-error-flags** — overheat, overload, voltage, encoder, electrical shock; krever 12V power cycle å nullstille

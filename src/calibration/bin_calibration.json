@@ -1,9 +1,9 @@
 {
   "schema_version": 4,
-  "calibration_date": "2026-05-06",
+  "calibration_date": "2026-05-11",
   "calibrated_with_scan_pose": {
     "m1": 2048,
-    "m2": 2800,
+    "m2": 2550,
     "m3": 950,
     "m4": 800,
     "m5": 2745
@@ -35,19 +35,19 @@
   "bins": {
     "RED_BIN": {
       "drop": {
-        "x": -28.5,
-        "y": -2.38,
-        "z": 33.84,
-        "m4_offset": 25,
+        "x": -28.29,
+        "y": -2.48,
+        "z": 37.1,
+        "m4_offset": 11,
         "skip_sag": true
       }
     },
     "BLUE_BIN": {
       "drop": {
-        "x": -27.5,
-        "y": 7.55,
-        "z": 34.22,
-        "m4_offset": 100,
+        "x": -27.22,
+        "y": 7.4,
+        "z": 35.76,
+        "m4_offset": 14,
         "skip_sag": true
       }
     }
