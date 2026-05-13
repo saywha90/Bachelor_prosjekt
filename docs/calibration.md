@@ -47,7 +47,7 @@ Required packages: `numpy`, `opencv-python`, `pyserial`, `depthai`, `scikit-lear
 | **0** | A | Dynamixel Wizard 2.0 | Set motor IDs, baudrate, operating mode | ~10 min |
 | **1** | A | `python src/diagnostics/diagnose_motors.py` | System check — verify all motors respond | ~2 min |
 | **2** | A | `python src/calibration/02_joints.py` | Joint calibration — verify motor signs and zeros | ~10–15 min |
-| **2b** | A | `python src/calibration/02b_claw.py` | Claw open/close calibration | ~2 min |
+| **2b** | A | Manual setup + `python src/calibration/02b_claw_grip_test.py` | Configure claw open/closed positions and validate adaptive grip | ~5–10 min |
 | **2c** | A | `python src/calibration/02c_scan_pose.py` | Tune SCAN_POSE for wrist-mounted camera | ~5–10 min |
 | **3** | A | `python src/calibration/03_sag.py` | Sag (droop) compensation calibration | ~10–20 min |
 | **4** | B | `python src/calibration/04_hsv_tuner.py` | Interactive HSV colour tuning | ~5–15 min |
@@ -56,7 +56,7 @@ Required packages: `numpy`, `opencv-python`, `pyserial`, `depthai`, `scikit-lear
 
 | **7** | C | `python src/calibration/07_vision_offset.py` | Fine-tune residual camera-to-shoulder offset | ~5 min |
 | **8** | C | `python src/calibration/08_pick_test.py` | End-to-end pick-and-place verification | ~10 min |
-| **9** | C | `PYTHONPATH=src python3 src/calibration/10_bin_calibration.py` | Hardware-first rear-bin route calibration for two-bin fold-over placement | Requires real hardware |
+| **10** | C | `PYTHONPATH=src python3 src/calibration/10_bin_calibration.py` | Hardware-first rear-bin route calibration for two-bin fold-over placement | Requires real hardware |
 
 ---
 
@@ -158,37 +158,42 @@ direction check.
 
 ---
 
-### Step 2b — Claw Open/Close Calibration
+### Step 2b — Manual Claw Open/Close Setup + Adaptive Grip Validation
 
-**What it does:** Finds the correct Dynamixel step values for the claw
-(motor 5) that fully open the gripper and firmly grip a 50 mm ball without
-straining the motor. Every claw assembly is slightly different.
+**What it does:** Establishes the real motor-5 limits used by the 3D printed
+claw, then validates adaptive claw/grip behavior with
+[`src/calibration/02b_claw_grip_test.py`](../src/calibration/02b_claw_grip_test.py).
+The usable open/closed values depend on the installed claw geometry and are
+written directly into the runtime configuration before running the validation.
 
-**Script:**
-
-```bash
-python src/calibration/02b_claw.py
-```
+**Tools:** Dynamixel Wizard 2.0 for direct M5 positioning, then edit
+[`src/config/arm.py`](../src/config/arm.py) and run
+[`src/calibration/02b_claw_grip_test.py`](../src/calibration/02b_claw_grip_test.py).
 
 **Procedure:**
 
-1. The arm moves to a visible position.
-2. Interactively adjust m5 (type values, `+`/`-` for ±50, `++`/`--` for ±200).
-3. The script tests jaw symmetry and runs 3 open/close cycles.
-4. Results are saved to `claw_calibration.json`.
+1. Center **M5** externally in Dynamixel Wizard before installing the claw.
+2. Mount the 3D printed claw while it is **open**.
+3. Slowly close the claw in small Wizard increments until it reaches the desired
+   safe grip position for the real ball without forcing the printed parts.
+4. Write the final open and closed step values directly into
+   [`CLAW_OPEN_POS`](../src/config/arm.py:229) and
+   [`CLAW_CLOSED_POS`](../src/config/arm.py:230).
+5. Run the adaptive grip diagnostic to validate real behavior:
 
-**Expected output:** The script prints recommended values for
-[`CLAW_OPEN_POS`](../src/config/arm.py) and [`CLAW_CLOSED_POS`](../src/config/arm.py),
-and saves them to `claw_calibration.json`.
+```bash
+python src/calibration/02b_claw_grip_test.py
+```
 
-**How to verify:** The claw opens fully without motor strain, and grips a
-50 mm ball firmly without crushing it.
+**How to verify:** The claw opens fully without motor strain, closes slowly to
+the desired grip position, and [`02b_claw_grip_test.py`](../src/calibration/02b_claw_grip_test.py)
+confirms the adaptive grip/claw behavior on the real arm.
 
 **Configuration:** Update these constants in [`src/config/arm.py`](../src/config/arm.py) if needed:
 
 ```python
-CLAW_OPEN_POS   = 2745   # fully open without motor strain (XM430-W210 raw goal position)
-CLAW_CLOSED_POS = 3300   # safe closed/grip limit for adaptive close
+CLAW_OPEN_POS   = 2745   # open/neutral position for gripper (XM430-W210 raw goal position)
+CLAW_CLOSED_POS = 3350   # safe closed/grip limit for adaptive close
 ```
 
 ---
@@ -575,13 +580,13 @@ diagnostic table below.
 | Consistent X/Y offset | Residual camera offset | Adjust `CAMERA_OFFSET_X/Y` in [`config/arm.py`](../src/config/arm.py) or redo Step 7 |
 | Off in different directions each time | Bad homography | Redo Step 6 |
 | Claw too high or too low | Sag calibration off, or touch cal heights stale | Redo Step 6 (touch calibration records grab height per point); if no touch cal, redo Step 3 |
-| Ball squirts out when grabbed | Claw positions wrong | Redo Step 2b |
+| Ball squirts out when grabbed | Claw positions wrong or adaptive grip needs validation | Recheck Step 2b values in [`CLAW_OPEN_POS`](../src/config/arm.py:229) / [`CLAW_CLOSED_POS`](../src/config/arm.py:230), then run [`02b_claw_grip_test.py`](../src/calibration/02b_claw_grip_test.py) |
 | Arm can't reach detected balls | Scan region mismatch | Re-run touch calibration (Step 6) with corners within arm reach |
 | Wrong bin | Colour detection error | Redo Steps 4–5 |
 
 ---
 
-### Step 9 — Rear-Bin Route Calibration
+### Step 10 — Rear-Bin Route Calibration
 
 **What it does:** Fine-tunes the production rear-placement route stored in
 [`bin_calibration.json`](../src/calibration/bin_calibration.json). This is a
@@ -689,11 +694,11 @@ You only need to redo specific steps when something changes:
 | Changed camera mount or SCAN_POSE | 2c, 6, 7 |
 | Moved the camera | 6, 7 |
 | Changed lighting (new room, new lamp) | 4, 5 |
-| Rebuilt or tightened the arm | 2, 2b, 3 |
-| New claw or gripper attachment | 2b |
+| Rebuilt or tightened the arm | 2, manual Step 2b if the claw moved, 3 |
+| New claw or gripper attachment | Manual Step 2b, then [`02b_claw_grip_test.py`](../src/calibration/02b_claw_grip_test.py) |
 | Replaced a motor | 0 (for that motor), 1, 2 |
-| Moved rear bins or changed rear route clearance | 9 |
-| Everything (full recalibration) | 0–9 |
+| Moved rear bins or changed rear route clearance | 10 |
+| Everything (full recalibration) | 0–10 |
 
 ### Quick Recalibration Checklist
 
@@ -710,12 +715,12 @@ If the system was working and accuracy has degraded:
 
 ## Calibration File Reference
 
-| File | Created By | Loaded By |
-|------|-----------|-----------|
+| File | Created/Updated By | Loaded By |
+|------|--------------------|-----------|
 | `sag_calibration.json` | Step 3 — [`03_sag.py`](../src/calibration/03_sag.py) | [`ArmIK.__init__()`](../src/ik/solver.py:115) |
 | `homography_calibration.json` | Step 6 — [`09_touch_calibration.py`](../src/calibration/09_touch_calibration.py) | [`VisionBridge`](../src/ik/vision_bridge.py:108), [`compute_grab_height()`](../src/config/arm.py), [`compute_wrist_correction()`](../src/config/arm.py) |
-| `bin_calibration.json` | Step 9 — [`10_bin_calibration.py`](../src/calibration/10_bin_calibration.py) | [`load_transport_route_calibration()`](../src/config/arm.py:517), [`get_transport_route()`](../src/config/arm.py:558), [`prevalidate_transport_plan()`](../src/main.py:290), [`route_demo.py`](../src/simulation/route_demo.py) |
-| `claw_calibration.json` | Step 2b — [`02b_claw.py`](../src/calibration/02b_claw.py) | Manual — update [`config/arm.py`](../src/config/arm.py) |
+| `bin_calibration.json` | Step 10 — [`10_bin_calibration.py`](../src/calibration/10_bin_calibration.py) | [`load_transport_route_calibration()`](../src/config/arm.py:517), [`get_transport_route()`](../src/config/arm.py:558), [`prevalidate_transport_plan()`](../src/main.py:290), [`route_demo.py`](../src/simulation/route_demo.py) |
+| [`src/config/arm.py`](../src/config/arm.py) | Manual Step 2b — write [`CLAW_OPEN_POS`](../src/config/arm.py:229) and [`CLAW_CLOSED_POS`](../src/config/arm.py:230) after Wizard setup | Runtime claw commands and [`02b_claw_grip_test.py`](../src/calibration/02b_claw_grip_test.py) |
 | `pick_test_results.json` | Step 8 — [`08_pick_test.py`](../src/calibration/08_pick_test.py) | Reference only |
 
 ---
@@ -731,4 +736,4 @@ If the system was working and accuracy has degraded:
 | Homography off by > 2 cm | Detected cm don't match ruler | Re-measure corner positions from shoulder joint; verify arm is at SCAN_POSE |
 | Camera not found in Step 4/6 | `OAKCamera: Could not open camera` | Re-plug USB, check `depthai` install, see [troubleshooting](troubleshooting.md) |
 | Pick test < 80 % | Multiple partial/fail results | Identify the dominant failure mode from the diagnostic table above |
-| Rear route validates but clips bin or misses drop | Strict IK is valid, but physical X/Z route clearance needs tuning | Re-run Step 9 on hardware and adjust slowly with `step 0.1`, route tests, and explicit `SAVE` |
+| Rear route validates but clips bin or misses drop | Strict IK is valid, but physical X/Z route clearance needs tuning | Re-run Step 10 on hardware and adjust slowly with `step 0.1`, route tests, and explicit `SAVE` |

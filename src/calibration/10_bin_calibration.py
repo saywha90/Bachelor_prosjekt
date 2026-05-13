@@ -15,6 +15,8 @@ Usage
     PYTHONPATH=src python3 src/calibration/10_bin_calibration.py
     PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --port /dev/cu.usbmodem101
     PYTHONPATH=src python3 src/calibration/10_bin_calibration.py --dry-run
+
+Author: Bachelor Project 2026 – Autonomia    
 """
 
 from __future__ import annotations

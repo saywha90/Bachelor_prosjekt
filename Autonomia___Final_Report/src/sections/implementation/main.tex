@@ -1,0 +1,18 @@
+\hmsection{System Implementation}{OAH}{}
+
+This chapter describes the implementation of the complete system, covering the image
+processing pipeline, object detection, coordinate transformation, and hardware
+integration. The system is built around three main components: a camera-based vision
+module responsible for detecting and classifying balls, a Raspberry Pi~5 that
+executes the processing pipeline and coordinates communication, and a robotic arm
+that performs the physical sorting task. Each component is described in the
+subsections below.
+
+\subimport{./}{system_overview}
+\subimport{./}{image_processing_pipeline}
+\subimport{./}{object_detection}
+\subimport{./}{hardware_integration}
+\subimport{./}{com_between_systems}
+\subimport{./}{actuator_control}
+\subimport{./}{inverse_kinematics}
+\subimport{./}{calibration_subsystem}

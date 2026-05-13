@@ -109,16 +109,18 @@ autonomia/
 │   │   ├── detector.py               ⭐ SimpleBallDetector — main detection engine
 │   │   └── models/                    🧠 Trained ML models
 │   │
-│   ├── calibration/                   🔧 Calibration scripts (Steps 2–8)
+│   ├── calibration/                   🔧 Calibration scripts and diagnostics (Steps 2–10 plus Step 2b validation)
 │   │   ├── 02_joints.py              🔧 Motor sign & zero verification (Step 2)
-│   │   ├── 02b_claw.py               ✋ Claw open/close calibration (Step 2b)
+│   │   ├── 02b_claw_grip_test.py     ✋ Step 2b adaptive claw/grip validation
+│   │   ├── 02c_scan_pose.py          🎥 Wrist-camera scan pose tuning (Step 2c)
 │   │   ├── 03_sag.py                 📐 Sag/droop compensation (Step 3)
 │   │   ├── 04_hsv_tuner.py           🎨 Interactive live HSV trackbar tuner (Step 4)
 │   │   ├── 05_hsv_refine.py          🔬 Analyse images → suggest new HSV ranges (Step 5)
 │   │   ├── 06_homography.py          🎯 Pixel-to-cm homography calibration (Step 6, legacy)
 │   │   ├── 09_touch_calibration.py   🤖 Touch-based homography calibration (replaces Step 6)
 │   │   ├── 07_vision_offset.py       🔧 Fine-tune camera-to-shoulder offset (Step 7)
-│   │   └── 08_pick_test.py           🧪 End-to-end pick-and-place test (Step 8)
+│   │   ├── 08_pick_test.py           🧪 End-to-end pick-and-place test (Step 8)
+│   │   └── 10_bin_calibration.py     📦 Rear-bin route calibration (Step 10)
 │   │
 │   ├── diagnostics/                   🩺 Read-only diagnostic tools
 │   │   ├── check_motor_errors.py     🩺 Decode Dynamixel hardware error flags

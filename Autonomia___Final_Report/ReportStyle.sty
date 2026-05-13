@@ -1,0 +1,169 @@
+\NeedsTeXFormat{LaTeX2e}[1994/06/01]
+\ProvidesPackage{ReportStyle}[2013/01/13 Style Package]
+\RequirePackage[margin=2cm]{geometry}
+\RequirePackage{graphicx}
+\RequirePackage{fontspec}
+\RequirePackage{amssymb}
+\RequirePackage[obeyspaces]{xurl}
+\RequirePackage[hidelinks,breaklinks]{hyperref}
+\RequirePackage{bookmark}
+\RequirePackage{tabularx}
+\RequirePackage{booktabs}
+\RequirePackage[table,xcdraw]{xcolor}
+\RequirePackage[normalem]{ulem}
+\RequirePackage{import}
+\RequirePackage{listings}
+\RequirePackage{fancyvrb}
+\RequirePackage{etoolbox}
+\RequirePackage{pdfpages}
+\RequirePackage[]{fancyhdr}
+\RequirePackage[toc,page]{appendix}
+\RequirePackage{titlesec}
+\RequirePackage[cache=false]{minted}
+\RequirePackage[resetlabels,labeled]{multibib}
+\RequirePackage{caption}
+\RequirePackage{subcaption}
+\RequirePackage[acronym]{glossaries}
+\RequirePackage{framed}
+\RequirePackage{lipsum}
+\RequirePackage{url}
+\RequirePackage{titlesec}
+\RequirePackage{blindtext}
+\RequirePackage{xparse}
+\RequirePackage{tikz}
+\RequirePackage{tkz-euclide}
+\RequirePackage{pgfplots}
+\RequirePackage{setspace}
+\RequirePackage{amsmath}
+\RequirePackage{multirow}
+\RequirePackage{makecell}
+\RequirePackage[export]{adjustbox}
+\RequirePackage{lmodern}
+\RequirePackage[T1]{fontenc}
+\RequirePackage{tocloft}
+\RequirePackage{multicol}
+\pgfplotsset{compat=1.17}
+\usetikzlibrary{arrows.meta}
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.2,0.2,0.2}
+\definecolor{textcolor}{rgb}{1.0, 1.0, 1.0}
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize\color{textcolor},
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+\lstset{style=mystyle}
+\pagestyle{fancy}
+\fancyhead{}
+\fancyhead[R]{\textbf{\rightmark}}
+\fancyfoot{}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{15pt}
+\patchcmd{\thebibliography}{\chapter*}{\section*}{}{}
+\renewcommand\thesection{\arabic{section}}
+\renewcommand\bibname{References}
+\makeatletter
+\renewcommand{\sectionmark}[1]{%
+    \markright{\thesection.\ \MakeUppercase{#1}}%
+}
+\renewcommand{\subsectionmark}[1]{}
+\renewcommand{\subsubsectionmark}[1]{}
+\makeatother
+\newcommand{\hmrightinfo}[2]{%
+    {\footnotesize
+        \ifstrempty{#1}{}{%
+            \textbf{#1}%
+        }%
+        \ifstrempty{#2}{}{%
+            \ifstrempty{#1}{}{ | }%
+            \textit{#2}%
+        }%
+    }%
+}
+\newcommand{\hmsection}[3]{%
+    \refstepcounter{section}%
+    \sectionmark{#1}%
+    \addcontentsline{toc}{section}{\protect\numberline{\thesection}#1}%
+    \par\addvspace{3.5ex plus 1ex minus .2ex}%
+    \noindent
+    \begin{minipage}[t]{.8\textwidth}
+        \raggedright\Large\bfseries \thesection\quad #1
+    \end{minipage}%
+    \hfill\hmrightinfo{#2}{#3}\par
+    \nobreak\addvspace{2.3ex plus .2ex}%
+}
+\newcommand{\hmsubsection}[3]{%
+    \refstepcounter{subsection}%
+    \addcontentsline{toc}{subsection}{\protect\numberline{\thesubsection}#1}%
+    \par\addvspace{3.25ex plus 1ex minus .2ex}%
+    \noindent
+    \begin{minipage}[t]{.8\textwidth}
+        \raggedright\large\bfseries \thesubsection\quad #1
+    \end{minipage}%
+    \hfill\hmrightinfo{#2}{#3}\par
+    \nobreak\addvspace{1.5ex plus .2ex}%
+}
+\newcommand{\hmsubsubsection}[3]{%
+    \refstepcounter{subsubsection}%
+    \addcontentsline{toc}{subsubsection}{\protect\numberline{\thesubsubsection}#1}%
+    \par\addvspace{3.25ex plus 1ex minus .2ex}%
+    \noindent
+    \begin{minipage}[t]{.8\textwidth}
+        \raggedright\normalsize\bfseries \thesubsubsection\quad #1
+    \end{minipage}%
+    \hfill\hmrightinfo{#2}{#3}\par
+    \nobreak\addvspace{1.5ex plus .2ex}%
+}
+\setcounter{secnumdepth}{3}
+
+% ============================================================
+% TOC STYLING
+% ============================================================
+\definecolor{accent}{RGB}{20, 160, 90}
+\definecolor{darktext}{RGB}{15, 18, 22}
+\definecolor{softgray}{RGB}{110, 115, 120}
+\definecolor{midgray}{RGB}{160, 165, 170}
+
+% TOC depth — sections and subsections only
+\setcounter{tocdepth}{2}
+
+% Relaxed TOC vertical spacing (two-page layout)
+\setlength{\cftbeforesecskip}{6pt}
+\setlength{\cftbeforesubsecskip}{2pt}
+
+% Section styling — bold dark sans
+\renewcommand{\cftsecfont}{\sffamily\bfseries\color{darktext}\small}
+\renewcommand{\cftsecpagefont}{\sffamily\color{softgray}\small}
+\renewcommand{\cftsecleader}{\sffamily\color{midgray}\cftdotfill{\cftdotsep}}
+
+% Subsection styling — indented, regular weight
+\renewcommand{\cftsubsecfont}{\sffamily\color{darktext}\small}
+\renewcommand{\cftsubsecpagefont}{\sffamily\color{softgray}\small}
+\renewcommand{\cftsubsecleader}{\sffamily\color{midgray}\cftdotfill{\cftdotsep}}
+
+% Compact dot spacing
+\renewcommand{\cftdotsep}{2}
+
+% Indentation
+\setlength{\cftsecindent}{0pt}
+\setlength{\cftsubsecindent}{1em}
+
+% Number column widths
+\setlength{\cftsecnumwidth}{2em}
+\setlength{\cftsubsecnumwidth}{2.6em}
+
+\endinput

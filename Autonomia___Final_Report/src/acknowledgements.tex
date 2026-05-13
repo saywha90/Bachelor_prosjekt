@@ -1,0 +1,84 @@
+\clearpage
+\thispagestyle{empty}
+
+% Color palette matching the cover
+\definecolor{lightbg}{RGB}{252, 252, 250}
+\definecolor{accent}{RGB}{20, 160, 90}
+\definecolor{darktext}{RGB}{15, 18, 22}
+\definecolor{softgray}{RGB}{110, 115, 120}
+\definecolor{midgray}{RGB}{160, 165, 170}
+
+\begin{tikzpicture}[remember picture, overlay]
+    % Top accent pill
+    \node[anchor=north west, draw=accent, line width=1pt, rounded corners=2pt,
+          inner xsep=14pt, inner ysep=8pt,
+          font=\sffamily\bfseries\small, text=accent] 
+        at ([xshift=2.5cm, yshift=-3cm]current page.north west) 
+        {\textcolor{accent}{$\bullet$}~~ACKNOWLEDGEMENTS};
+    
+    \node[anchor=north east, text=midgray, font=\sffamily\small] 
+        at ([xshift=-2.5cm, yshift=-3cm]current page.north east) 
+        {03 / GRATITUDE};
+    
+    % Bottom footer rule
+    \draw[midgray, line width=0.5pt] 
+        ([xshift=2.5cm, yshift=2.5cm]current page.south west) -- 
+        ([xshift=-2.5cm, yshift=2.5cm]current page.south east);
+    
+    \node[anchor=south west, text=midgray, font=\sffamily\footnotesize] 
+        at ([xshift=2.5cm, yshift=1.7cm]current page.south west) 
+        {AUTONOMIA \textcolor{accent}{$\bullet$} BACHELOR THESIS 2026};
+    
+    \node[anchor=south east, text=midgray, font=\sffamily\footnotesize] 
+        at ([xshift=-2.5cm, yshift=1.7cm]current page.south east) 
+        {KONGSBERG};
+\end{tikzpicture}
+
+% Add to TOC without printing a chapter heading
+\addcontentsline{toc}{chapter}{Acknowledgements}
+
+\vspace*{3.5cm}
+
+% Page title
+{\sffamily\bfseries\fontsize{11}{13}\selectfont A~~U~~T~~O~~N~~O~~M~~I~~A}
+
+\vspace{0.4cm}
+
+{\fontsize{42}{46}\selectfont\itshape Thank}\\[0.2cm]
+{\fontsize{42}{46}\selectfont\bfseries you.}
+
+\vspace{0.4cm}
+
+{\color{accent}\rule{3cm}{2pt}}
+
+\vspace{1.5cm}
+
+% Body text
+\noindent Group 12 would like to thank everyone who has contributed to the Autonomia project. 
+We extend our gratitude to the \textbf{University of South-Eastern Norway} for providing 
+the project assignment, as well as access to the workshop, equipment, and facilities at 
+Campus Kongsberg.
+
+\vspace{0.6cm}
+
+\noindent A special thanks goes to our internal supervisors \textbf{Karoline Moholt} and 
+\textbf{Dag Andreas Hals Samuelsen} for their invaluable support through technical insights, 
+constructive feedback, and continuous guidance throughout the entire project period.
+
+\vspace{0.6cm}
+
+\noindent We would also like to thank our external supervisor \textbf{Didrik Berntsen} for 
+his valuable contributions, advice, and solutions to the technical and practical challenges 
+we encountered during the project.
+
+\vspace{0.6cm}
+
+\noindent Finally, we wish to thank our fellow students, family, and friends who have 
+supported us throughout this bachelor period.
+
+\vspace{1.2cm}
+
+\noindent\textit{\textcolor{midgray}{Kongsberg, May 20, 2026}}\\[0.2cm]
+\noindent\textbf{Group 12 \textcolor{accent}{$\cdot$} Autonomia}
+
+\clearpage

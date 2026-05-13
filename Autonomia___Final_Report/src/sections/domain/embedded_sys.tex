@@ -1,0 +1,42 @@
+\hmsubsection{Embedded Systems}{UMA}{}
+
+An embedded system is a computing system designed to perform a 
+dedicated function within a larger mechanical or electrical system, 
+typically operating under constraints related to processing power, 
+memory, energy consumption, and real-time response \cite{marwedel2021}. 
+Unlike general-purpose computers, embedded systems are tightly coupled 
+to the physical environment in which they operate, and their correctness 
+depends not only on the logical result of computation but also on the 
+time at which the result is produced \cite{lee2017}.
+
+In the context of this project, the robotic system follows the 
+sense--process--act cycle described in Section~2.1, and each stage is 
+implemented on dedicated computing hardware. The camera acquires image 
+data, a host processor analyses the data and computes motor positions, 
+and a microcontroller translates these positions into electrical 
+commands that drive the actuators. Because the actuators are physical 
+motors that must respond predictably and within bounded time, the 
+control path is subject to real-time constraints that cannot be 
+guaranteed by a general-purpose operating system alone.
+
+To address this, the system is implemented using a two-tier 
+architecture consisting of a higher-level host processor and a 
+lower-level microcontroller. The host processor is a Raspberry Pi~5 
+running a Linux-based operating system, on which the image processing 
+pipeline and the inverse kinematics solver are executed. The 
+microcontroller is an OpenRB-150 board running bare-metal C++ firmware, 
+dedicated exclusively to driving the five Dynamixel servos over a TTL 
+bus. Communication between the two tiers is performed over USB serial.
+
+This separation of concerns is a common pattern in embedded robotic 
+systems \cite{lee2017}. The host processor provides the computational 
+resources required for vision and kinematics, including access to 
+standard libraries such as OpenCV and NumPy, while the microcontroller 
+provides the deterministic timing required for stable motor control. 
+By isolating the time-critical motor control loop on dedicated hardware, 
+the system avoids the timing variability introduced by the host's 
+process scheduler, memory management, and other concurrent tasks.
+
+The hardware components, communication protocol, and firmware that 
+realise this architecture are described in detail in Sections~7.2 
+and 8.4--8.5.
