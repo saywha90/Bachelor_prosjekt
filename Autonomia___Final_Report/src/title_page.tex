@@ -1,0 +1,162 @@
+\begin{titlepage}
+    \newgeometry{left=0cm,right=0cm,top=0cm,bottom=0cm}
+    \parindent0pt
+    
+    % Light theme palette
+    \definecolor{lightbg}{RGB}{252, 252, 250}
+    \definecolor{panelbg}{RGB}{245, 245, 243}
+    \definecolor{accent}{RGB}{20, 160, 90}
+    \definecolor{darktext}{RGB}{15, 18, 22}
+    \definecolor{softgray}{RGB}{110, 115, 120}
+    \definecolor{midgray}{RGB}{160, 165, 170}
+    \definecolor{gridline}{RGB}{225, 228, 232}
+    
+    \begin{tikzpicture}[remember picture, overlay]
+        % ===== FULL LIGHT BACKGROUND =====
+        \fill[lightbg] (current page.north west) rectangle (current page.south east);
+        
+        
+        % ============================================================
+        % TOP — STATUS PILL + PAGE INDICATOR
+        % ============================================================
+        \node[anchor=north west, draw=accent, line width=1pt, rounded corners=2pt,
+              inner xsep=14pt, inner ysep=8pt,
+              font=\sffamily\bfseries\small, text=accent] 
+            at ([xshift=2.5cm, yshift=-3cm]current page.north west) 
+            {\textcolor{accent}{$\bullet$}~~PROJECT INFO};
+        
+        \node[anchor=north east, text=softgray, font=\sffamily\small] 
+            at ([xshift=-2.5cm, yshift=-3cm]current page.north east) 
+            {02 / OVERVIEW};
+        
+        % ============================================================
+        % PAGE TITLE
+        % ============================================================
+        \node[anchor=north west, font=\sffamily\bfseries, text=darktext] 
+            at ([xshift=2.5cm, yshift=-5.5cm]current page.north west) 
+            {\fontsize{12}{14}\selectfont A~~U~~T~~O~~N~~O~~M~~I~~A};
+        
+        \node[anchor=north west, font=\fontsize{42}{46}\selectfont\itshape, text=darktext] 
+            at ([xshift=2.5cm, yshift=-7cm]current page.north west) 
+            {Project};
+        
+        \node[anchor=north west, font=\fontsize{42}{46}\selectfont\bfseries, text=darktext] 
+            at ([xshift=2.5cm, yshift=-9cm]current page.north west) 
+            {Information.};
+        
+        \draw[accent, line width=2pt] 
+            ([xshift=2.5cm, yshift=-11.3cm]current page.north west) -- 
+            ([xshift=5.5cm, yshift=-11.3cm]current page.north west);
+        
+        % ============================================================
+        % SECTION 1 — PROJECT
+        % ============================================================
+        \node[anchor=north west, text=accent, font=\sffamily\bfseries\small] 
+            at ([xshift=2.5cm, yshift=-12.5cm]current page.north west) 
+            {01~~//~~PROJECT};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=2.5cm, yshift=-13.3cm]current page.north west) 
+            {COURSE};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries] 
+            at ([xshift=2.5cm, yshift=-13.85cm]current page.north west) 
+            {TS3000 Bacheloroppgave};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=8cm, yshift=-13.3cm]current page.north west) 
+            {DATE};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries] 
+            at ([xshift=8cm, yshift=-13.85cm]current page.north west) 
+            {\today};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=13cm, yshift=-13.3cm]current page.north west) 
+            {TITLE};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries] 
+            at ([xshift=13cm, yshift=-13.85cm]current page.north west) 
+            {Autonomia};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\itshape\small, text width=15cm] 
+            at ([xshift=2.5cm, yshift=-15cm]current page.north west) 
+            {This report forms part of the basis for assessment in the subject.};
+        
+        % ============================================================
+        % SECTION 2 — TEAM
+        % ============================================================
+        \node[anchor=north west, text=accent, font=\sffamily\bfseries\small] 
+            at ([xshift=2.5cm, yshift=-16.7cm]current page.north west) 
+            {02~~//~~TEAM};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=2.5cm, yshift=-17.5cm]current page.north west) 
+            {GROUP};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries] 
+            at ([xshift=2.5cm, yshift=-18.05cm]current page.north west) 
+            {12};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=8cm, yshift=-17.5cm]current page.north west) 
+            {MEMBERS};
+        \node[anchor=north west, text=darktext, font=\sffamily, align=left] 
+            at ([xshift=8cm, yshift=-18.05cm]current page.north west) 
+            {Ole Aleksander Hageløkken\\
+             Umran Mohamad Ali\\
+             Farden Shaheed\\
+             Mohammed Alghazali\\
+             Filmon Kahsay Tesfay};
+        
+        % ============================================================
+        % SECTION 3 — SUPERVISION
+        % ============================================================
+        \node[anchor=north west, text=accent, font=\sffamily\bfseries\small] 
+            at ([xshift=2.5cm, yshift=-21.8cm]current page.north west) 
+            {03~~//~~SUPERVISION};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=2.5cm, yshift=-22.6cm]current page.north west) 
+            {INTERNAL};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries, align=left] 
+            at ([xshift=2.5cm, yshift=-23.15cm]current page.north west) 
+            {Karoline Moholt\\
+             Dag Andreas Hals Samuelsen};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=8cm, yshift=-22.6cm]current page.north west) 
+            {EXTERNAL};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries] 
+            at ([xshift=8cm, yshift=-23.15cm]current page.north west) 
+            {Didrik Berntsen};
+        
+        \node[anchor=north west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=13cm, yshift=-22.6cm]current page.north west) 
+            {PARTNER};
+        \node[anchor=north west, text=darktext, font=\sffamily\bfseries] 
+            at ([xshift=13cm, yshift=-23.15cm]current page.north west) 
+            {USN};
+        
+        % ============================================================
+        % BOTTOM — DISCLAIMER + FOOTER
+        % ============================================================
+        % Disclaimer panel
+        \node[anchor=south, draw=midgray, line width=0.6pt, fill=panelbg,
+              text width=15cm, align=center, inner sep=14pt,
+              font=\sffamily\footnotesize\itshape, text=softgray] 
+            at ([yshift=3.5cm]current page.south) 
+            {The University of South-Eastern Norway accepts no responsibility for the results and conclusions presented in this report.};
+        
+        % Footer rule
+        \draw[midgray, line width=0.5pt] 
+            ([xshift=2.5cm, yshift=2.5cm]current page.south west) -- 
+            ([xshift=-2.5cm, yshift=2.5cm]current page.south east);
+        
+        \node[anchor=south west, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=2.5cm, yshift=1.7cm]current page.south west) 
+            {UNIVERSITY OF SOUTH-EASTERN NORWAY \textcolor{accent}{$\bullet$} CAMPUS KONGSBERG};
+        
+        \node[anchor=south east, text=softgray, font=\sffamily\footnotesize] 
+            at ([xshift=-2.5cm, yshift=1.7cm]current page.south east) 
+            {BACHELOR THESIS / 2026};
+    \end{tikzpicture}
+    
+    \restoregeometry
+\end{titlepage}

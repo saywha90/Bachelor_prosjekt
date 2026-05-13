@@ -474,7 +474,7 @@ The system requires a 10-step calibration pipeline before autonomous operation. 
 | **0** | Dynamixel Wizard 2.0 | Set motor IDs (1–5), baudrate (115200), operating mode (Position Control) for each motor individually before assembly |
 | **1** | Upload `openrb_bridge.ino` | Flash the USB bridge firmware to the OpenRB-150 via Arduino IDE |
 | **2** | `src/calibration/02_joints.py` | Drive each motor one at a time to verify sign conventions, zero positions, and rotation directions |
-| **2b** | `src/calibration/02b_claw.py` | Tune claw open (`CLAW_OPEN_POS`) and close (`CLAW_CLOSED_POS`) positions for reliable gripping |
+| **2b** | Manual + `src/calibration/02b_claw_grip_test.py` | Center M5 externally in Dynamixel Wizard, mount the open 3D printed claw, slowly close to the desired grip position, write `CLAW_OPEN_POS`/`CLAW_CLOSED_POS` in `src/config/arm.py`, then validate adaptive grip behavior |
 | **2c** | Manual | Tune `SCAN_POSE` joint positions for wrist-mounted camera workspace coverage |
 | **3** | `src/calibration/03_sag.py` | Measure gravity droop at 5 reach distances, fit a linear/quadratic compensation model, and save to `sag_calibration.json` |
 

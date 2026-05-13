@@ -76,7 +76,7 @@ CORNER_COLORS = [(0, 255, 0), (255, 255, 0), (0, 0, 255), (255, 0, 255)]
 WINDOW_NAME = "Homography Calibration"
 CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.json"
 
-# ── Serial settings (same as 02_joints.py / 02b_claw.py) ─────────────
+# ── Serial settings (same as 02_joints.py and other hardware calibration tools) ─────────────
 SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
 

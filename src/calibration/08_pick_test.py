@@ -415,7 +415,7 @@ def main():
     print("  │                           │ src/config/arm.py, or redo 7   │")
     print("  │ Variable offset           │ Redo homography (Step 6)    │")
     print("  │ Claw too high/low         │ Redo sag cal (Step 3)       │")
-    print("  │ Ball squirts out          │ Redo claw cal (Step 2b)     │")
+    print("  │ Ball squirts out          │ Check CLAW_* in arm.py + 11 │")
     print("  │ Wrong bin                 │ Redo HSV tuning (Step 4-5)  │")
     print("  └───────────────────────────┴──────────────────────────────┘")
 

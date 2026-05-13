@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-11_claw_grip_test.py
-====================
-Claw grip diagnostic / calibration tool — Step 11.
+02b_claw_grip_test.py
+=====================
+Claw grip diagnostic / calibration tool — Step 2b validation.
 
 Moves the arm to a neutral position, then runs repeated grip tests
 while logging all sensor values (position, load, current).  Reports
@@ -10,8 +10,8 @@ a clear GRIP DETECTED / NO GRIP DETECTED verdict using the same
 thresholds as production ``main.py``.
 
 Usage:
-    python 11_claw_grip_test.py                  # auto-detect serial port
-    python 11_claw_grip_test.py /dev/cu.usbmodem101  # explicit port
+    python 02b_claw_grip_test.py                  # auto-detect serial port
+    python 02b_claw_grip_test.py /dev/cu.usbmodem101  # explicit port
 
 Author: Bachelor Project 2026 – Autonomia
 """
@@ -526,7 +526,7 @@ def main():
         _get_serial(port)
     except Exception as e:
         print(f"[ERROR] Could not open serial port: {e}")
-        print("  Usage: python 11_claw_grip_test.py [/dev/cu.usbmodemXXX]")
+        print("  Usage: python 02b_claw_grip_test.py [/dev/cu.usbmodemXXX]")
         sys.exit(1)
 
     try:

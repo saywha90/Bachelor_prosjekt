@@ -20,7 +20,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **SCAN_POSE retry logic** — `verify_scan_pose_before_scan()` now retries up to 3 times
 
 ### Added
-- **Claw grip diagnostic tool** (`src/calibration/11_claw_grip_test.py`) — standalone script to test grip detection on real hardware with detailed sensor readouts
+- **Claw grip diagnostic tool** (`src/calibration/02b_claw_grip_test.py`) — standalone Step 2b validation script to test grip detection on real hardware with detailed sensor readouts
 - Two-tier position threshold system for grip detection: "minimally blocked" (≥5 steps with sensor confirm) and "strongly blocked" (≥30 steps position-only)
 - 16 unit tests covering all grip detection scenarios including two-tier thresholds and zero-resistance rejection
 

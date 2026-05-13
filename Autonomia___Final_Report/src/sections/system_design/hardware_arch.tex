@@ -1,0 +1,519 @@
+\hmsubsection{Hardware Architecture}{UMA}{}
+The hardware architecture of the system is organised into three 
+functional layers. The perception layer consists of the OAK-D S2 
+camera, which captures visual data of the workspace. The decision 
+layer consists of the Raspberry Pi~5, which executes the image 
+processing pipeline and the inverse kinematics solver. The actuation 
+layer consists of the OpenRB-150 microcontroller and five Dynamixel 
+servos, which translate motor commands into physical movement of 
+the arm. A fourth, transverse subsystem provides regulated electrical 
+power to all components.
+
+This subsection describes each part of the hardware architecture in 
+turn. Section~7.2.1 describes the components of the vision system. 
+Sections~7.2.2--7.2.5 describe the power architecture, including 
+the theoretical current demand, the selection of the power supply, 
+and the topology used to distribute current to the motors. 
+Sections~7.2.6--7.2.9 describe the selection and sizing of the 
+Dynamixel servos for each joint, and Sections~7.2.10--7.2.13 
+describe the selection of the OpenRB-150 as the embedded motor 
+controller.
+
+
+
+\hmsubsubsection{Hardware Components for the Vision System}{OAH}{}
+
+This subsection presents the hardware components that constitute the vision system used in
+this project. These components provide the necessary functionality for image acquisition,
+processing, and data transfer, enabling reliable detection and classification of objects based on
+colour.
+
+\begin{table}[htbp]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|p{2.3in}|p{2.1in}|p{2.1in}|}
+        \hline
+        \textbf{Component} & \textbf{Description} & \textbf{Purpose} \\
+        \hline
+        OAK-D S2 Camera (Luxonis) & 
+        Advanced AI camera with integrated depth sensing and onboard processing capabilities &
+        Captures image data and performs real-time object detection of red and blue balls \\
+        \hline
+        Raspberry Pi 5 & 
+        Single-board computer with sufficient processing power for embedded applications &
+        Executes the image processing pipeline and manages communication with other system components \\
+        \hline
+        microSD Card (128GB) & 
+        Storage device used for the operating system and software &
+        Stores the operating system, required dependencies, and project code necessary for execution \\
+        \hline
+        USB 3 Cable (USB-A to USB-C) & 
+        High-speed data transfer cable &
+        Connects the camera to the Raspberry Pi and ensures sufficient bandwidth for real-time data transmission \\
+        \hline
+    \end{tabular}
+    \caption{Hardware components of the vision system}
+    \label{tab:vision_hardware}
+\end{table}
+
+The components listed in Table~\ref{tab:vision_hardware} constitute the complete vision system. The OAK-D S2 camera performs image acquisition and initial onboard processing, while the Raspberry Pi 5 serves as the primary processing unit responsible for executing the image pipeline and coordinating communication with the rest of the system.
+
+The microSD card provides local storage for the operating system and required software, enabling independent operation of the platform. In addition, the USB 3 connection ensures sufficient bandwidth for real-time transfer of image data between the camera and the processing unit.
+
+Overall, this hardware configuration provides a modular and scalable foundation for the vision system, supporting both the current implementation and future improvements in processing performance and detection accuracy.
+
+
+
+\hmsubsubsection{Power Architecture}{UMA}{}
+
+The arm uses five Dynamixel servos that operate from a 12~V supply. 
+The selection and arrangement of the power supply was identified 
+early in the project as a critical design concern, since the previous 
+iteration of the project encountered repeated power-related failures 
+and required unstable workarounds during testing \cite{hivemind}. The 
+present design therefore aims to provide a stable supply with 
+sufficient current capacity, and to distribute current safely across 
+the motor chain.
+
+\hmsubsubsection{Theoretical Current Demand}{UMA}{}
+Each Dynamixel servo has a published stall current that represents 
+the maximum current it draws when the motor is mechanically blocked. 
+While stall conditions are not expected during normal operation, the 
+total stall current across all five servos provides an upper bound 
+on the worst-case demand. The values given in the manufacturer's 
+datasheets \cite{robotis_dynamixel} are summarised in 
+Table~\ref{tab:stall_currents}. The choice of a Dynamixel servo for 
+the claw, rather than the analogue 5~V servo used in the previous 
+iteration, is discussed in Section~7.2.7.
+
+\begin{table}[htbp]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|l|l|c|}
+        \hline
+        \textbf{Joint} & \textbf{Servo} & \textbf{Stall Current (A)} \\
+        \hline
+        Base (M1)     & XM430-W350 & 2.3 \\
+        \hline
+        Shoulder (M2) & XM540-W270 & 4.4 \\
+        \hline
+        Elbow (M3)    & XM430-W350 & 2.3 \\
+        \hline
+        Wrist (M4)    & XL430-W250 & 1.3 \\
+        \hline
+        Claw (M5)     & XM430-W350 & 2.3 \\
+        \hline
+        \multicolumn{2}{|r|}{\textbf{Total}} & \textbf{12.6} \\
+        \hline
+    \end{tabular}
+    \caption{Stall current per Dynamixel servo. The total represents 
+    the theoretical worst case in which all five motors stall 
+    simultaneously.}
+    \label{tab:stall_currents}
+\end{table}
+
+The total worst-case demand of 12.6~A is rarely encountered in 
+practice. During typical pick-and-place operation, the arm draws 
+approximately 2--5~A, since only a subset of motors are accelerating 
+at any given time and the payload is light (a 50~mm ball weighing 
+approximately 20~g). The stall current is relevant primarily for 
+sizing the supply to tolerate transient peaks and short-duration 
+overloads.
+
+\hmsubsubsection{Selection of the Power Supply}{UMA}{}
+A dedicated 12~V battery rated at 10~A was initially considered, as 
+it would provide full coverage of the worst-case current demand and 
+allow the system to operate independently of mains power, which is 
+relevant for the future integration of the arm onto a mobile platform. 
+However, after consultation with the project supervisor, it was 
+decided to retain the laboratory bench power supply rated at 
+12~V/6~A as the final solution. This decision was based on three 
+considerations. First, the laboratory power supply is regulated and 
+protected against over-current and short circuits, which simplifies 
+the electrical design. Second, the typical operating current of 
+2--5~A is well within the 6~A capacity of the supply. Third, the 
+mobile-platform integration is outside the scope of the current 
+project, and a battery solution can be introduced in a later 
+iteration without affecting the rest of the architecture.
+
+\hmsubsubsection{Distribution Topology}{UMA}{}
+A single power supply must be distributed to five servos that are 
+physically arranged along the arm. The previous iteration of the 
+project distributed power through a single daisy-chained TTL bus, 
+in which all current was passed through the JST connector of each 
+servo before reaching the next \cite{hivemind}. This arrangement was 
+found to be problematic for two reasons. The first servo in the 
+chain carries the cumulative current of all downstream motors. For 
+the worst-case demand of approximately 12~A, this exceeds the rated 
+capacity of standard 3-pin JST connectors, which are typically 
+specified for 3--5~A. The second concern is voltage drop along the 
+chain: each connector and cable segment introduces a small resistive 
+loss, which accumulates and reduces the supply voltage available to 
+the servos at the end of the chain.
+
+To address these issues, the present design uses a two-branch star 
+topology with two separate cables leaving the OpenRB-150 controller. 
+The first branch carries the base (M1) and shoulder (M2) servos, 
+which together account for the largest share of the total current 
+demand (6.7~A combined stall). The second branch carries the elbow 
+(M3), wrist (M4), and claw (M5) servos, with a combined stall 
+current of 5.9~A. Within each branch, the servos remain 
+daisy-chained, since the cumulative current within either branch is 
+within the rated capacity of the JST connector. The data line 
+follows the same physical wiring, as the Dynamixel TTL protocol 
+shares the connector pins with the power rails.
+
+The resulting topology is shown in 
+Figure~\ref{fig:power_topology}. This arrangement preserves the 
+convenience of the daisy-chain protocol for command transmission 
+while halving the current load on the first connector of either 
+branch. It also reduces voltage drop at the servos furthest from 
+the controller, since each branch is shorter than a single 
+five-servo chain.
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[
+        node distance=0.6cm and 1.0cm,
+        psu/.style={
+            rectangle, draw, thick, 
+            minimum width=2.4cm, minimum height=0.9cm,
+            fill=gray!15, font=\small\bfseries
+        },
+        controller/.style={
+            rectangle, draw, thick, rounded corners=2pt,
+            minimum width=2.4cm, minimum height=0.9cm,
+            fill=blue!10, font=\small\bfseries
+        },
+        motor/.style={
+            rectangle, draw, thick, rounded corners=2pt,
+            minimum width=1.8cm, minimum height=1.0cm,
+            fill=orange!15, align=center, font=\small
+        },
+        powerline/.style={
+            -{Latex[length=2mm]}, very thick, red!70!black
+        },
+        chainline/.style={
+            -{Latex[length=2mm]}, thick, red!70!black, dashed
+        },
+        branchlabel/.style={
+            font=\scriptsize\itshape, text=black!70
+        }
+    ]
+
+    % Power supply
+    \node[psu] (psu) {12 V / 6 A PSU};
+    
+    % OpenRB-150 controller below PSU
+    \node[controller, below=of psu] (openrb) {OpenRB-150};
+    
+    % Branch A: M1 -> M2 (top branch)
+    \node[motor, below left=1.2cm and 0.8cm of openrb] (m1) {M1\\Base\\\scriptsize XM430};
+    \node[motor, right=of m1] (m2) {M2\\Shoulder\\\scriptsize XM540};
+    
+    % Branch B: M3 -> M4 -> M5 (bottom branch)
+    \node[motor, below=2.2cm of m1] (m3) {M3\\Elbow\\\scriptsize XM430};
+    \node[motor, right=of m3] (m4) {M4\\Wrist\\\scriptsize XL430};
+    \node[motor, right=of m4] (m5) {M5\\Claw\\\scriptsize XM430};
+    
+    % PSU -> OpenRB
+    \draw[powerline] (psu) -- (openrb);
+    
+    % Branch A: OpenRB -> M1 -> M2
+    \draw[powerline] (openrb.south) 
+        -- ++(0,-0.4) 
+        -| (m1.north);
+    \draw[chainline] (m1) -- (m2);
+    
+    % Branch B: OpenRB -> M3 -> M4 -> M5
+    \draw[powerline] (openrb.south) 
+        -- ++(0,-0.4) 
+        -| (m3.north);
+    \draw[chainline] (m3) -- (m4);
+    \draw[chainline] (m4) -- (m5);
+    
+    % Branch labels
+    \node[branchlabel, right=0.1cm of m2] {Branch A: 6.7 A};
+    \node[branchlabel, right=0.1cm of m5] {Branch B: 5.9 A};
+    
+    % Legend
+    \begin{scope}[shift={(-3.8,-5.8)}]
+        \draw[powerline] (0,0) -- (0.7,0) node[right, font=\scriptsize] 
+            {Dedicated cable from controller};
+        \draw[chainline] (0,-0.4) -- (0.7,-0.4) node[right, font=\scriptsize] 
+            {Daisy-chained connection};
+    \end{scope}
+
+    \end{tikzpicture}
+    \caption[Two-branch star topology for distributing 12\,V power across five Dynamixel servos.]{Two-branch star topology used to distribute 12~V power 
+    from the laboratory supply across the five Dynamixel servos. Each 
+    branch leaves the OpenRB-150 through a separate cable, halving 
+    the peak current load on the first connector of either chain. The 
+    branch currents shown are the worst-case stall totals for each 
+    branch.}
+    \label{fig:power_topology}
+\end{figure}
+
+\hmsubsubsection{Motor Selection and Joint Sizing}{UMA}{}
+
+The selection of actuators determines both the mechanical 
+capabilities of the arm and the complexity of the control system. 
+Five servo motors were required, one for each degree of freedom 
+plus the gripper. The selection process therefore involved two 
+decisions: the choice of a motor family suitable for the 
+application, and the sizing of individual motors for each joint 
+according to the load they are expected to carry.
+
+\hmsubsubsection{Choice of Motor Family}{UMA}{}
+The Dynamixel X-series from ROBOTIS was selected as the motor 
+family for all five joints. Three properties of this family were 
+particularly relevant for the project. First, each motor 
+incorporates an integrated controller that provides closed-loop 
+position control with feedback from a built-in encoder, eliminating 
+the need for external motor drivers and feedback circuitry. Second, 
+all motors in the family communicate over a shared TTL bus using 
+the Dynamixel Protocol 2.0, allowing up to 253 motors to be 
+addressed individually through a single daisy-chained connection 
+\cite{robotis_dynamixel}. Third, the family includes models with 
+different torque ratings that share the same communication 
+protocol, mounting interface, and software API, enabling 
+heterogeneous motor selection across joints without increasing 
+software complexity.
+
+The previous iteration of the project used a Dynamixel-based arm 
+for joints~1--4 but employed a separate analogue 5~V servo for 
+the gripper, controlled through a PCA9685 PWM driver connected to 
+an Arduino Mega \cite{hivemind}. This arrangement required two 
+distinct control paths, two separate power supplies, and 
+additional driver circuitry. In the present design, the analogue 
+gripper servo was replaced with a Dynamixel XM430-W350. This 
+substitution eliminates the PCA9685 driver, the second power 
+supply, and the dedicated PWM control path, allowing all five 
+motors to be driven through the same TTL bus and the same firmware 
+routine. The simplification improves system reliability and 
+reduces the number of failure points in the electrical design.
+
+\hmsubsubsection{Joint-Specific Motor Sizing}{UMA}{}
+The torque required at each joint depends on the mass of the 
+downstream links and the horizontal distance from the joint axis 
+to the centre of mass. For a serial arm, joints closer to the 
+base must support a longer lever arm and therefore experience 
+higher torque. The motors were sized accordingly, with stronger 
+models placed at the joints subject to the greatest mechanical 
+load. The selected models and their key specifications are 
+summarised in Table~\ref{tab:motor_selection}.
+
+\begin{table}[htbp]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|l|l|c|c|c|}
+        \hline
+        \textbf{Joint} & \textbf{Model} & 
+        \textbf{Stall Torque} & 
+        \textbf{Mass} &
+        \textbf{Cost} \\
+         & & \textbf{(N$\cdot$m)} & \textbf{(g)} & \textbf{(rel.)} \\
+        \hline
+        Base (M1)     & XM430-W350 & 4.1 & 82  & Medium \\
+        \hline
+        Shoulder (M2) & XM540-W270 & 10.6 & 165 & High \\
+        \hline
+        Elbow (M3)    & XM430-W350 & 4.1 & 82  & Medium \\
+        \hline
+        Wrist (M4)    & XL430-W250 & 1.5 & 57  & Low \\
+        \hline
+        Claw (M5)     & XM430-W350 & 4.1 & 82  & Medium \\
+        \hline
+    \end{tabular}
+    \caption{Selected Dynamixel servos for each joint, with key 
+    specifications from the manufacturer datasheets 
+    \cite{robotis_dynamixel}.}
+    \label{tab:motor_selection}
+\end{table}
+
+The shoulder joint (M2) supports the entire mass of the forearm, 
+wrist, gripper, and any payload, multiplied by the full horizontal 
+reach of the arm. It therefore experiences the highest torque of 
+all five joints. The XM540-W270, with a stall torque of 
+10.6~N$\cdot$m, was selected for this joint to provide sufficient 
+margin above the worst-case loaded condition.
+
+The elbow joint (M3) supports the mass of the wrist, gripper, and 
+payload over the length of the forearm. The XM430-W350 was chosen 
+as a compromise between torque capacity (4.1~N$\cdot$m) and weight 
+(82~g), since the elbow motor itself contributes to the load on 
+the shoulder. Selecting a heavier motor for the elbow would have 
+required upgrading the shoulder motor as well.
+
+The base joint (M1) does not lift the arm but rotates it 
+horizontally, and therefore experiences torque only from inertial 
+acceleration during base motion. The XM430-W350 was chosen for 
+consistency with the elbow, since both joints share the same 
+mounting and connector interface.
+
+The wrist joint (M4) carries only the gripper and payload, and 
+operates close to its rotation axis. The XL430-W250, with a stall 
+torque of 1.5~N$\cdot$m, was selected for this joint. Its lower 
+mass (57~g) and lower cost compared with the XM430 reduce both 
+the load on the elbow motor and the overall cost of the arm 
+without compromising functionality.
+
+The gripper (M5) requires sufficient torque to close around a 
+50~mm ball with a firm grip but does not carry the load of any 
+downstream joints. The XM430-W350 was selected for the gripper, 
+matching the base and elbow motors and allowing all four 
+non-shoulder joints to share the same spare-part inventory.
+
+\hmsubsubsection{Link Lengths}{UMA}{}
+The arm's link lengths were measured directly from the assembled 
+mechanical structure as $L_1 = 25.5$~cm (shoulder to elbow), 
+$L_2 = 23.0$~cm (elbow to wrist), and $L_3 = 22.0$~cm (wrist to 
+claw tip). The first two links determine the planar reach of the 
+arm, giving a theoretical maximum of $L_1 + L_2 = 48.5$~cm. The 
+third link contributes to the vertical position of the claw tip 
+but does not extend the planar reach, since the wrist always 
+orients the gripper to point directly downwards. The geometric 
+basis for this configuration is described in 
+Section~8.7.
+
+The combined link length of approximately 70.5~cm is longer than 
+the 52--54~cm initially planned for the arm. The increase is 
+primarily due to the third link ($L_3$), which was lengthened 
+during mechanical design to accommodate the wrist-mounted OAK-D~S2 
+camera and the gripper assembly. The longer $L_3$ does not affect 
+the planar reach but increases the vertical clearance required 
+when the arm is folded into its home position.
+
+The selection of these link lengths reflects a compromise between 
+reach and load. Shorter links reduce the lever-arm torque on the 
+shoulder joint and improve stability under load, while longer 
+links extend the workspace radius. The chosen configuration 
+provides a practical workspace radius of approximately 40~cm, 
+which is sufficient for the workspace size used in the project 
+(50~$\times$~30~cm), while keeping the load on the shoulder 
+motor within the torque envelope of the XM540-W270 selected in 
+the previous paragraph.
+
+\hmsubsubsection{Embedded Motor Controller Selection}{UMA}{}
+
+The motor controller is the embedded board responsible for 
+translating commands received from the host processor into 
+electrical signals on the Dynamixel TTL bus. Three candidate 
+boards were evaluated during the early phase of the project: an 
+Arduino Mega with a Dynamixel Shield, the ROBOTIS OpenCM~9.04, 
+and the ROBOTIS OpenRB-150. The relevant specifications of the 
+three candidates are summarised in Table~\ref{tab:controller_comparison}. 
+The OpenRB-150 was selected as the final controller. The reasoning 
+behind this choice is described below.
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|p{3.3cm}|p{3.3cm}|p{3.3cm}|p{3.3cm}|}
+        \hline
+        \textbf{Specification} & \textbf{Arduino Mega + Shield} & 
+        \textbf{OpenCM 9.04} & \textbf{OpenRB-150} \\
+        \hline
+        Processor & ATmega2560 (8-bit AVR) & STM32F103 (ARM Cortex-M3) & 
+        SAMD21 (ARM Cortex-M0+) \\
+        \hline
+        Clock speed & 16 MHz & 72 MHz & 48 MHz \\
+        \hline
+        Architecture & 8-bit & 32-bit & 32-bit \\
+        \hline
+        Built-in TTL ports & 1 & 4 & 4 \\
+        \hline
+        Motor power input & External wiring & 5--16 V dedicated & 
+        5--12.6 V dedicated \\
+        \hline
+        Host connector & USB-B & Micro-USB & USB-C \\
+        \hline
+        Arduino IDE support & Native & Native & Native \\
+        \hline
+    \end{tabular}
+    \caption{Comparison of the three embedded motor controllers 
+    evaluated for the project. Specifications taken from the 
+    manufacturer documentation \cite{robotis_dynamixel}.}
+    \label{tab:controller_comparison}
+\end{table}
+
+\hmsubsubsection{Initial Evaluation: Arduino Mega with Dynamixel Shield}{UMA}{}
+The previous iteration of the project used an Arduino Mega 
+combined with a Dynamixel Shield as the motor controller 
+\cite{hivemind}. This combination was reviewed at the start of 
+the project as a baseline, but several limitations were 
+identified. The Arduino Mega is based on an 8-bit ATmega2560 
+processor running at 16~MHz, which is significantly slower than 
+the 32-bit microcontrollers used in the alternative boards. 
+Lower processing speed translates into longer command-response 
+cycles on the motor bus, which can introduce visible latency in 
+the arm's motion when many commands are issued in sequence. In 
+addition, the Dynamixel Shield does not provide a dedicated 
+power input for the motor bus, requiring external power injection 
+through additional wiring, and the previous iteration reported 
+that the on-board regulator could not supply sufficient current 
+for the analogue gripper servo, requiring an unstable 
+breadboard-based workaround. Replacing the analogue gripper 
+servo with a Dynamixel motor (Section~7.2.7) removed the immediate 
+need for the PCA9685 driver, but the underlying limitations of 
+the Arduino Mega remained.
+
+\hmsubsubsection{Second Evaluation: OpenCM 9.04}{UMA}{}
+The OpenCM~9.04, a microcontroller board developed by ROBOTIS 
+specifically for Dynamixel control, was tested next. The board 
+provides direct support for the Dynamixel protocol through the 
+manufacturer's own libraries and offers four built-in TTL ports, 
+addressing the wiring limitations of the Arduino Mega. However, 
+two practical issues led to its rejection. First, the board's 
+motor power input is designed for a battery connector rather 
+than a regulated bench supply, which would have required an 
+additional adapter to integrate with the laboratory power supply 
+selected in Section~7.2.4. Second, the specific board acquired 
+for the project ceased to respond to the host after the pin 
+headers were soldered for connection to the motor bus, and the 
+fault could not be recovered within the time budget allocated 
+for controller selection. The OpenCM~9.04 was therefore set 
+aside in favour of an alternative from the same manufacturer.
+
+\hmsubsubsection{Selected Controller: OpenRB-150}{UMA}{}
+The ROBOTIS OpenRB-150 was selected as the final motor controller. 
+It is a more recent board developed by ROBOTIS as a successor to 
+the OpenCM~9.04, and it shares the four built-in TTL ports while 
+providing a motor power input compatible with the regulated 
+laboratory bench supply, removing the need for the battery 
+adapter that the OpenCM~9.04 would have required. The board 
+introduces two further improvements that were directly relevant 
+to the project.
+
+The first improvement is the use of a USB-C connector for 
+communication with the host processor, in place of the micro-USB 
+connector used on the OpenCM~9.04. This was relevant for two 
+reasons. The USB-C connector is mechanically more robust under 
+repeated insertion and provides higher data throughput. In 
+addition, the development environment used during the project 
+was based on a macOS host, on which native USB-C ports are 
+standard and which therefore required no adapter for board 
+flashing or serial communication. This simplified the firmware 
+development cycle substantially compared with the micro-USB 
+alternatives.
+
+The second improvement is the use of the SAMD21 processor, a 
+32-bit ARM Cortex-M0+ running at 48~MHz. While this is nominally 
+slower than the 72~MHz STM32F103 in the OpenCM~9.04, the SAMD21 
+is well matched to the requirements of the application, providing 
+sufficient throughput for sub-millisecond command-response cycles 
+on the motor bus. Compared with the 8-bit ATmega2560 on the 
+Arduino Mega, the SAMD21 produces noticeably smoother and more 
+responsive arm motion, since the controller can process incoming 
+position commands and issue corresponding TTL packets to the 
+motor bus more rapidly.
+
+The OpenRB-150 was tested immediately upon arrival and 
+established reliable communication with all five Dynamixel 
+servos on the first attempt. Based on this result, the board was 
+adopted as the final motor controller and the Arduino Mega with 
+Dynamixel Shield was retired from the design. The firmware 
+running on the OpenRB-150 is described in 
+Section~8.4, and the communication 
+protocol between the host processor and the OpenRB-150 is 
+described in Section~8.5.
