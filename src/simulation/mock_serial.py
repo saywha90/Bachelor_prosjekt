@@ -165,8 +165,8 @@ class MockSerial:
             elif cmd == "diagnose":
                 # Mock response matching the firmware diagnose command format.
                 # Reports all 5 motors as found at the default baud rate with
-                # their current simulated positions and realistic model numbers.
-                model_numbers = {1: 1060, 2: 1120, 3: 1060, 4: 1060, 5: 1060}  # XM430=1060, XM540=1120
+                # their current simulated positions and the installed model numbers.
+                model_numbers = {1: 1030, 2: 1130, 3: 1030, 4: 1060, 5: 1030}
                 diag = []
                 for mid in [1, 2, 3, 4, 5]:
                     diag.append({

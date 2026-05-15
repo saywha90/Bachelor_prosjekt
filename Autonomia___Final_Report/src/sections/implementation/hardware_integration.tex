@@ -79,24 +79,34 @@ periods, this current causes the motor to heat up, which can
 trigger an overheating error flag and cause the motor to shut 
 down mid-operation.
 
-To address this, the firmware applies a reduced current limit to 
-the elbow motor whenever the arm is parked at \texttt{SCAN\_POSE}. 
-The current limit is set to 300~mA, which is sufficient to hold 
-the arm in position under nominal load but reduces the steady-state 
-heat generation in the motor. When the arm leaves \texttt{SCAN\_POSE} 
-to perform a pick-and-place operation, the current limit is 
-restored to its default value to provide full torque during 
-motion. The transition between the two limits is handled 
-automatically by the host processor as part of the state machine 
-described in Section~7.1.
+To address this, a reduced current limit of 300~mA was
+implemented and tested on the elbow motor whenever the arm
+was parked at \texttt{SCAN\_POSE}. The intention was to cap
+the steady-state current and thereby reduce heat generation
+while still providing sufficient torque to hold the arm in
+position under nominal load.
 
-This protection is a runtime mitigation rather than a complete 
-solution. If the reduced current limit is set too low, the motor 
-may not produce sufficient holding torque under unexpected load 
-and the arm may sag, which would invalidate the camera 
-calibration described in Section~8.8. The 300~mA value 
-was therefore selected empirically as the lowest current at which 
-the arm remained stable at \texttt{SCAN\_POSE} under the project's 
-normal operating conditions, and present-current telemetry from 
-the motor is logged at runtime so that operators can detect any 
-drift in the holding behaviour.
+\textbf{Outcome.}
+Testing showed that the reduced current limit did not
+produce a measurable improvement in motor temperature
+during extended operation. The thermal load on the elbow
+motor is fundamentally determined by the gravitational
+torque from the weight of the forearm, camera, and gripper
+assembly, which the motor must resist regardless of the
+current limit setting. A current limit can only prevent
+the motor from drawing excessive current during transient
+loads; the steady-state holding current is already below
+the stall current and cannot be reduced further without
+allowing the arm to droop.
+
+\textbf{Conclusion.}
+The thermal protection logic was therefore removed from the
+deployed system. The most effective mitigation identified
+would be to reduce the mass of the L\textsubscript{3}
+assembly (the wrist-to-claw link, camera, and gripper),
+which would directly decrease the gravitational torque on
+the elbow and the corresponding holding current. During
+the project's testing sessions the motor has not exhibited
+thermal shutdown; however, extended continuous operation
+could still pose a risk and should be monitored if the
+system is operated for longer periods.

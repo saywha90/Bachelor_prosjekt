@@ -102,7 +102,7 @@ for the flag definitions.
 - Aggressive moves to extreme positions (shoulder fully extended + low Z)
 - The HOME position being too "folded" (e.g., the old HOME of (10, 0, 15)
   caused extreme elbow folding at m3 = 273, triggering overload on the
-  XM430)
+  M3 XM430-W210)
 
 **Fix:**
 1. Power-cycle 12 V.

@@ -21,11 +21,11 @@
  *
  * Hardware
  * --------
- *   Motor 1 (XM430)  – Base Pan      – ID 1
- *   Motor 2 (XM540)  – Shoulder Tilt – ID 2
- *   Motor 3 (XM430)  – Elbow Tilt    – ID 3
- *   Motor 4 (XL430)  – Wrist Tilt    – ID 4
- *   Motor 5 (XM430)  – Claw          – ID 5
+ *   Motor 1 (XM430-W210) – Base Pan      – ID 1
+ *   Motor 2 (XM540-W150) – Shoulder Tilt – ID 2
+ *   Motor 3 (XM430-W210) – Elbow Tilt    – ID 3
+ *   Motor 4 (XL430-W250) – Wrist Tilt    – ID 4
+ *   Motor 5 (XM430-W210) – Claw          – ID 5
  * 
  * Author: Bachelor Project 2026 – Autonomia
  */

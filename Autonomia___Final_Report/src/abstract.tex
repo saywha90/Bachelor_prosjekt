@@ -1,115 +1,68 @@
-\begin{titlepage}
-    \newgeometry{left=0cm,right=0cm,top=0cm,bottom=0cm}
-    \parindent0pt
-    
-    % Light theme palette
-    \definecolor{lightbg}{RGB}{252, 252, 250}
-    \definecolor{panelbg}{RGB}{245, 245, 243}
-    \definecolor{accent}{RGB}{20, 160, 90}
-    \definecolor{darktext}{RGB}{15, 18, 22}
-    \definecolor{softgray}{RGB}{110, 115, 120}
-    \definecolor{midgray}{RGB}{160, 165, 170}
-    
-    \begin{tikzpicture}[remember picture, overlay]
-        % ===== FULL LIGHT BACKGROUND =====
-        \fill[lightbg] (current page.north west) rectangle (current page.south east);
-        
-        % ============================================================
-        % TOP — STATUS PILL + PAGE INDICATOR
-        % ============================================================
-        \node[anchor=north west, draw=accent, line width=1pt, rounded corners=2pt,
-              inner xsep=14pt, inner ysep=8pt,
-              font=\sffamily\bfseries\small, text=accent] 
-            at ([xshift=2.5cm, yshift=-2cm]current page.north west) 
-            {\textcolor{accent}{$\bullet$}~~ABSTRACT};
-        
-        \node[anchor=north east, text=softgray, font=\sffamily\small] 
-            at ([xshift=-2.5cm, yshift=-2cm]current page.north east) 
-            {03 / SUMMARY};
-        
-        % ============================================================
-        % FOOTER
-        % ============================================================
-        \draw[midgray, line width=0.5pt] 
-            ([xshift=2.5cm, yshift=1.8cm]current page.south west) -- 
-            ([xshift=-2.5cm, yshift=1.8cm]current page.south east);
-        
-        \node[anchor=south west, text=softgray, font=\sffamily\footnotesize] 
-            at ([xshift=2.5cm, yshift=1cm]current page.south west) 
-            {UNIVERSITY OF SOUTH-EASTERN NORWAY \textcolor{accent}{$\bullet$} CAMPUS KONGSBERG};
-        
-        \node[anchor=south east, text=softgray, font=\sffamily\footnotesize] 
-            at ([xshift=-2.5cm, yshift=1cm]current page.south east) 
-            {BACHELOR THESIS / 2026};
-    \end{tikzpicture}
-    
-    \addcontentsline{toc}{section}{Abstract}
-    
-    \vspace*{3cm}
-    
-    \hspace{2.5cm}\begin{minipage}{15cm}
-        {\sffamily\bfseries\fontsize{11}{13}\selectfont\textcolor{darktext}{A~~U~~T~~O~~N~~O~~M~~I~~A}}
-        
-        \vspace{0.3cm}
-        
-        {\fontsize{38}{42}\selectfont\itshape\textcolor{darktext}{The}}\\[0cm]
-        {\fontsize{38}{42}\selectfont\bfseries\textcolor{darktext}{Abstract.}}
-        
-        \vspace{0.3cm}
-        
-        {\color{accent}\rule{3cm}{2pt}}
-        
-        \vspace{1.2cm}
-        
-        % ============================================================
-        % BODY TEXT — normal size matching the rest of the thesis
-        % ============================================================
-        \color{darktext}
-        \normalsize
-        
-        This project presents the development of an autonomous robotic system capable of 
-        detecting, classifying, and sorting red and blue spherical objects in real time. 
-        A Luxonis OAK-D Series~2 camera mounted above the workspace captures image data, 
-        which is processed on a Raspberry Pi~5 through a deterministic computer vision 
-        pipeline. The system then directs a six-axis robotic arm to physically sort the 
-        detected balls into designated containers.
-        
-        \vspace{0.4cm}
-        
-        The vision pipeline combines multi-range HSV colour segmentation, Hough Circle 
-        Transform, and geometric contour validation into an ensemble detection system. 
-        Detections from multiple methods are merged using a Union-Find structure and 
-        filtered through Non-Maximum Suppression. Adaptive lighting compensation via 
-        CLAHE ensures robust performance across ambient conditions ranging from 
-        300 to 700\,lux. A Support Vector Machine classifier was initially evaluated 
-        as a secondary colour-verification step but was disabled in the final 
-        implementation after it was found to misclassify dark navy-blue balls as red.
-        
-        \vspace{0.4cm}
-        
-        A classical, deterministic approach was chosen over learning-based methods such 
-        as convolutional neural networks. MobileNetV2 transfer learning was evaluated 
-        during early development but produced inference times of 200--500\,ms per frame 
-        on the target hardware, making it unsuitable for real-time operation. The 
-        proposed pipeline achieves 20--25\,FPS with a detection rate of 98--100\,\% 
-        and a false positive rate below 2\,\% under laboratory conditions, without 
-        requiring large labelled training datasets.
-        
-        \vspace{0.4cm}
-        
-        The system is fully explainable: every detection rejection has a specific 
-        geometric or chromatic cause traceable through the pipeline, making it 
-        well-suited for controlled sorting environments where predictable and 
-        diagnosable behaviour is required.
-        
-        \vspace{1.2cm}
-        
-        % Keyword tags
-        {\textcolor{softgray}{\footnotesize\textsc{Keywords:}}~~
-        \textcolor{darktext}{\sffamily\footnotesize Computer Vision \textcolor{accent}{$\cdot$} 
-        Robotic Sorting \textcolor{accent}{$\cdot$} HSV Segmentation \textcolor{accent}{$\cdot$} 
-        Real-Time Systems \textcolor{accent}{$\cdot$} Raspberry Pi}}
-    \end{minipage}
-    
-    \restoregeometry
-\end{titlepage}
+\clearpage
+\thispagestyle{empty}
+\phantomsection
+\addcontentsline{toc}{section}{Abstract}
+\section*{Abstract}
+
+\vspace{0.5cm}
+
+This project presents the development of an autonomous robotic system capable of 
+detecting, classifying, and sorting red and blue spherical objects in real time. 
+A Luxonis OAK-D Series~2 camera mounted above the workspace captures image data, 
+which is processed on a Raspberry Pi~5 through a deterministic computer vision 
+pipeline. The system then directs a four-degree-of-freedom robotic arm to physically sort the 
+detected balls into designated containers.
+
+\vspace{0.4cm}
+
+A closed-form geometric inverse kinematics solver converts
+detected ball positions into motor commands in less than one
+millisecond. An empirical sag compensation model was developed
+to correct for gravitational droop, but was superseded in the
+deployed system by per-point surface heights from a touch
+calibration procedure. An adaptive grip algorithm exploits the
+Dynamixel motor's built-in current and load registers to verify
+whether a ball is held, enabling the system to detect and
+recover from failed picks without external force sensors.
+
+\vspace{0.4cm}
+
+The vision pipeline combines multi-range HSV colour segmentation, Hough Circle 
+Transform, and geometric contour validation into an ensemble detection system. 
+Detections from multiple methods are merged using a Union-Find structure and 
+filtered through Non-Maximum Suppression. Adaptive lighting compensation via 
+CLAHE ensures robust performance across ambient conditions ranging from 
+300 to 700\,lux. A Support Vector Machine classifier was initially evaluated 
+as a secondary colour-verification step but was disabled in the final 
+implementation after it was found to misclassify dark navy-blue balls as red.
+
+\vspace{0.4cm}
+
+A classical, deterministic approach was chosen over learning-based methods such 
+as convolutional neural networks. MobileNetV2 transfer learning was evaluated 
+during early development but produced inference times of 200--500\,ms per frame 
+on the target hardware, making it unsuitable for real-time operation. The 
+proposed pipeline achieves 20--25\,FPS with a detection rate of 98--100\,\% 
+and a false positive rate below 2\,\% under laboratory conditions, without 
+requiring large labelled training datasets.
+
+\vspace{0.4cm}
+
+The system is fully explainable: every detection rejection has a specific 
+geometric or chromatic cause traceable through the pipeline, making it 
+well-suited for controlled sorting environments where predictable and 
+diagnosable behaviour is required.
+
+\vspace{0.4cm}
+
+Under laboratory conditions, the system completed
+\textbf{[TBD]} consecutive autonomous pick-and-place cycles
+with a pick success rate of \textbf{[TBD]}\,\% and a bin
+placement accuracy of \textbf{[TBD]}\,\%.
+
+\vspace{1cm}
+
+\noindent\textbf{Keywords:} Computer Vision, Robotic Sorting, HSV Segmentation, 
+Real-Time Systems, Raspberry Pi.
+
+\clearpage

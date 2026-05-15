@@ -75,11 +75,11 @@ individually.
 
 | Motor | Dynamixel ID | Joint | Model | Baudrate |
 |:---:|:---:|---|---|:---:|
-| m1 | **1** | Base Pan | XM430 | 115 200 |
-| m2 | **2** | Shoulder Tilt | XM540 | 115 200 |
-| m3 | **3** | Elbow Tilt | XM430 | 115 200 |
-| m4 | **4** | Wrist Tilt | XL430 | 115 200 |
-| m5 | **5** | Claw / Gripper | XM430 | 115 200 |
+| m1 | **1** | Base Pan | XM430-W210 | 115 200 |
+| m2 | **2** | Shoulder Tilt | XM540-W150 | 115 200 |
+| m3 | **3** | Elbow Tilt | XM430-W210 | 115 200 |
+| m4 | **4** | Wrist Tilt | XL430-W250 | 115 200 |
+| m5 | **5** | Claw / Gripper | XM430-W210 | 115 200 |
 
 **Procedure:**
 
@@ -115,12 +115,12 @@ python src/diagnostics/diagnose_motors.py
 **Expected output:**
 
 ```
-  ✔  ID 1  Base Pan      (XM430)
-       Model:    XM430-W350
+  ✔  ID 1  Base Pan      (XM430-W210)
+       Model:    XM430-W210
        Position: 2048
        Baud:     115200  (matches firmware)
 
-  ✔  ID 2  Shoulder Tilt (XM540)
+  ✔  ID 2  Shoulder Tilt (XM540-W150)
   ...
 
   Summary:  5/5 motors detected
@@ -192,7 +192,7 @@ confirms the adaptive grip/claw behavior on the real arm.
 **Configuration:** Update these constants in [`src/config/arm.py`](../src/config/arm.py) if needed:
 
 ```python
-CLAW_OPEN_POS   = 2745   # open/neutral position for gripper (XM430-W210 raw goal position)
+CLAW_OPEN_POS   = 2745   # open/neutral position for gripper (M5 XM430-W210 raw goal position)
 CLAW_CLOSED_POS = 3350   # safe closed/grip limit for adaptive close
 ```
 

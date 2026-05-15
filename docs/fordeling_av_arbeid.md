@@ -53,7 +53,7 @@ termal-beskyttelse og feilsøking."*
 | `docs/decisions/003-fixed-scan-pose.md` | **Designvalg:** Hvorfor fast SCAN_POSE fremfor adaptiv scanning. Direkte koblet til `02c_scan_pose.py`. |
 | `docs/decisions/004-touch-calibration-replaces-homography.md` | Støtter `09_touch_calibration.py` — hvorfor touch erstatter linjals-måling. |
 | `docs/troubleshooting.md` | Feilsøkingsguide — IK-relaterte problemer (rekkevidde, joint limits, sag), SCAN_POSE-justering, M3 termal-issues. |
-| `docs/hardware.md` | Maskinvarespesifikasjoner og hardware-valg — Dynamixel-motorvalg (XM430/XM540/XL430), link-lengder, kabling, hvorfor disse motorene ble valgt. |
+| `docs/hardware.md` | Maskinvarespesifikasjoner og hardware-valg — Dynamixel-motorvalg (XM430-W210/XM540-W150/XL430-W250), link-lengder, kabling, hvorfor disse motorene ble valgt. |
 
 ### Snakke-temaer
 
@@ -69,9 +69,9 @@ termal-beskyttelse og feilsøking."*
 - Touch-kalibrering med sub-piksel deteksjon og RANSAC
 - **SCAN_POSE-design** — fast pose for wrist-mounted OAK-D, hvorfor fast fremfor adaptiv (ADR-003)
 - Feilsøking av IK-relaterte problemer (rekkevidde, joint limits, sag)
-- **Hardware-valg** — hvorfor XM540 i skulder (høy stall-torque), XM430 i albue og klo (høyt dreiemoment for grep), XL430 i håndledd (lett/billig der lasten er lav)
+- **Hardware-valg** — hvorfor XM540-W150 i skulder (høy stall-torque), XM430-W210 i base/albue/klo (høyt dreiemoment for grep), XL430-W250 i håndledd (lett/billig der lasten er lav)
 - Link-lengder L1/L2/L3 — hvordan de ble målt og hvilken arbeidsromsdekning de gir
-- **M3 termal-beskyttelse** — XM430 i albue blir varm i SCAN_POSE (0.47 A kontinuerlig), redusert hold-strøm (300 mA), torque-relax-mekanisme
+- **M3 termal-beskyttelse** — XM430-W210 i albue blir varm i SCAN_POSE (0.47 A kontinuerlig), redusert hold-strøm (300 mA), torque-relax-mekanisme
 - **Hardware-error-flags** — overheat, overload, voltage, encoder, electrical shock; krever 12V power cycle å nullstille
 - Diagnostiske verktøy — ping over flere baud-rater, error-flag-lesing, live-streaming av motor-data
 
@@ -233,7 +233,7 @@ presentasjoner:
                                 │
                     ┌───────────▼────────────┐
                     │  5× Dynamixel motorer  │  ◄── diagnostics/ (U)
-                    │  (XM430/XM540/XL430)   │      hardware.md (U)
+                    │ (W210/W150/W250)       │      hardware.md (U)
                     │   ↑ termal-beskyttelse │      termal-tester (U)
                     └────────────────────────┘
 ```

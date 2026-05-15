@@ -9,11 +9,11 @@
 | 1 | Host computer | Raspberry Pi 5 (8 GB) | 1 | Runs Python pipeline (`main.py`), vision, IK |
 | 2 | Camera | Luxonis OAK-D S2 (wrist-mounted) | 1 | RGB + depth, mounted on arm wrist, USB-C |
 | 3 | Motor controller | ROBOTIS OpenRB-150 | 1 | Drives Dynamixel bus, USB-C serial to Pi |
-| 4 | Servo – Base (ID 1) | Dynamixel XM430-W350 | 1 | Joint 1 rotation |
-| 5 | Servo – Shoulder (ID 2) | Dynamixel XM540-W270 | 1 | Joint 2 lift |
-| 6 | Servo – Elbow (ID 3) | Dynamixel XM430-W350 | 1 | Joint 3 reach |
+| 4 | Servo – Base (ID 1) | Dynamixel XM430-W210 | 1 | Joint 1 rotation |
+| 5 | Servo – Shoulder (ID 2) | Dynamixel XM540-W150 | 1 | Joint 2 lift |
+| 6 | Servo – Elbow (ID 3) | Dynamixel XM430-W210 | 1 | Joint 3 reach |
 | 7 | Servo – Wrist (ID 4) | Dynamixel XL430-W250 | 1 | Joint 4 tilt |
-| 8 | Servo – Claw (ID 5) | Dynamixel XM430-W350 | 1 | Gripper open/close |
+| 8 | Servo – Claw (ID 5) | Dynamixel XM430-W210 | 1 | Gripper open/close |
 | 9 | Power supply | Dual-output PSU (12 V + 5 V) | 1 | Powers all components |
 | 10 | Fuse | 15 A blade fuse + inline holder | 1 | Protects 12 V rail |
 | 11 | USB-C cable (data) | USB-C to USB-C | 2 | Pi ↔ OpenRB-150, Pi ↔ OAK-D S2 |
@@ -70,9 +70,9 @@ docs/calibration.md → Step 02c.
        bus  │           │   ┌──────┴───────┐
      ┌──┬──┬┤──┬──┐     │   │ OAK-D S2     │
      │  │  │   │  │     │   │ (USB-C)      │
-     m1 m2 m3 m4 m5     │   └──────────────┘
-     XM  XM  XM  XL XL  │          ▲
-     430 540 430 430 430 └──────────┘
+      m1 m2 m3 m4 m5     │   └──────────────┘
+      XM  XM  XM  XL XM  │          ▲
+      430 540 430 430 430 └──────────┘
                               5 V power
 ```
 
@@ -94,8 +94,8 @@ docs/calibration.md → Step 02c.
 The five Dynamixel servos are connected in a TTL daisy-chain from the OpenRB-150's Dynamixel port:
 
 ```
-OpenRB-150 ──► [ID 1] XM430 ──► [ID 2] XM540 ──► [ID 3] XM430 ──► [ID 4] XL430 ──► [ID 5] XM430
-               Base          Shoulder         Elbow           Wrist          Claw
+OpenRB-150 ──► [ID 1] XM430-W210 ──► [ID 2] XM540-W150 ──► [ID 3] XM430-W210 ──► [ID 4] XL430-W250 ──► [ID 5] XM430-W210
+               Base               Shoulder            Elbow               Wrist              Claw
 ```
 
 Each servo has two JST connectors — one input, one output to the next servo. The last servo (ID 5) has no output connected.

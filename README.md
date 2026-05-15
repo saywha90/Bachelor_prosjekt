@@ -19,7 +19,7 @@ A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using
 | **Host computer** | Raspberry Pi 5 (8 GB recommended) running Raspberry Pi OS Bookworm (64-bit) |
 | **Python** | 3.11+ (ships with Bookworm) |
 | **Camera** | Luxonis OAK-D S2 (USB-C) |
-| **Motor controller** | OpenRB-150 + Dynamixel XL430 / XM430 / XM540 servos |
+| **Motor controller** | OpenRB-150 + Dynamixel XM430-W210 / XM540-W150 / XL430-W250 servos |
 | **Power supply** | Dual-output PSU — 12 V for motors, 5 V for Pi and camera |
 | **Serial access** | User must be in the `dialout` group (`sudo usermod -aG dialout $USER`, then reboot) to access `/dev/ttyACM0` |
 
@@ -184,7 +184,7 @@ See [docs/performance.md](docs/performance.md) for full metrics, cycle timing, a
 
 ## Hardware
 
-The system uses a Dynamixel-based 4-DOF arm (XM430 + XM540 + XL430 servos) controlled by an OpenRB-150 microcontroller via JSON-over-serial. Vision is provided by a Luxonis OAK-D S2 mounted on the arm wrist, looking down at the workspace (IMX378 sensor, configured at 640 × 400 for the detection pipeline, 81° HFOV). The arm runs on a Raspberry Pi 5 host.
+The system uses a Dynamixel-based 4-DOF arm (M1/M3/M5 XM430-W210, M2 XM540-W150, M4 XL430-W250) controlled by an OpenRB-150 microcontroller via JSON-over-serial. Vision is provided by a Luxonis OAK-D S2 mounted on the arm wrist, looking down at the workspace (IMX378 sensor, configured at 640 × 400 for the detection pipeline, 81° HFOV). The arm runs on a Raspberry Pi 5 host.
 
 | Parameter | Value |
 |-----------|-------|

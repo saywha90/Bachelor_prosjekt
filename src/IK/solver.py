@@ -3,11 +3,11 @@ solver.py
 Geometric Inverse Kinematics solver for a 4-DOF robotic arm.
 
 Hardware:
-    Motor 1 (ID 1) – Base Pan      – XM430
-    Motor 2 (ID 2) – Shoulder Tilt – XM540
-    Motor 3 (ID 3) – Elbow Tilt    – XM430
-    Motor 4 (ID 4) – Wrist Tilt    – XL430
-    Motor 5 (ID 5) – Claw          – XM430
+    Motor 1 (ID 1) – Base Pan      – XM430-W210
+    Motor 2 (ID 2) – Shoulder Tilt – XM540-W150
+    Motor 3 (ID 3) – Elbow Tilt    – XM430-W210
+    Motor 4 (ID 4) – Wrist Tilt    – XL430-W250
+    Motor 5 (ID 5) – Claw          – XM430-W210
 
 All Dynamixel motors: 0-4095 steps → 0°-360°.
 Centre (straight ahead / straight up) = 2048 = 180°.
