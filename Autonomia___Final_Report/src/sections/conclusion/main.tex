@@ -1,1 +1,38 @@
 \hmsection{Conclusion}{}{}
+
+This project developed an autonomous robotic system for
+detecting, classifying, and sorting coloured balls using
+computer vision and a 4-DOF robotic arm. The system integrates
+a deterministic HSV-based detection pipeline running on a
+Raspberry Pi~5, a closed-form geometric inverse kinematics
+solver, an adaptive current-sensing grip verification mechanism,
+and a dedicated firmware layer on the OpenRB-150 microcontroller.
+
+The minimum viable product defined in Section~3.3 was
+\textbf{[achieved / partially achieved]}: the system completed
+\textbf{[TBD]} consecutive autonomous sorting cycles with a pick
+success rate of \textbf{[TBD]}\% and a placement accuracy of
+\textbf{[TBD]}\% under standard laboratory lighting conditions
+(Section~10.5). \textbf{[If partially achieved, state which
+requirements were met and which were not.]}
+
+Several design decisions proved effective. The closed-form
+geometric IK solver provided deterministic, sub-millisecond
+solutions without the convergence issues of numerical methods.
+The adaptive grip algorithm, which exploits the Dynamixel
+motor's current and load registers as an impedance-based force
+sensor, reliably distinguished between a gripped ball and an
+empty close without requiring external sensor hardware. The
+touch calibration procedure superseded the polynomial sag model
+by providing per-point surface heights that account for the
+arm's real-world droop at each calibrated position.
+
+The principal limitations identified during the project are the
+elbow motor's thermal load under continuous operation at the scan
+pose, the absence of mid-approach visual correction due to the
+wrist-mounted camera design, and the four-degree-of-freedom
+constraint that restricts the gripper to a fixed downward
+orientation. The most impactful improvement identified is to
+reduce the mass of the wrist-to-claw assembly, which would
+directly lower the gravitational torque on the elbow motor and
+reduce the arm's overall sag (Section~11.3).

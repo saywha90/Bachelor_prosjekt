@@ -226,7 +226,7 @@ MAX_REACH_PITCH = 0.0
 DEFAULT_REAR_ROUTE_BASE_YAW_LIMIT_DEG = 45.0
 
 # ── Claw motor positions (Dynamixel steps) ─────────────────────────
-CLAW_OPEN_POS   = 2745    # open/neutral position for gripper (XM430-W210 raw goal position)
+CLAW_OPEN_POS   = 2745    # open/neutral position for gripper (M5 XM430-W210 raw goal position)
 CLAW_CLOSED_POS = 3350    # safe closed/grip limit (extended to 3350 for tighter grip on small balls)
 
 # ── Grip verification ──────────────────────────────────────────────
@@ -249,7 +249,7 @@ GRIP_MIN_BALL_BLOCKED_STEPS = 30  # position-only detection: min gap from empty-
 GRIP_MIN_BLOCKED_WITH_SENSOR = 5  # sensor-assisted threshold: when load/current confirm, accept very small gaps (not at end-stop)
 DEFAULT_PROFILE_VEL   = 80        # normal operating velocity
 DEFAULT_PROFILE_ACC   = 20        # normal operating acceleration
-M5_DEFAULT_CURRENT_LIMIT = 1193   # XM430-W350 factory default current limit in mA
+M5_DEFAULT_CURRENT_LIMIT = 1193   # M5 XM430-W210 factory default current limit in mA
 
 
 def _interpolate_field(distance: float, calibration: List[dict], field: str) -> float:

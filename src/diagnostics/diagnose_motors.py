@@ -45,14 +45,23 @@ RESET  = "\033[0m"
 
 # ── Expected motor descriptions ──────────────────────────────────────
 MOTOR_LABELS = {
-    1: "Base Pan      (XM430)",
-    2: "Shoulder Tilt (XM540)",
-    3: "Elbow Tilt    (XM430)",
-    4: "Wrist Tilt    (XL430)",
-    5: "Claw          (XM430)",
+    1: "Base Pan      (XM430-W210)",
+    2: "Shoulder Tilt (XM540-W150)",
+    3: "Elbow Tilt    (XM430-W210)",
+    4: "Wrist Tilt    (XL430-W250)",
+    5: "Claw          (XM430-W210)",
 }
 
-# Known Dynamixel model numbers
+EXPECTED_MODEL_NAMES = {
+    1: "XM430-W210",
+    2: "XM540-W150",
+    3: "XM430-W210",
+    4: "XL430-W250",
+    5: "XM430-W210",
+}
+
+# Known Dynamixel model numbers. Legacy/non-installed models are retained here
+# only so diagnostics can name an unexpected motor if one is found on the bus.
 MODEL_NAMES = {
     1020: "XM430-W350",
     1030: "XM430-W210",
@@ -153,10 +162,16 @@ def print_report(data: dict) -> None:
             model_name = MODEL_NAMES.get(model_num, f"Unknown({model_num})")
 
             baud_ok = (baud == firmware_baud)
+            expected_model = EXPECTED_MODEL_NAMES.get(mid)
+            model_ok = expected_model is None or model_name == expected_model
             baud_color = GREEN if baud_ok else YELLOW
 
             print(f"  {GREEN}✔{RESET}  ID {mid}  {label}")
-            print(f"       Model:    {model_name}")
+            print(f"       Model:    {model_name}", end="")
+            if not model_ok:
+                print(f"  {YELLOW}⚠ expected {expected_model}{RESET}")
+            else:
+                print()
             print(f"       Position: {pos}")
             print(f"       Baud:     {baud_color}{baud}{RESET}", end="")
             if not baud_ok:
