@@ -51,16 +51,17 @@ Med utgangspunkt i analysen satte jeg meg dypt inn i den elektriske delen og tok
 **1. Ny klo-servo og strømforsyning (adapter):**
 *   *Problem identifisert:* Forrige gruppe brukte en liten 5V analog servo til kloen styrt via Arduino Mega og en PCA9685-driver. Megaen klarte ikke å levere nok strøm, noe som krevde en ustabil nødløsning.
 *   *Min løsning:* Jeg besluttet å bytte ut den analoge 5V-servoen i kloen med en Dynamixel-servo (XM430-W210). Valget falt på XM430 fremfor den lettere XL430, fordi kloa trenger høyere dreiemoment for å gripe ballene sikkert uten at motoren staller.
-*   *Beregning av strømforsyning:* For å drive de totalt 5 Dynamixel-servoene har jeg beregnet det teoretiske maksimale strømtrekket (Stall Current):
-    *   Skulder (1x XM540-W150): 4,4 A
-    *   Base & Albue (2x XM430-W210): 4,6 A
-    *   Håndledd (1x XL430-W250): 1,3 A
-    *   Klo (1x XM430-W210): 2,3 A
+*   *Beregning av strømforsyning:* For å drive de totalt 5 Dynamixel-servoene har jeg beregnet det teoretiske maksimale strømtrekket (Stall Current) for den faktiske motorfordelingen:
+    *   Motor 1 – Base (1x XM430-W210): 2,3 A
+    *   Motor 2 – Skulder (1x XM540-W150): 4,4 A
+    *   Motor 3 – Albue (1x XM430-W210): 2,3 A
+    *   Motor 4 – Håndledd (1x XL430-W250): 1,3 A
+    *   Motor 5 – Klo (1x XM430-W210): 2,3 A
     *   **Totalt:** ~12,6 Ampere.
 *   *Valg av adapter:* Jeg kom frem til at et **12V 10A (120W) adapter** er den optimale løsningen. Normal drift trekker ca. 2–5A. Dersom alle motorene staller (12,6 A), trigger 10A-strømforsyningen overstrømsvernet, som fungerer som en innebygd sikring.
 
 **2. Stjernetopologi (løsning på spenningsfall og daisy-chain):**
-*   *Problem identifisert:* Forrige gruppe kjørte strøm og data gjennom én lang Daisy Chain. Dette skapte en farlig trakteffekt der all strømmen (10–11A) ble presset gjennom én tynn JST-kontakt (ratet for 3–5A), med risiko for overoppheting, spenningsfall (brownout) og ustabil motordrift.
+*   *Problem identifisert:* Forrige gruppe kjørte strøm og data gjennom én lang Daisy Chain. Dette skapte en farlig trakteffekt der hele den teoretiske stallstrømmen for vår faktiske motorpakke (~12,6 A) kunne blitt presset gjennom én tynn JST-kontakt (ratet for 3–5A), med risiko for overoppheting, spenningsfall (brownout) og ustabil motordrift.
 *   *Min løsning – Hybrid stjernetopologi:* Jeg designet en hybrid stjernekobling fra kontrollkortet (opprinnelig Dynamixel Shield, senere realisert på OpenRB-150) som fordeler strømmen over to separate grener:
     *   **Gren 1:** Fra kontrollkortet til Motor 1 – Base (XM430-W210, 2,3 A) og Motor 2 – Skulder (XM540-W150, 4,4 A), koblet sammen. Samlet maks strømtrekk for denne grenen er 6,7 A. Disse to motorene sitter fysisk ved bunnen av armen og deler dermed én kort kabelvei fra strømkilden.
     *   **Gren 2:** Fra kontrollkortet til Motor 3 – Albue (XM430-W210, 2,3 A), deretter videre i daisy-chain til Motor 4 – Håndledd (XL430-W250, 1,3 A) og Motor 5 – Klo (XM430-W210, 2,3 A). Samlet maks strømtrekk for denne grenen er 5,9 A. Disse motorene sitter lenger oppe på armen og trekker generelt mindre strøm i normal drift.

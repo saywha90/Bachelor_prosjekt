@@ -111,6 +111,7 @@ Each servo has two JST connectors — one input, one output to the next servo. T
 ## Power Notes
 
 - The PSU provides **two independent regulated outputs** — the 5 V rail comes directly from a dedicated PSU output, not from a voltage conversion of the 12 V rail.
+- The theoretical simultaneous stall-current budget for the installed motor set is **~12.6 A**: M1/M3/M5 XM430-W210 at 2.3 A each (6.9 A), M2 XM540-W150 at 4.4 A, and M4 XL430-W250 at 1.3 A. This is a worst-case sizing value; normal motion should remain lower, and the 12 V / 10 A output may enter over-current protection before all five motors stall at once.
 - The **15 A fuse** on the 12 V rail protects against short circuits in the motor chain.
 - The Raspberry Pi 5 requires a stable 5 V / 3 A supply via USB-C for reliable operation (especially with USB peripherals).
 - The OAK-D S2 can draw up to 2.5 W; ensure the 5 V rail has sufficient current capacity.
