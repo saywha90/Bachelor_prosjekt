@@ -1,0 +1,52 @@
+\hmsubsection {Sorting Accuracy}{FKT}{
+
+Sorting accuracy was evaluated using the final MVP validation
+session as the authoritative integrated result. In this session,
+the system operated with the real OAK-D camera, a real serial
+connection to the OpenRB-150, completed controller handshake,
+ready inverse kinematics solver, and adaptive grip verification.
+The test therefore measured the combined perception, motion,
+gripping, and bin-placement behaviour rather than an isolated
+software-only classification result.
+
+The final validation session consisted of 20 completed sorting
+cycles and 20 balls. The net result was \textbf{20/20 balls sorted
+correctly (100\% observed net sorting success)} with \textbf{0
+unrecovered failures}. Both colour classes achieved the same
+final result: 10/10 blue balls were picked and placed correctly,
+and 10/10 red balls were picked and placed correctly. One
+additional grip-verification rejection occurred in cycle~7 on a
+red ball before successful retry. Grip verification correctly
+rejected an unstable grasp, and retry logic recovered the cycle
+on the next scan. It is therefore reported separately from the
+net sorting result, not as an unrecovered sorting failure.
+
+\begin{table}[H]
+\centering
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{Sorting category} & \textbf{Correct} & \textbf{Total} &
+\textbf{Observed result} \\
+\hline
+Blue balls picked and placed & 10 & 10 & 100\% \\
+\hline
+Red balls picked and placed & 10 & 10 & 100\% \\
+\hline
+Overall net sorting result & 20 & 20 & 100\% \\
+\hline
+Unrecovered sorting failures & 0 & 20 & 0\% \\
+\hline
+\end{tabular}
+\caption{Sorting accuracy in the final 20-ball validation
+session.}
+\label{tab:sorting-accuracy-final}
+\end{table}
+
+These results demonstrate that the MVP sorting objective was
+achieved under the tested laboratory conditions. The result
+should not be interpreted as a claim of perfect general
+reliability across all possible environments or object
+presentations; it documents the measured performance in the
+final integrated validation session.
+}

@@ -1,0 +1,65 @@
+\hmsubsection{Data Flow}{FS}{}\label{sec:data-flow}
+This section describes what happens during one pick-and-place cycle,
+step by step. The cycle starts when the supervisor enters the
+\texttt{SCAN} state with the arm at \texttt{SCAN\_POSE}. It ends when
+the arm returns to \texttt{SCAN\_POSE} after dropping a ball in the
+right bin.
+\subsubsection*{Step 1 -- Frame acquisition}
+The OAK-D S2 takes a colour frame at 640 by 400 pixels and sends it
+to the Pi over USB 3.0. The DepthAI driver delivers the frame as a
+NumPy array in BGR format. One frame per loop iteration, at roughly
+20--25 Hz.
+\subsubsection*{Step 2 -- Perception}
+The frame goes through the perception layer. The output is a list of
+tracked detections. Each detection has a colour, a pixel centre, a
+radius, a confidence, and a stable ID.
+\subsubsection*{Step 3 -- Target selection}
+If both red and blue balls are visible, the supervisor picks one based
+on a priority rule. The default rule is red first, blue second. If no
+detection is present for two frames in a row, the supervisor returns
+to \texttt{IDLE} without moving the arm.
+\subsubsection*{Step 4 -- Pixel to workspace}
+The pixel centre of the chosen detection is converted to workspace
+centimetres through the perspective transformation from the touch
+calibration (Section \ref{sec:touch-cal}). The result is a target
+$(x, y, z)$ in the workspace frame. The $z$ value comes from the
+per-point surface height recorded during touch calibration. For
+positions between calibration points, the height is interpolated.
+\subsubsection*{Step 5 -- Inverse kinematics}
+The target goes into \texttt{ArmIK} (Section \ref{sec:ik-solver}). The
+solver returns five Dynamixel goal positions in encoder steps. If the
+target is out of reach, the solver either clamps it or raises an
+exception, depending on the operating mode
+(Section \ref{sec:joint-limits}).
+\subsubsection*{Step 6 -- Trajectory generation}
+The supervisor turns the single goal pose into three waypoints: an
+approach pose 10 cm above the target, the pick pose at the target,
+and a lift pose 10 cm above the target. Each waypoint is solved
+independently and queued for transmission.
+\subsubsection*{Step 7 -- Command transmission}
+The communication layer sends each motor command over the USB serial
+link to the OpenRB-150 as an ASCII line. The firmware replies with
+\texttt{ACK}, then \texttt{BUSY} during motion, then \texttt{READY}
+when the encoders settle within the tolerance band.
+\subsubsection*{Step 8 -- Gripper actuation}
+At the pick pose the supervisor closes the gripper. At the release
+pose over the right bin, the supervisor opens it. The gripper uses
+the same protocol; the firmware translates \texttt{GRIP close} and
+\texttt{GRIP open} into the pre-calibrated goal positions.
+\subsubsection*{Step 9 -- Return to scan}
+After the ball is released, the supervisor sends the arm back to
+\texttt{SCAN\_POSE}. Once the arm settles, the supervisor returns to
+the \texttt{SCAN} state. No scan-pose current limit is applied in the
+deployed system, since the tested limit did not sufficiently reduce
+the elbow motor's thermal load (Section \ref{sec:thermal}). Instead,
+the deployed scan pose relies on the mechanically supported posture in
+which the L\textsubscript{2} structure rests on the L\textsubscript{1}
+piece while preserving the camera's view of the workspace. This reduces
+idle holding torque at \texttt{SCAN\_POSE}, but movement-related motor
+heating remains outside this scan-state mitigation.
+\subsubsection*{Step 10 -- Logging}
+One row is appended to the cycle log. The row has a timestamp, the
+colour of the ball, the pixel and workspace coordinates, the per-stage
+timing (acquisition, perception, planning, motion), and an outcome
+flag. The log is the main source of evidence for the tests described
+in Chapter \ref{cha:testing}.

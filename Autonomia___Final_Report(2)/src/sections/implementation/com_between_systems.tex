@@ -1,0 +1,56 @@
+\hmsubsection{Communication Between Systems}{FS}{}\label{sec:comm}
+The Raspberry Pi 5 and the OpenRB-150 communicate over USB serial. The
+link runs at 115\,200~bps, 8N1. On the Pi side, it appears as the
+\texttt{/dev/ttyACM0} device. On the OpenRB-150 side, it uses the
+on-board USB serial port.
+USB was selected instead of a hardware UART on the Pi for two reasons.
+First, the USB cable also powers the OpenRB-150 logic circuit, reducing
+the required wiring. Second, the OpenRB-150 has a front-facing USB-C
+connector, which is easier to access than the GPIO pins on the Pi. The
+12 V motor power is delivered separately to the OpenRB-150's motor power
+input, as described in Section \ref{sec:hardware-integration}.
+\subsubsection*{Message format}
+Each message consists of one line of ASCII terminated by a newline. The
+host sends commands, and the firmware sends status replies.
+\subsubsection*{Host side}
+The host-side implementation is contained in the \texttt{SerialBridge}
+class. There is one method per command. Each method writes the command
+line and then reads the reply.
+\texttt{MOVE} blocks until \texttt{READY} or a timeout. \texttt{LIMIT}
+and \texttt{SCAN} return on the first \texttt{ACK}. The default cycle
+timeout is 10 s, which is about twice the longest motion time we
+recorded in testing. If the timeout fires before \texttt{READY},
+\texttt{SerialBridge} raises a typed exception. The supervisor handles
+the exception by aborting the cycle and sending the arm back to the
+scan pose.
+\subsubsection*{Firmware side}
+The firmware reads bytes from USB serial in the main loop and parses
+each newline-terminated line into a command and zero or more integer
+arguments. \texttt{MOVE} commands are checked against the joint limits
+in Section \ref{sec:joint-limits}. If the check passes, the firmware
+writes all five goal positions in one \texttt{syncWrite()} call. The
+firmware then polls the present positions of all five motors and
+sends \texttt{BUSY} while any motor is still moving. Once every motor
+is within tolerance of its goal, the firmware sends \texttt{READY}.
+\subsubsection*{Why text instead of CRC framing}
+Text framing was selected instead of a binary frame with CRC for three
+reasons.
+First, the protocol can be tested from a serial terminal. During
+bring-up, commands were entered manually to verify firmware behaviour. A
+binary protocol would have required a separate Python tool from the
+start of development.
+Second, the cable between the Pi and the OpenRB-150 is shorter than
+one metre, and the laboratory environment is electrically quiet. The
+available development observations did not indicate transmission errors
+in this bench setup. A CRC check was therefore not expected to provide
+measurable benefit in the current configuration.
+Third, the firmware is limited in scope. A binary parser would have
+added complexity without meaningful space savings.
+Sortify \cite{sortify} used a binary frame with CRC-16 because they
+intended to place the arm on a moving vehicle. They also reported no CRC
+errors in their stress test on a bench setup comparable to this one.
+That result is consistent with the observations in this project and
+supports the current choice of text framing. If the cell is later placed
+on Fenris, where motor noise and cable routing may change, the wire
+protocol can be switched to binary without changing anything above the
+\texttt{SerialBridge} layer.

@@ -1,0 +1,258 @@
+\hmsubsection{Actuator Control}{FS}{}\label{sec:actuator-control}
+
+The actuator control layer is the firmware running on the OpenRB-150.
+Its job is to take goal positions from the host, drive the Dynamixel
+servos, watch each motor, and report success or failure back to the
+host. The firmware does not do any kinematics. The inverse kinematics
+solver runs on the Pi (Section~\ref{sec:ik-solver}). The firmware
+only sees encoder steps.
+
+\subsubsection*{Firmware structure}
+
+The firmware uses the Arduino \texttt{setup()} and \texttt{loop()}
+pattern.
+At \texttt{setup()}, the firmware opens the USB serial at 115\,200~bps,
+opens the Dynamixel bus at 115\,200~bps using the Dynamixel2Arduino library,
+and pings each of the five motors. If a motor does not respond, the
+firmware sends \texttt{ERR INIT} to the host and goes into the
+\texttt{FAULT} state. New commands are rejected until the fault is
+cleared.
+
+The state machine has three states: \texttt{INIT}, \texttt{READY},
+\texttt{FAULT}. \texttt{READY} is the working state. The firmware
+moves to \texttt{FAULT} when a motor reports a hardware error or a
+motion times out. The host clears \texttt{FAULT} by sending a
+\texttt{SCAN} command, which also moves the arm back to the scan pose.
+
+The \texttt{loop()} function does three things on every pass. It
+reads zero or more bytes from USB serial and appends them to a line
+buffer. When the buffer has a newline, the line is parsed. If a
+motion is in progress, it polls the motor positions and updates the
+status. None of the three steps block, so the firmware can react to a
+\texttt{STOP} from the host even while the arm is moving.
+
+\subsubsection*{Motion execution}
+
+A \texttt{MOVE} command from the host contains one goal position per
+motor. The firmware first checks each value against the safe operating
+range for that motor (Section~\ref{sec:joint-limits}). If any value
+is out of range, the firmware sends \texttt{ERR OUT\_OF\_RANGE} and
+the motion is rejected.
+
+If all five values are valid, the firmware writes them to the motors
+in one \texttt{syncWrite()} call. This sends one broadcast packet on
+the Dynamixel bus instead of five per-motor packets, which cuts the
+bus time from about 5~ms to about 1~ms. All five motors start moving
+within roughly the same TTL slot.
+
+After the write, the firmware sends \texttt{BUSY} to the host and
+starts polling. It reads the present position of each motor at about
+50~Hz and computes the difference from the goal. When every motor is
+within the tolerance band (default 8~steps, about 0.7~degrees on the
+XM430 family), the firmware sends \texttt{READY} and goes back to
+reading commands.
+
+\subsubsection*{Gripper handling}
+
+The gripper motor (M5, XM430-W210-T) is the same model as the base
+and elbow motors and lives on the same TTL bus. The firmware treats it
+identically. The host does not send raw goal positions for the
+gripper. It sends \texttt{GRIP open} or \texttt{GRIP close} instead.
+The firmware turns each into the matching pre-calibrated goal
+position. The open and closed positions are constants in the firmware,
+set once during bring-up so the closed position grips a 50~mm ball
+firmly without going over the torque limit. Using named tokens
+instead of raw step values means the host does not need to know how
+the gripper is tuned. The gripper can be re-tuned without changes to
+the host.
+
+\subsubsection*{Current-limit command}
+
+The firmware supports a \texttt{LIMIT mN value} command that sets the
+current limit of one motor through the Dynamixel \emph{Goal Current}
+register. This mechanism was tested on the elbow motor (M3) with a
+300~mA limit while the arm was parked at the scan pose, as described
+in Section~\ref{sec:thermal}. Integration testing showed that the reduced limit did
+not lower the thermal load sufficiently, so scan-pose current limiting
+was removed from the deployed host behaviour. The firmware therefore
+does not apply an automatic M3 current limit when the arm returns to
+the scan pose; the deployed mitigation for idle scan-pose heating is
+instead the mechanically supported scan posture described in
+Section~\ref{sec:thermal}. This does not remove thermal loading during
+movement. The same register-access mechanism remains available for
+actuator diagnostics and is used for the gripper current cap in the
+adaptive grip algorithm below.
+
+\subsubsection*{Fault handling}
+
+Several kinds of faults can happen during operation.
+A motor can report a hardware error flag (overload, overheating,
+communication). The firmware reads the error register of each motor
+at about 5~Hz during motion. If any flag is set, the firmware sends
+\texttt{ERR OVERLOAD} or \texttt{ERR OVERHEAT} to the host.
+
+A motion can take longer than the cycle timeout. The firmware sends
+\texttt{ERR TIMEOUT} and disables torque on all motors as a
+precaution.
+
+In both cases the firmware moves to \texttt{FAULT}. The host receives
+the error token and aborts the cycle through the supervisor.
+The firmware stays in
+\texttt{FAULT} until the host sends \texttt{SCAN}, which clears the
+fault and returns the arm to a known pose.
+
+
+\hmsubsubsection{Adaptive Grip Algorithm}{UMA}{}
+
+The firmware's simple \texttt{GRIP close} command drives the gripper
+to a fixed closed position, but it cannot distinguish between
+successfully gripping a ball and closing on air. Without feedback,
+the system would attempt to transport a ball that was never picked
+up, wasting a cycle and potentially desynchronising the state
+machine. To address this, the host implements an adaptive grip
+algorithm that exploits the Dynamixel protocol's real-time access
+to the motor's present position, present load, and present current
+registers. This approach constitutes a form of impedance-based
+force sensing that requires no external sensor hardware and is
+specific to smart actuators such as the Dynamixel series.
+
+\textbf{Problem.} A conventional open/close gripper command
+provides no information about whether an object is actually held.
+If the ball has rolled away, been knocked aside during approach,
+or was never within reach, the claw closes fully without
+resistance. Without grip verification, the system proceeds to the
+transport phase with an empty gripper, which wastes time and may
+trigger spurious sort failures.
+
+\textbf{Algorithm.} The adaptive grip proceeds in five stages:
+
+\begin{enumerate}
+    \item \textbf{Current cap.} The M5 current limit is set to
+    50~mA via the Dynamixel \emph{Goal Current} register. This
+    value is low enough to detect resistance from a 50~mm ball
+    but gentle enough to protect the 3D-printed claw mechanism
+    from damage.
+
+    \item \textbf{Slow motion profile.} The profile velocity is
+    set to 80 and the profile acceleration to 20, producing a
+    controlled closing motion that gives the polling loop
+    sufficient time to detect contact.
+
+    \item \textbf{Open.} The claw is commanded to the open
+    position (2745~steps).
+
+    \item \textbf{Incremental close with sensor polling.} The
+    claw advances toward the closed position (3350~steps) in
+    increments of 50~steps. At each increment, the host polls
+    the motor at 50~ms intervals for three sensor channels:
+    \begin{itemize}
+        \item \emph{Load}: contact is detected if the present
+              load exceeds 5~units.
+        \item \emph{Current}: contact is detected if the
+              present current exceeds 20~mA (40\% of the
+              50~mA current cap).
+        \item \emph{Stall}: contact is detected if the motor
+              position advances by fewer than 8~steps for two
+              consecutive readings.
+    \end{itemize}
+    The loop terminates on the first contact detection or after
+    a 15-second timeout.
+
+    \item \textbf{Secure close.} Once contact is detected, the
+    claw is commanded to the full closed position (3350~steps)
+    to squeeze around the ball, and the system waits for the
+    claw to settle.
+\end{enumerate}
+
+\textbf{Verification.} After the secure close, the final motor
+position, load, and current are read and evaluated against a
+two-tier threshold:
+
+\begin{itemize}
+    \item \textbf{Strongly blocked.} The claw stopped more than
+    30~steps from the closed position. Position alone is
+    sufficient to confirm grip, provided some resistance is
+    detected (load~$> 0$ or current~$\geq 5$~mA).
+
+    \item \textbf{Minimally blocked.} The claw stopped at least
+    5~steps from the closed position. Grip is confirmed only if
+    the load~$\geq 15$ or the current~$\geq 20$~mA.
+
+    \item \textbf{Zero resistance.} If both load and current are
+    at or near zero, the grip is rejected immediately regardless
+    of position --- the claw closed on air.
+
+    \item \textbf{At end-stop.} If the claw is within 5~steps of
+    the closed position, the grip is always rejected --- no ball
+    was present.
+\end{itemize}
+
+If the adaptive grip returns an inconclusive result, a secondary
+verification function reads the sensor feedback once more and
+applies the same two-tier check. If both attempts fail, the claw
+opens and the ball is abandoned; the system returns to the scan
+position for the next detection cycle.
+
+\textbf{Why this approach works.} By capping the current limit to
+50~mA, the system amplifies the difference between closing on air
+(near-zero resistance) and closing on a ball (measurable resistance
+that stalls the motor before it reaches the closed position). The
+Dynamixel XM430-W210-T exposes its present position, present load,
+and present current as readable registers via Protocol~2.0, making
+this form of impedance-based sensing possible without any additional
+hardware. Conventional hobby servos do not provide current or load
+feedback, so this approach is specific to smart actuator platforms.
+
+The adaptive grip constants are defined in
+\texttt{src/config/arm.py} and can be adjusted without modifying
+the control logic. The algorithm was validated using the
+calibration script \texttt{02b\_claw\_grip\_test.py}, which mirrors
+the production algorithm and provides per-attempt sensor logging
+for threshold tuning.
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|l|r|p{5.5cm}|}
+        \hline
+        \textbf{Constant} & \textbf{Value} &
+        \textbf{Description} \\
+        \hline
+        \texttt{CLAW\_OPEN\_POS}   & 2745 &
+        Gripper fully open (steps) \\
+        \hline
+        \texttt{CLAW\_CLOSED\_POS} & 3350 &
+        Gripper closed limit (steps) \\
+        \hline
+        \texttt{GRIP\_CURRENT\_LIMIT} & 50~mA &
+        M5 current cap during grip \\
+        \hline
+        \texttt{GRIP\_PROFILE\_VEL} & 80 &
+        Closing velocity \\
+        \hline
+        \texttt{GRIP\_PROFILE\_ACC} & 20 &
+        Closing acceleration \\
+        \hline
+        \texttt{GRIP\_POLL\_INTERVAL} & 0.05~s &
+        Sensor polling rate \\
+        \hline
+        \texttt{GRIP\_TIMEOUT} & 15.0~s &
+        Maximum grip duration \\
+        \hline
+        \texttt{GRIP\_LOAD\_DETECT} & 5 &
+        Light contact threshold \\
+        \hline
+        \texttt{GRIP\_LOAD\_THRESHOLD} & 15 &
+        Firm grip confirmation \\
+        \hline
+        \texttt{GRIP\_POSITION\_STALL} & 8 &
+        Stall detection (steps) \\
+        \hline
+        \texttt{GRIP\_EXTRA\_CLOSE} & 50 &
+        Step increment per iteration \\
+        \hline
+    \end{tabular}
+    \caption{Adaptive grip constants defined in
+    \texttt{src/config/arm.py}. All values were determined
+    empirically during claw calibration.}
+\end{table}

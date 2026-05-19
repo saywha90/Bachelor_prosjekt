@@ -1,0 +1,55 @@
+{
+  "schema_version": 4,
+  "calibration_date": "2026-05-18",
+  "calibrated_with_scan_pose": {
+    "m1": 2048,
+    "m2": 2600,
+    "m3": 950,
+    "m4": 850,
+    "m5": 2745
+  },
+  "rear_base_yaw_limit_deg": 45.0,
+  "shared_waypoints": {
+    "front_neutral": {
+      "x": 22.0,
+      "y": 0.0,
+      "z": 30.0,
+      "m4_offset": 0,
+      "skip_sag": true
+    },
+    "rear_transfer": {
+      "x": -25.5,
+      "y": 0.0,
+      "z": 41.5,
+      "m4_offset": -25,
+      "skip_sag": true
+    },
+    "rear_return_lift": {
+      "x": -25.5,
+      "y": 0.0,
+      "z": 42.0,
+      "m4_offset": -100,
+      "skip_sag": true
+    }
+  },
+  "bins": {
+    "RED_BIN": {
+      "drop": {
+        "x": -30.79,
+        "y": -2.48,
+        "z": 40.1,
+        "m4_offset": -39,
+        "skip_sag": true
+      }
+    },
+    "BLUE_BIN": {
+      "drop": {
+        "x": -30.22,
+        "y": 8.4,
+        "z": 39.76,
+        "m4_offset": -161,
+        "skip_sag": true
+      }
+    }
+  }
+}
