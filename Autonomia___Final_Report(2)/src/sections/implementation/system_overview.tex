@@ -1,0 +1,30 @@
+\hmsubsection{System Overview}{FS}{}
+This chapter describes how the architecture from
+Chapter \ref{cha:system-design} is built in real code and real
+hardware. The split is the same as in the architecture chapter: the
+Raspberry Pi 5 runs the Python application, the OpenRB-150 runs the
+firmware, and the two talk over USB serial.
+The Python app is structured as the five layers from
+Section \ref{sec:software-architecture}. Frames come in at 20--25 Hz
+from the OAK-D S2 camera. The perception layer produces tracked ball detections.
+The planning layer turns the chosen target into goal positions for the
+five Dynamixel servos. The communication layer sends those goal
+positions to the OpenRB-150 and reads back status. The supervisor
+runs the state machine.
+The firmware on the OpenRB-150 is one C++ program built around the
+Arduino \texttt{setup()} and \texttt{loop()} pattern. At
+\texttt{setup()} the firmware opens the USB serial port at 115\,200~bps,
+opens the Dynamixel bus at 115\,200~bps, and pings each motor. In
+\texttt{loop()} it reads commands from the host one line at a time,
+sends them to the motors, and reports status back.
+The rest of this chapter goes through each part of the implementation
+in turn:
+\begin{itemize}
+ \item Image processing (Section \ref{sec:image-processing}).
+ \item Object detection (Section \ref{sec:object-detection}).
+ \item Hardware integration (Section \ref{sec:hardware-integration}).
+ \item Communication between systems (Section \ref{sec:comm}).
+ \item Actuator control (Section \ref{sec:actuator-control}).
+ \item Inverse kinematics (Section \ref{sec:ik-solver}).
+ \item Calibration subsystem (Section \ref{sec:calibration}).
+\end{itemize}

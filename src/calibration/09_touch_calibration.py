@@ -166,7 +166,8 @@ def send_ik_command(ser, arm: ArmIK, x: float, y: float, z: float,
                     claw_override: int = 2048,
                     validate_xy: bool = False,
                     xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
-                    context: str = "IK command"):
+                    context: str = "IK command",
+                    strict: bool = True):
     solution = _solve_ik_for_command(
         arm,
         x,
@@ -177,6 +178,7 @@ def send_ik_command(ser, arm: ArmIK, x: float, y: float, z: float,
         validate_xy=validate_xy,
         xy_tolerance_cm=xy_tolerance_cm,
         context=context,
+        strict=strict,
     )
     if solution is None:
         return None
@@ -190,7 +192,8 @@ def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
                            m4_offset: int = 0, claw_override: int = 2048,
                            validate_xy: bool = False,
                            xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
-                           context: str = "IK command"):
+                           context: str = "IK command",
+                           strict: bool = True):
     """Solve IK, apply an m4 offset, clamp, send command, and return (solution, response).
 
     Parameters
@@ -221,6 +224,7 @@ def send_ik_with_m4_offset(ser, arm: ArmIK, x: float, y: float, z: float,
         validate_xy=validate_xy,
         xy_tolerance_cm=xy_tolerance_cm,
         context=context,
+        strict=strict,
     )
     if solution is None:
         return None, None
@@ -234,10 +238,19 @@ def _solve_ik_for_command(arm: ArmIK, x: float, y: float, z: float,
                           m4_offset: int = 0, claw_override: int = 2048,
                           validate_xy: bool = False,
                           xy_tolerance_cm: float = LIMP_FINE_TUNE_XY_TOLERANCE_CM,
-                          context: str = "IK command") -> Optional[dict]:
-    """Solve strict, sag-disabled IK and optionally reject FK XY mismatch."""
+                          context: str = "IK command",
+                          strict: bool = True) -> Optional[dict]:
+    """Solve sag-disabled IK and optionally reject FK XY mismatch.
+
+    Parameters
+    ----------
+    strict : bool
+        If True (default), use strict IK that raises ValueError on joint
+        limit violations.  If False, use clamped IK that silently clamps
+        joints to their limits — the resulting position may be approximate.
+    """
     try:
-        solution = arm.solve(x, y, z, skip_sag=True, strict=True, m4_offset=m4_offset)
+        solution = arm.solve(x, y, z, skip_sag=True, strict=strict, m4_offset=m4_offset)
     except ValueError as e:
         if validate_xy:
             _print_limp_refinement_unreachable_error(context, x, y, z, e)
@@ -622,7 +635,7 @@ def _touch_phase(ser, arm: ArmIK,
         send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
 
         # Move to clearance height above the new target with NO wrist offset.
-        # (Pre-tilting the wrist while the arm is fully extended at clearance height 
+        # (Pre-tilting the wrist while the arm is fully extended at clearance height
         # causes the claw to point up and crash into the elbow bracket)
         approach_z = max(
             CLEARANCE_HEIGHT,
@@ -631,37 +644,107 @@ def _touch_phase(ser, arm: ArmIK,
         if coarse_cm_points is not None:
             print(f"       Initial approach: Z={approach_z:.1f} cm "
                   f"(max of clearance {CLEARANCE_HEIGHT:.1f} and safe start {fine_tune_start_z:.1f})")
-        approach_resp = send_ik_command(
-            ser,
-            arm,
-            target_x,
-            target_y,
-            approach_z,
-            validate_xy=coarse_cm_points is not None,
-            context="limp fine-tune approach",
-        )
-        if coarse_cm_points is not None and approach_resp is None:
-            cv2.destroyAllWindows()
-            raise RuntimeError("Limp-to-WASD refinement aborted: unsafe approach target XY")
+
+            # ── Adaptive approach height for near-base balls ──────────
+            # Some positions (e.g. X≈17 cm) are reachable at desk height
+            # but NOT at CLEARANCE_HEIGHT because m3 exceeds its joint
+            # limit when the arm folds back that far.  Try progressively
+            # lower approach heights before giving up.
+            ADAPTIVE_Z_STEP = 2.0   # cm decrement per attempt
+            ADAPTIVE_Z_MIN  = 5.0   # absolute floor
+            adaptive_min_z = max(ADAPTIVE_Z_MIN, fine_tune_start_z)
+            approach_resp = None
+            tried_z = approach_z
+            used_clamped_approach = False
+            while tried_z >= adaptive_min_z - 0.01:  # epsilon for float comparison
+                approach_resp = send_ik_command(
+                    ser, arm, target_x, target_y, tried_z,
+                    validate_xy=True,
+                    context="limp fine-tune approach",
+                )
+                if approach_resp is not None:
+                    if tried_z < approach_z:
+                        print(f"       ⚠️  Reduced approach height: Z={tried_z:.1f} cm "
+                              f"(original {approach_z:.1f} cm was unreachable for X={target_x:.1f})")
+                    approach_z = tried_z
+                    break
+                tried_z -= ADAPTIVE_Z_STEP
+
+            # ── Clamped IK fallback ───────────────────────────────────
+            # If strict IK failed at ALL heights (e.g. very close balls
+            # where the elbow joint is out of range at every Z due to
+            # the close X distance), fall back to clamped (non-strict) IK.
+            # This mirrors how WASD-only mode (option 1) handles these
+            # positions — the arm reaches approximately the right spot
+            # and the user fine-tunes with WASD keys.
+            if approach_resp is None:
+                fallback_z = fine_tune_start_z
+                print(f"       ⚠️  Strict IK failed at all heights. "
+                      f"Using clamped approach at Z={fallback_z:.1f} cm "
+                      f"— position may be approximate. Fine-tune with WASD.")
+                approach_resp = send_ik_command(
+                    ser, arm, target_x, target_y, fallback_z,
+                    validate_xy=False,
+                    context="limp fine-tune clamped approach",
+                    strict=False,
+                )
+                if approach_resp is not None:
+                    approach_z = fallback_z
+                    used_clamped_approach = True
+                else:
+                    # Even clamped IK failed — truly unreachable
+                    cv2.destroyAllWindows()
+                    raise RuntimeError(
+                        f"Limp-to-WASD refinement aborted: target X={target_x:.1f}, "
+                        f"Y={target_y:.1f} unreachable even with clamped IK at "
+                        f"Z={fallback_z:.1f} cm"
+                    )
+
+            # Keep fine_tune_start_z consistent with the height we actually reached
+            if approach_z < fine_tune_start_z:
+                fine_tune_start_z = approach_z
+        else:
+            used_clamped_approach = False
+            approach_resp = send_ik_command(
+                ser, arm, target_x, target_y, approach_z,
+            )
         time.sleep(0.5)
         
         # Lower down and apply the wrist offset gently.
         # When fine-tuning from limp-mode coarse data, use the safe starting
         # height instead of the raw coarse Z (which is near the desk surface).
         descent_z = fine_tune_start_z if coarse_cm_points is not None else target_z
-        descent_solution, _descent_resp = send_ik_with_m4_offset(
-            ser,
-            arm,
-            target_x,
-            target_y,
-            descent_z,
-            m4_offset,
-            validate_xy=coarse_cm_points is not None,
-            context="limp fine-tune descent",
-        )
-        if coarse_cm_points is not None and descent_solution is None:
-            cv2.destroyAllWindows()
-            raise RuntimeError("Limp-to-WASD refinement aborted: unsafe descent target XY")
+        if used_clamped_approach:
+            # Approach used clamped IK — descent must also use clamped IK
+            # and skip XY validation (position is already approximate).
+            descent_solution, _descent_resp = send_ik_with_m4_offset(
+                ser,
+                arm,
+                target_x,
+                target_y,
+                descent_z,
+                m4_offset,
+                validate_xy=False,
+                context="limp fine-tune clamped descent",
+                strict=False,
+            )
+            if descent_solution is None:
+                print(f"       ⚠️  Clamped descent also failed — skipping descent, "
+                      f"starting WASD at approach height Z={approach_z:.1f} cm")
+        else:
+            descent_solution, _descent_resp = send_ik_with_m4_offset(
+                ser,
+                arm,
+                target_x,
+                target_y,
+                descent_z,
+                m4_offset,
+                validate_xy=coarse_cm_points is not None,
+                context="limp fine-tune descent",
+            )
+            if coarse_cm_points is not None and descent_solution is None:
+                cv2.destroyAllWindows()
+                raise RuntimeError("Limp-to-WASD refinement aborted: unsafe descent target XY")
         time.sleep(0.5)
         # Update target_z so the keyboard loop starts at the safe height
         if coarse_cm_points is not None:
@@ -748,8 +831,10 @@ def _touch_phase(ser, arm: ArmIK,
         # Slow down profile for a safe, smooth retraction
         send_raw_command(ser, {"cmd": "set_profile", "vel": 40, "acc": 10})
 
-        # Lift straight up with NO wrist offset to avoid crashing claw into elbow
-        send_ik_command(ser, arm, target_x, target_y, CLEARANCE_HEIGHT)
+        # Lift straight up with NO wrist offset to avoid crashing claw into elbow.
+        # Use strict=False for the lift — if the ball was reached via clamped IK
+        # (very close to base), strict lift to CLEARANCE_HEIGHT may also fail.
+        send_ik_command(ser, arm, target_x, target_y, CLEARANCE_HEIGHT, strict=False)
         time.sleep(0.5)
         
         # Retract to home position to prevent swinging the claw across the desk

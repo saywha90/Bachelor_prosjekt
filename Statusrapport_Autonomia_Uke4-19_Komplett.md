@@ -112,7 +112,7 @@ Skrev flere designvalg-dokumenter (ADR) og teknisk dokumentasjon:
 *   `docs/hardware.md` — maskinvarespesifikasjoner og hardware-valg (Dynamixel XM430-W210/XM540-W150/XL430-W250), link-lengder og kabling.
 
 ### Uke 19 (4. mai – 10. mai): Sluttspurt
-Mandag hadde jeg møte med veileder Joakim. Etter møtet fortsatte jeg testingen av robotarmen. Dessverre traff armen pulten igjen under testing og knakk – noe som har skjedd flere ganger gjennom prosjektet. Tirsdag printet vi ut en ny arm og satte den sammen, og onsdag fortsatte vi testingen. I tillegg utviklet jeg en løsning der armen ikke lenger trenger å snu seg fysisk for å sortere ballene – den kan i stedet invertere seg helt bakover, noe som forenkler bevegelsesmønsteret.
+Mandag hadde jeg møte med veileder Joakim. Etter møtet fortsatte jeg testingen av robotarmen. Dessverre traff armen pulten igjen under testing og knakk – noe som har skjedd flere ganger gjennom prosjektet. Tirsdag printet vi ut en ny arm og satte den sammen, og onsdag fortsatte vi testingen. Under testingen ble også XL430-motoren ødelagt fordi den satte seg fast i bin-kurven. Derfor bestilte jeg en ny motor, som ankom i dag, 15. mai. Før erstatningen kom, brukte vi den ødelagte motoren til å finne og rette den underliggende årsaken til at den satte seg fast, slik at samme feil ikke skal oppstå igjen. I tillegg utviklet jeg og Farden en løsning der armen ikke lenger trenger å snu seg fysisk for å sortere ballene – den kan i stedet invertere seg helt bakover, noe som forenkler bevegelsesmønsteret.
 
 ### Hva som er planlagt fremover
 *   **Løsning på kloproblemet:** Sammen med Mohammed se på en mer robust løsning for kloa.
