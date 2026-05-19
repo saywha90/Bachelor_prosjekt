@@ -1,0 +1,33 @@
+{
+  "test_z_cm": 2.0,
+  "measurements": [
+    {"reach_cm": 6.0, "commanded_z_cm": 2.0, "measured_z_cm": 14.2},
+    {"reach_cm": 12.0, "commanded_z_cm": 2.0, "measured_z_cm": 9.0},
+    {"reach_cm": 18.0, "commanded_z_cm": 2.0, "measured_z_cm": 3.5},
+    {"reach_cm": 24.0, "commanded_z_cm": 2.0, "measured_z_cm": -2.2, "note": "extrapolated — arm hit desk at Z=2.0"},
+    {"reach_cm": 30.0, "commanded_z_cm": 2.0, "measured_z_cm": -7.5, "note": "extrapolated — arm hit desk at Z=2.0"},
+    {"reach_cm": 36.0, "commanded_z_cm": 2.0, "measured_z_cm": -12.8, "note": "extrapolated — arm hit desk at Z=2.0"}
+  ],
+  "raw_measurements_before_extrapolation": [
+    {"reach_cm": 6.0, "commanded_z_cm": 2.0, "measured_z_cm": 14.2},
+    {"reach_cm": 12.0, "commanded_z_cm": 2.0, "measured_z_cm": 9.0},
+    {"reach_cm": 18.0, "commanded_z_cm": 2.0, "measured_z_cm": 3.5},
+    {"reach_cm": 24.0, "commanded_z_cm": 2.0, "measured_z_cm": 0.0, "note": "desk hit — censored"},
+    {"reach_cm": 30.0, "commanded_z_cm": 2.0, "measured_z_cm": 0.0, "note": "desk hit — censored"},
+    {"reach_cm": 36.0, "commanded_z_cm": 2.0, "measured_z_cm": 0.0, "note": "desk hit — censored"}
+  ],
+  "desk_hits": [24.0, 30.0, 36.0],
+  "desk_hit_correction": "Reaches 24, 30, 36 hit the desk during calibration at Z=2.0. True errors extrapolated from good points (6, 12, 18) using linear trend ~+0.9 cm/cm. Original measured_z=0.0 replaced with extrapolated values.",
+  "linear": {
+    "slope": 0.9057142857,
+    "intercept": -17.72,
+    "rmse_cm": 0.1150569217
+  },
+  "quadratic": {
+    "a": -0.0001488095,
+    "b": 0.9119642857,
+    "c": -17.77,
+    "rmse_cm": 0.1142782736
+  },
+  "recommended_model": "quadratic"
+}

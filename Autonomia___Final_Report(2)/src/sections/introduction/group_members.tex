@@ -1,0 +1,99 @@
+\hmsubsection{Group members}{OAH}{UMA}
+
+This project consists of five engineering students from two academic disciplines: 
+Ole Aleksander Hageløkken, Umran Mohamad Ali, Farden Shaheed, Mohammed Alghazali, 
+and Filmon Kahsay Tesfay. Four members specialise in Computer Engineering with 
+a focus on Cyber Physical Systems, while one member specialises in Mechanical 
+Engineering with a focus on product development. This combination was essential 
+for delivering a complete system: the mechanical engineer led the physical design 
+of the robot arm, while the computer engineers handled software development, 
+hardware integration, and system testing.
+
+Each member is presented in Table~\ref{tab:group_members}.
+
+
+
+\vspace{0.3cm}
+
+% Color palette
+\definecolor{accent}{RGB}{20, 160, 90}
+\definecolor{darktext}{RGB}{15, 18, 22}
+\definecolor{softgray}{RGB}{110, 115, 120}
+\definecolor{cardbg}{RGB}{248, 249, 247}
+\definecolor{rulegray}{RGB}{220, 222, 225}
+
+% Compact card command
+\newcommand{\hmmembercard}[5]{%
+    \noindent\begin{minipage}[c]{\textwidth}
+        \fcolorbox{rulegray}{cardbg}{%
+            \begin{minipage}[c]{\dimexpr\textwidth-2\fboxsep-2\fboxrule\relax}
+                \vspace{0.15cm}
+                \begin{minipage}[c]{0.15\textwidth}
+                    \centering
+                    \adjustbox{width=\linewidth, height=2cm, keepaspectratio, cfbox=rulegray}{%
+                        \includegraphics[width=\linewidth]{#5}}
+                \end{minipage}%
+                \hspace{0.3cm}%
+                \begin{minipage}[c]{0.80\textwidth}
+                    {\sffamily\large\bfseries\textcolor{darktext}{#1}}~~%
+                    {\footnotesize\textcolor{accent}{$\cdot$}~\textcolor{softgray}{#2}}\\[0.1cm]
+                    {\footnotesize\textcolor{softgray}{\textsc{Discipline}}~~\textcolor{darktext}{#3}}\\[0.05cm]
+                    {\footnotesize\textcolor{softgray}{\textsc{Role}}~~\textcolor{darktext}{\textbf{#4}}}
+                \end{minipage}
+                \vspace{0.15cm}
+            \end{minipage}%
+        }
+    \end{minipage}
+    \par\vspace{0.15cm}
+}
+
+% Wrap all cards in a non-breakable group
+\begin{minipage}{\textwidth}
+    \hmmembercard{Ole Aleksander Hageløkken}
+                 {OAH}
+                 {Computer Engineering --- Cyber Physical Systems}
+                 {Documentation \& Scrum Master}
+                 {res/Ole.jpg}
+
+    \hmmembercard{Umran Mohamad Ali}
+                 {UMA}
+                 {Computer Engineering --- Cyber Physical Systems}
+                 {Team Leader}
+                 {res/Umran.jpg}
+
+    \hmmembercard{Farden Shaheed}
+                 {FS}
+                 {Computer Engineering --- Cyber Physical Systems}
+                 {System Lead}
+                 {res/Farden.png}
+
+    \hmmembercard{Mohammed Alghazali}
+                 {MA}
+                 {Mechanical Engineering --- Product Development}
+                 {Mechanical Design}
+                 {res/Mohammed.jpg}
+
+    \hmmembercard{Filmon Kahsay Tesfay}
+                 {FKT}
+                 {Computer Engineering --- Cyber Physical Systems}
+                 {Test Lead}
+                 {res/Filmon.jpg}
+
+    \vspace{0.1cm}
+    \begin{center}
+        \captionsetup{hypcap=false}
+        \captionof{table}{Group members}
+        \label{tab:group_members}
+    \end{center}
+\end{minipage}
+
+\hmsubsubsection{Initials}{OAH}{UMA}
+To the right of several headings in this report, the initials shown in 
+Table~\ref{tab:group_members} indicate the authors and proofreaders of the 
+corresponding sections and subsections. Although this is a group project, it 
+is individually graded and reviewed. It is therefore valuable to be transparent 
+about which member contributed to each section of the report. Authors and 
+proofreaders are separated by a vertical line, with authors on the left and 
+proofreaders on the right. The proofreader is not responsible for the content 
+itself, but rather confirms the general form of the section and helps correct 
+minor spelling and punctuation mistakes.

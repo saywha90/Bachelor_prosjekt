@@ -3,6 +3,36 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# ─── Prosjektspesifikt ────────────────────────────────────────────────────────
+
+# Virtuelle Python-miljøer
+venv_train/
+.venv/
+venv/
+env/
+
+# Gamle mislykkede CNN-modeller (roots models/ mappe)
+models/*.h5
+models/*.tflite
+models/*.keras
+models/*.png
+models/*.pkl
+
+# iPhone-kildebilder (bare brukt til første kalibrering, ikke nødvendig i repo)
+raw_iphone/
+
+# Original backup av treningsdata (allerede inkludert i training_data/)
+training_data_original_backup/
+
+# Genererte rapporter og rådata (kan regenereres)
+reports/diagrams/*.json
+reports/diagrams/*.png
+
+# HSV-kalibreringsfil fra hsv_tuner
+hsv_calibration.txt
+
+# ─── Standard Python ──────────────────────────────────────────────────────────
+
 # C extensions
 *.so
 
@@ -205,3 +235,39 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# Backup files
+*_backup.py
+*_old.py
+*.bak
+
+# HEIC images (large files)
+*.HEIC
+*.heic
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Virtual environments
+venv/
+.venv/
+
+# Backup files
+*_backup.py
+*_old.py
+
+# HEIC images
+*.HEIC
+*.heic

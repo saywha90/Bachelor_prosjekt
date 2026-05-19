@@ -1,0 +1,35 @@
+\hmsubsection{Object Detection Methods}{OAH}{UMA}\label{sec:related-detection}
+
+Object detection is a well-established problem in computer vision, and a wide range of
+methods have been developed to address it. These methods can broadly be divided into two
+categories: classical image processing techniques and learning-based approaches.
+
+Classical methods rely on hand-crafted features and deterministic algorithms. Colour
+thresholding in the HSV colour space is a widely used technique for detecting objects of known
+colour, as HSV separates chromatic information from illumination, making thresholds more
+robust to lighting variations~\cite{bradski2008learning}. The Hough Circle Transform is
+another classical method that detects circular shapes by voting in a parameter space defined
+by circle centre and radius~\cite{hough1962method}. These methods are computationally
+efficient and well-suited for embedded systems with limited processing power, such as the
+Raspberry Pi~5 used in this project.
+
+Learning-based approaches, such as convolutional neural networks (CNNs) and object
+detectors like YOLO~\cite{redmon2016yolo} and SSD, have demonstrated superior accuracy on
+complex detection tasks in uncontrolled environments with many object classes. However, they
+typically require significant computational resources and large labelled datasets for training.
+During early development of this project, MobileNetV2 transfer learning was evaluated as a
+detection method. It produced inference times of 200--500~ms per frame on the Raspberry
+Pi~5, overfit on the limited training dataset, and required extensive labelled data for each
+new lighting condition. This made it unsuitable for real-time operation.
+
+In this project, a hybrid classical approach is employed instead. HSV colour segmentation
+and the Hough Circle Transform serve as the primary detection methods, while a lightweight
+Support Vector Machine (SVM) classifier was evaluated as a secondary colour verification
+step. The classifier was subsequently disabled after being found to misclassify dark
+navy-blue balls as red with high confidence, and the HSV and Hough ensemble alone was
+found to be sufficiently reliable. This combination achieves 20--25~FPS on the Raspberry
+Pi~5, a detection rate of 98--100\% for both red and blue balls under laboratory conditions,
+and a false positive rate below 2\%. The fully deterministic pipeline also offers complete
+explainability --- each rejection has a specific geometric or chromatic reason visible in the
+diagnostic tools --- which is a significant advantage over black-box deep learning approaches
+for a controlled sorting environment.

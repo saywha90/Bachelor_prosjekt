@@ -1,0 +1,46 @@
+\hmsection{Conclusion}{}{}
+
+This project developed an autonomous robotic system for
+detecting, classifying, and sorting coloured balls using
+computer vision and a four-degree-of-freedom arm with a fifth
+motor for the gripper. The system integrates
+a deterministic HSV-based detection pipeline running on a
+Raspberry Pi~5, a closed-form geometric inverse kinematics
+solver, an adaptive current-sensing grip verification mechanism,
+and a dedicated firmware layer on the OpenRB-150 microcontroller.
+
+The minimum viable product defined in Section~\ref{sec:mvp} was achieved
+under the tested laboratory conditions. In the final 20-ball
+validation session, the system sorted \textbf{20/20 balls
+correctly (100\% observed net sorting success)} with \textbf{0
+unrecovered failures} (Section~\ref{sec:mvp-verification}). Both colour classes were
+completed successfully: 10/10 blue balls and 10/10 red balls were
+picked and placed in the correct bins. This net sorting result is
+distinct from grip-attempt behaviour: one additional
+grip-verification rejection occurred before successful retry. Grip
+verification correctly rejected an unstable grasp, and retry logic
+recovered the cycle on the next scan, so the event did not reduce
+the final net sorting result.
+
+Several design decisions proved effective. The closed-form
+geometric IK solver provided deterministic, sub-millisecond
+solutions without the convergence issues of numerical methods.
+The adaptive grip algorithm, which exploits the Dynamixel
+motor's current and load registers as an impedance-based force
+sensor, reliably distinguished between a gripped ball and an
+empty close without requiring external sensor hardware. The
+touch calibration procedure superseded the polynomial sag model
+by providing per-point surface heights that account for the
+arm's real-world droop at each calibrated position.
+
+The principal limitations identified during the project are the
+remaining movement-related thermal load, the absence of
+mid-approach visual correction due to the wrist-mounted camera
+design, and the four-degree-of-freedom constraint that restricts
+the gripper to a fixed downward orientation. The revised scan
+pose mitigated idle scan-pose heating, but movement-related
+heating remains an operational limitation and risk. The most
+impactful improvement identified is to reduce the mass of the
+wrist-to-claw assembly, which would directly lower the
+gravitational torque on the elbow motor and reduce the arm's
+overall sag (Section~\ref{sec:improvements}).
