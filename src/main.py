@@ -73,7 +73,6 @@ from config.arm import (
     EXPECTED_BALL_DIAMETER_CM,
     GRIP_MIN_BALL_BLOCKED_STEPS,
     GRIP_MIN_BLOCKED_WITH_SENSOR,
-    MAX_PICK_REACH_CM,
     DEFAULT_PROFILE_VEL,
     DEFAULT_PROFILE_ACC,
     M5_DEFAULT_CURRENT_LIMIT,
@@ -1092,20 +1091,6 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     obj_x  = detection["x"]
     obj_y  = detection["y"]
     obj_z  = detection["z"]
-
-    horizontal_reach_cm = (obj_x ** 2 + obj_y ** 2) ** 0.5
-    if horizontal_reach_cm > MAX_PICK_REACH_CM:
-        logger.warning(
-            "Skipping %s ball: horizontal pickup reach %.1f cm exceeds configured limit %.1f cm",
-            colour.upper(),
-            horizontal_reach_cm,
-            MAX_PICK_REACH_CM,
-        )
-        print(
-            f"  ⚠️  Skipping {colour.upper()} ball: horizontal pickup reach "
-            f"{horizontal_reach_cm:.1f} cm exceeds {MAX_PICK_REACH_CM:.1f} cm limit"
-        )
-        return False
 
     # ── 1. IDLE ───────────────────────────────────────────────────────
     log_state(State.IDLE, f"Detection: {colour.upper()} ball at ({obj_x}, {obj_y}, {obj_z})")
