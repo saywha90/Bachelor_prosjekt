@@ -177,10 +177,6 @@ CAMERA_OFFSET_X = 6.0     # +6 cm forward offset — arm was reaching 6 cm short
 CAMERA_OFFSET_Y = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
 CAMERA_HEIGHT   = 50.0   # cm – camera lens height above table surface
 
-# Horizontal radial pickup reach limit in cm. Vision may detect slightly
-# farther objects, but pickup motion must not be attempted beyond this cap.
-MAX_PICK_REACH_CM = 56.0
-
 # ── Wrist-mounted camera scan pose ──────────────────────────────────
 # Joint positions (Dynamixel steps) where the arm parks the
 # wrist-mounted camera so it sees the entire workspace from above.
