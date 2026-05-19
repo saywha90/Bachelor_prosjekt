@@ -173,9 +173,13 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
 # Use  python src/calibration/09_touch_calibration.py  to recalibrate.
-CAMERA_OFFSET_X = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
+CAMERA_OFFSET_X = 6.0     # +6 cm forward offset — arm was reaching 6 cm short (2026-05-18)
 CAMERA_OFFSET_Y = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
-CAMERA_HEIGHT   = 58.0   # cm – camera lens height above table surface
+CAMERA_HEIGHT   = 50.0   # cm – camera lens height above table surface
+
+# Horizontal radial pickup reach limit in cm. Vision may detect slightly
+# farther objects, but pickup motion must not be attempted beyond this cap.
+MAX_PICK_REACH_CM = 55.0
 
 # ── Wrist-mounted camera scan pose ──────────────────────────────────
 # Joint positions (Dynamixel steps) where the arm parks the
@@ -193,9 +197,9 @@ CAMERA_HEIGHT   = 58.0   # cm – camera lens height above table surface
 # See docs/calibration.md → Step 02c.
 SCAN_POSE = {
     "m1": 2048,
-    "m2": 2600,   # shoulder raised — wrist ~35 cm above desk (synced with homography_calibration.json)
-    "m3": 950,    # elbow folded — forearm angled down toward desk
-    "m4": 850,    # wrist tilted — camera optical axis points at workspace (synced with homography_calibration.json)
+    "m2": 2750,   # shoulder raised — wrist ~35 cm above desk (synced with homography_calibration.json)
+    "m3": 600,    # elbow folded — forearm angled down toward desk
+    "m4": 1000,    # wrist tilted — camera optical axis points at workspace (synced with homography_calibration.json)
     "m5": 2745,   # claw open and out of camera view
 }
 

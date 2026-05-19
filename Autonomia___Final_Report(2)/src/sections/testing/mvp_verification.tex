@@ -1,0 +1,128 @@
+\hmsubsection{MVP Verification}{UMA}{}\label{sec:mvp-verification}
+
+This section presents the end-to-end verification of the minimum
+viable product defined in Section~\ref{sec:mvp}. The purpose is to
+demonstrate that the system can autonomously detect, pick, and
+sort coloured balls into the correct bins.
+
+\hmsubsubsection{Test Setup}{UMA}{}
+
+The final MVP validation was conducted under the following
+conditions:
+
+\begin{itemize}
+    \item \textbf{Balls:} 20~sorting cycles were completed with
+    10~red and 10~blue spherical balls.
+    \item \textbf{Lighting:} Standard laboratory lighting under
+    the tested laboratory conditions. No additional lighting
+    condition or lux value is claimed for this validation session.
+    \item \textbf{Configuration:} Touch calibration and bin
+    calibration completed. System running in production mode
+    (\texttt{python src/main.py --real-serial --real-camera}).
+    The console log confirmed a real serial connection to the
+    OpenRB-150, a real OAK-D camera, a ready inverse kinematics
+    solver, an OpenRB handshake, and verified adaptive grip
+    feedback before the repeated scan-pick-place cycles.
+    \item \textbf{Camera warm-up:} 30~seconds of auto-exposure
+    stabilisation before the first cycle.
+    \item \textbf{Run continuity:} The system was not restarted
+    between cycles. One additional grip-verification rejection
+    occurred during cycle~7; grip verification correctly rejected
+    an unstable grasp, and the retry logic recovered the cycle on
+    the next scan. The event did not become an unrecovered sorting
+    failure.
+\end{itemize}
+
+\hmsubsubsection{Procedure}{UMA}{}
+
+The system was run for 20 consecutive sorting cycles. Each cycle
+consisted of: scan (camera detection), approach (IK solve and arm
+movement), grab (adaptive grip with verification), sort movement,
+and drop (claw open over the correct bin). A ball was counted as
+sorted correctly only if it ultimately reached the correct bin.
+A failure was counted as unrecovered only if the system did not
+recover during the run and the ball did not reach the correct
+bin. Consequently, the recovered grip-verification event in
+cycle~7 is reported separately from unrecovered sorting failures.
+
+\hmsubsubsection{Results}{UMA}{}
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|l|r|r|r|}
+        \hline
+        \textbf{Metric} & \textbf{Count} &
+        \textbf{Total} & \textbf{Result} \\
+        \hline
+        Net balls sorted correctly & 20 & 20 & 100\% \\
+        \hline
+        Blue balls picked and placed & 10 & 10 & 100\% \\
+        \hline
+        Red balls picked and placed & 10 & 10 & 100\% \\
+        \hline
+        Unrecovered failures & 0 & 20 & 0\% \\
+        \hline
+        Additional grip-verification rejections & 1 & -- & Recovered \\
+        \hline
+    \end{tabular}
+    \caption{Final MVP validation results over 20 completed
+    sorting cycles. The additional grip-verification rejection
+    occurred in cycle~7 on a red ball, was recovered by retry
+    logic on the next scan, and did not prevent correct final
+    placement.}
+    \label{tab:mvp-final-results}
+\end{table}
+
+\hmsubsubsection{Timing Summary}{UMA}{}
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{|l|r|r|r|r|}
+        \hline
+        \textbf{Phase} & \textbf{Average (s)} &
+        \textbf{Minimum (s)} & \textbf{Maximum (s)} &
+        \textbf{$n$} \\
+        \hline
+        Scan & 3.11 & 2.87 & 5.83 & 20 \\
+        \hline
+        Approach & 1.67 & 1.55 & 1.77 & 20 \\
+        \hline
+        Grab & 1.54 & 1.41 & 2.89 & 20 \\
+        \hline
+        Sort & 2.78 & 2.68 & 2.94 & 20 \\
+        \hline
+        Drop & 3.64 & 3.31 & 4.15 & 20 \\
+        \hline
+        Total cycle time & 12.75 & 12.13 & 16.68 & 20 \\
+        \hline
+    \end{tabular}
+    \caption{Timing summary from the final 20-cycle MVP
+    validation session. The maximum scan and grab values include
+    the retry-recovered cycle~7 event.}
+    \label{tab:mvp-final-timing}
+\end{table}
+
+\hmsubsubsection{Assessment}{UMA}{}
+
+The minimum viable product required the system to complete at
+least 10~consecutive autonomous sorting cycles with a detection
+rate above 90\%, a pick success rate above 80\%, and 100\%
+correct bin placement given a correct colour classification.
+
+Based on the results in Table~\ref{tab:mvp-final-results}, the
+system achieved the MVP under the tested laboratory conditions.
+The final validation session sorted 20/20 balls correctly
+(100\% observed net sorting success) with 0 unrecovered failures.
+Blue and red performance were both 10/10 for picked and placed
+balls. This net sorting result is distinct from grip-attempt
+behaviour: one additional grip-verification rejection occurred in
+cycle~7 before successful retry. Grip verification correctly
+rejected an unstable grasp, and retry logic recovered the cycle
+on the next scan; because the ball was ultimately placed in the
+correct bin, this event did not reduce the final net sorting
+result. The timing results in Table~\ref{tab:mvp-final-timing}
+show an average total cycle time of 12.75~s over the 20
+completed cycles, corresponding to approximately 4.7~balls/min
+for this validation session.

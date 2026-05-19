@@ -73,6 +73,7 @@ from config.arm import (
     EXPECTED_BALL_DIAMETER_CM,
     GRIP_MIN_BALL_BLOCKED_STEPS,
     GRIP_MIN_BLOCKED_WITH_SENSOR,
+    MAX_PICK_REACH_CM,
     DEFAULT_PROFILE_VEL,
     DEFAULT_PROFILE_ACC,
     M5_DEFAULT_CURRENT_LIMIT,
@@ -172,8 +173,8 @@ SERIAL_BAUD     = 115200
 #   After sending a position command, wait this long for the arm to
 #   physically reach the target before sending the next command.
 MOVE_SETTLE_TIME = 1.5    # seconds (MUST be long enough for the arm to physically reach the target)
-ARM_POSITION_TOLERANCE_STEPS = 35
-ARM_REACH_TIMEOUT = 8.0
+ARM_POSITION_TOLERANCE_STEPS = 50  # steps — relaxed for rear fold-over poses where gravity/sag causes ~30-40 step offsets
+ARM_REACH_TIMEOUT = 3.0   # seconds — arm reaches "close enough" within 2-3s; was 8.0
 ARM_REACH_POLL_INTERVAL = 0.1
 
 
@@ -1092,6 +1093,20 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
     obj_y  = detection["y"]
     obj_z  = detection["z"]
 
+    horizontal_reach_cm = (obj_x ** 2 + obj_y ** 2) ** 0.5
+    if horizontal_reach_cm > MAX_PICK_REACH_CM:
+        logger.warning(
+            "Skipping %s ball: horizontal pickup reach %.1f cm exceeds configured limit %.1f cm",
+            colour.upper(),
+            horizontal_reach_cm,
+            MAX_PICK_REACH_CM,
+        )
+        print(
+            f"  ⚠️  Skipping {colour.upper()} ball: horizontal pickup reach "
+            f"{horizontal_reach_cm:.1f} cm exceeds {MAX_PICK_REACH_CM:.1f} cm limit"
+        )
+        return False
+
     # ── 1. IDLE ───────────────────────────────────────────────────────
     log_state(State.IDLE, f"Detection: {colour.upper()} ball at ({obj_x}, {obj_y}, {obj_z})")
     time.sleep(0.3)
@@ -1225,10 +1240,9 @@ def run_sorting_cycle(ser, arm: ArmIK, detection: dict, vision: VisionBridge,
         )
         if not reached_drop:
             logger.warning(
-                "[DROP] Position feedback did not confirm rear drop pose; holding an extra %.1fs before opening claw",
-                MOVE_SETTLE_TIME,
+                "[DROP] Position feedback did not confirm rear drop pose; holding an extra 0.3s before opening claw",
             )
-            time.sleep(MOVE_SETTLE_TIME)
+            time.sleep(0.3)
     # Restore normal current limit for opening and for the next cycle
     send_raw_command(ser, {"cmd": "set_current_limit", "id": 5, "value": M5_DEFAULT_CURRENT_LIMIT})
     send_claw(ser, last_ik, CLAW_OPEN_POS, label="OPEN grip (release at rear drop pose)")

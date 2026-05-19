@@ -1,0 +1,41 @@
+\hmsubsection{Development Phases}{}{}\label{sec:development-phases}
+We organised the project into four phases. The lengths of the phases
+are not equal. Phase 3 took the most time because that is where
+hardware and software had to be made to work together.
+\subsubsection*{Phase 1 -- Inception (weeks 1--3)}
+We met the supervisor and the partner and clarified the assignment.
+We agreed on roles (Section \ref{sec:team}). We read  Sortify \cite{sortify} as the closest prior
+project. We agreed on the minimum viable product
+(Section \ref{sec:mvp}). At the end of the phase we had a first draft
+of the requirements list and the risk register.
+\subsubsection*{Phase 2 -- Bring-up (weeks 4--8)}
+We ordered the hardware and brought it up one component at a time.
+The OpenCM 9.04 controller was tested first and rejected because the
+board we got stopped responding after we soldered the headers
+(Section \ref{sec:controller-selection}). The OpenRB-150 was ordered
+next and worked on the first try. We set up the OAK-D S2 alongside it.
+A first version of the vision pipeline used HSV thresholding alone.
+A first version of the firmware could drive each servo on its own.
+At the end of the phase the camera and the arm were both working, but
+not yet talking to each other.
+\subsubsection*{Phase 3 -- Integration (weeks 9--16)}
+This is where most of the work happened. The two halves were joined,
+and the Pi started sending real commands to the arm. We tried
+MobileNetV2 during this phase and dropped it after measuring 200--500
+ms per frame (Section \ref{sec:related-detection}). We added the
+Hough Circle Transform alongside HSV to form the ensemble
+(Section \ref{sec:ensemble}). The inverse kinematics solver was
+written and tested against the physical arm. The sag model was
+calibrated for the first time (Section \ref{sec:sag}).
+\subsubsection*{Phase 4 -- Validation (weeks 17--20)}
+The last phase was for testing and writing. We ran the system end to
+end against the acceptance criteria and measured throughput and
+reliability. The touch calibration procedure
+(Section \ref{sec:touch-cal}) replaced the earlier ruler-based one.
+The SVM colour verifier was disabled after it kept misclassifying dark
+navy-blue balls (Section \ref{sec:svm}). We finalised the report and
+prepared the demonstrator for the bachelor defence.
+The phases match the sprint structure described in
+Section \ref{sec:methodology}. Each phase contained two to four
+sprints, and the sprint retrospectives are the natural place where we
+moved from one phase to the next.

@@ -1,0 +1,75 @@
+\clearpage
+\thispagestyle{empty}
+\phantomsection
+\addcontentsline{toc}{section}{Abstract}
+\section*{Abstract}
+
+\vspace{0.5cm}
+
+This project presents the development of an autonomous robotic system capable of 
+detecting, classifying, and sorting red and blue spherical objects in real time. 
+An OAK-D~S2 RGB camera mounted on the wrist and positioned above the workspace 
+when the arm is in the scan pose captures image data, which is processed on a 
+Raspberry Pi~5 through a deterministic computer vision pipeline. The system then 
+directs a four-degree-of-freedom arm with a fifth motor for the gripper to 
+physically sort the detected balls into designated containers.
+
+\vspace{0.4cm}
+
+A closed-form geometric inverse kinematics solver converts
+detected ball positions into motor commands in less than one
+millisecond. An empirical sag compensation model was developed
+to correct for gravitational droop, but was superseded in the
+deployed system by per-point surface heights from a touch
+calibration procedure. An adaptive grip algorithm exploits the
+Dynamixel motor's built-in current and load registers to verify
+whether a ball is held, enabling the system to detect and
+recover from failed picks without external force sensors.
+
+\vspace{0.4cm}
+
+The vision pipeline combines multi-range HSV colour segmentation, Hough Circle 
+Transform, and geometric contour validation into an ensemble detection system. 
+Detections from multiple methods are merged using a Union-Find structure and 
+filtered through Non-Maximum Suppression. Adaptive lighting compensation via 
+CLAHE ensures robust performance across ambient conditions ranging from 
+300 to 700\,lux. A Support Vector Machine classifier was initially evaluated 
+as a secondary colour-verification step but was disabled in the final 
+implementation after it was found to misclassify dark navy-blue balls as red.
+
+\vspace{0.4cm}
+
+A classical, deterministic approach was chosen over learning-based methods such 
+as convolutional neural networks. MobileNetV2 transfer learning was evaluated 
+during early development but produced inference times of 200--500\,ms per frame 
+on the target hardware, making it unsuitable for real-time operation. The 
+proposed pipeline achieves 20--25\,FPS with a detection rate of 98--100\,\% 
+and a false positive rate below 2\,\% under laboratory conditions, without 
+requiring large labelled training datasets.
+
+\vspace{0.4cm}
+
+The system is fully explainable: every detection rejection has a specific 
+geometric or chromatic cause traceable through the pipeline, making it 
+well-suited for controlled sorting environments where predictable and 
+diagnosable behaviour is required.
+
+\vspace{0.4cm}
+
+In the final 20-ball validation session, under the tested
+laboratory conditions, the system sorted \textbf{20/20 balls
+correctly (100\% observed net sorting success)} with \textbf{0
+unrecovered failures}. Both colour classes were completed
+successfully, with 10/10 blue balls and 10/10 red balls picked
+and placed in the correct bins. One additional grip-verification
+rejection occurred before successful retry: grip verification
+correctly rejected an unstable grasp, and retry logic recovered
+the cycle on the next scan. This event did not affect the final
+net sorting result.
+
+\vspace{1cm}
+
+\noindent\textbf{Keywords:} Computer Vision, Robotic Sorting, HSV Segmentation, 
+Real-Time Systems, Raspberry Pi.
+
+\clearpage
