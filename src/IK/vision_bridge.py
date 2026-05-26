@@ -138,6 +138,7 @@ class VisionBridge:
         self._total_scans: int = 0
         self._conf_history: deque[float] = deque(maxlen=500)
         self._CONF_SMOOTH: int = 30  # rolling average window size
+        self._manual_exposure_warning_shown: bool = False
 
         # ── Load homography calibration from JSON ─────────────────────
         if not _CALIBRATION_FILE.is_file():
@@ -216,6 +217,66 @@ class VisionBridge:
                 )
                 ok = False
         return ok
+
+    def apply_main_manual_exposure(
+        self,
+        *,
+        verbose: bool = True,
+        discard_frames: Optional[int] = None,
+    ) -> bool:
+        """Apply fixed manual exposure to the main camera.
+
+        Main detection uses its own deterministic exposure/ISO/WB workflow so
+        the runtime loop can be tuned independently from touch calibration.
+        This is a no-op in simulation mode.  Real-camera scans reapply this
+        before capture so the camera cannot drift back toward AE/AWB values
+        during long runtimes.
+        """
+        exposure_us = int(vcfg.MAIN_DETECTION_MANUAL_EXPOSURE_US)
+        iso = int(vcfg.MAIN_DETECTION_MANUAL_ISO)
+        wb_k = int(vcfg.MAIN_DETECTION_MANUAL_WB_K)
+        discard = (
+            int(vcfg.MAIN_DETECTION_POST_APPLY_DISCARD_FRAMES)
+            if discard_frames is None else int(discard_frames)
+        )
+
+        if verbose:
+            print("\n  📷  MAIN CAMERA EXPOSURE SETUP")
+            print("       Applying main fixed controls before detection:")
+            print(f"         exposure={exposure_us} µs, ISO={iso}, WB={wb_k} K")
+
+        if not self.use_camera:
+            if verbose:
+                print("       Simulation camera mode — no hardware exposure controls applied.")
+            return True
+
+        if self._cam is None:
+            logger.error("[VISION] Cannot apply manual exposure; camera is not opened")
+            if verbose:
+                print(f"  ⚠️  Manual exposure {exposure_us} µs was NOT applied: camera is not opened.")
+            return False
+
+        applied = self._cam.set_manual_exposure_white_balance(
+            exposure_us=exposure_us,
+            iso=iso,
+            white_balance_k=wb_k,
+            discard_frames=discard,
+        )
+        if applied:
+            self._manual_exposure_warning_shown = False
+            if verbose:
+                print(f"  🔅  Main detection camera manual exposure applied: {exposure_us} µs.")
+        else:
+            if verbose:
+                print(f"  ⚠️  Could not apply main detection manual exposure {exposure_us} µs.")
+                print("       Continuing with current camera controls.")
+            elif not self._manual_exposure_warning_shown:
+                logger.warning(
+                    "[VISION] Could not reapply fixed manual exposure %d µs; continuing with current camera controls",
+                    exposure_us,
+                )
+                self._manual_exposure_warning_shown = True
+        return applied
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -542,6 +603,11 @@ class VisionBridge:
 
         # ── Start of new scan round ───────────────────────────────────────
         self._total_scans += 1
+
+        # Re-send fixed manual controls before each scan.  DepthAI manual
+        # controls are runtime messages, so this low-noise refresh prevents
+        # long-running sessions from drifting back into AE/AWB behaviour.
+        self.apply_main_manual_exposure(verbose=False)
 
         # Clear stale Kalman tracks from any previous scan round.
         # Between scans the arm may have picked up / removed a ball, so old

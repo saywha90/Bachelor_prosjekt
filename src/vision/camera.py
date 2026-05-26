@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 import numpy as np
 import depthai as dai
 from types import TracebackType
@@ -49,6 +50,7 @@ class OAKCamera:
         self._resolution = resolution
         self._pipeline: Optional[dai.Pipeline] = None
         self._queue = None
+        self._control_queue = None
         self._opened = False
 
     # ------------------------------------------------------------------
@@ -80,6 +82,16 @@ class OAKCamera:
             self._pipeline.__enter__()
 
             cam = self._pipeline.create(dai.node.Camera).build()
+            try:
+                cam.inputControl.setBlocking(False)
+                cam.inputControl.setMaxSize(4)
+                self._control_queue = cam.inputControl.createInputQueue()
+            except Exception as e:
+                # Runtime camera controls are best-effort: normal streaming
+                # should still work on DepthAI versions/devices that do not
+                # expose an inputControl queue through the v3 Camera node.
+                logger.warning("OAKCamera: runtime camera controls unavailable: %s", e)
+                self._control_queue = None
             self._queue = cam.requestOutput(self._resolution).createOutputQueue()
             self._pipeline.start()
 
@@ -96,6 +108,72 @@ class OAKCamera:
             logger.error("OAKCamera: Kunne ikke åpne kamera: %s", e)
             self._cleanup()
             return False
+
+    def discard_frames(self, count: int) -> int:
+        """Discard up to ``count`` frames from the RGB stream.
+
+        This is used after startup and after camera-control changes so the
+        caller sees frames captured with settled exposure/white-balance state.
+
+        Returns the number of frames actually discarded.
+        """
+        discarded = 0
+        for _ in range(max(0, int(count))):
+            ret, _frame = self.read()
+            if ret:
+                discarded += 1
+            else:
+                # Avoid a tight loop if the camera drops out temporarily.
+                time.sleep(0.01)
+        return discarded
+
+    def enable_auto_exposure_white_balance(self, discard_frames: int = 0) -> bool:
+        """Enable AE/AWB and unlock any previous exposure/WB locks.
+
+        The calibration workflow calls this before settling on an empty desk,
+        then locks the converged values before detection starts.
+        """
+        ctrl = dai.CameraControl()
+        ctrl.setAutoExposureEnable()
+        ctrl.setAutoExposureLock(False)
+        ctrl.setAutoWhiteBalanceLock(False)
+        return self._send_camera_control(ctrl, "enable AE/AWB", discard_frames)
+
+    def lock_auto_exposure_white_balance(self, discard_frames: int = 0) -> bool:
+        """Lock the current auto-exposure and auto-white-balance values.
+
+        DepthAI keeps the latest AE sensor configuration when AE lock is set.
+        Locking after the desk has been visible for several frames prevents a
+        later hand/forearm entering the image from shifting exposure or white
+        balance during ball auto-detection.
+        """
+        ctrl = dai.CameraControl()
+        ctrl.setAutoExposureLock(True)
+        ctrl.setAutoWhiteBalanceLock(True)
+        return self._send_camera_control(ctrl, "lock AE/AWB", discard_frames)
+
+    def set_manual_exposure_white_balance(
+        self,
+        exposure_us: int,
+        iso: int,
+        white_balance_k: Optional[int] = None,
+        discard_frames: int = 0,
+    ) -> bool:
+        """Set deterministic manual exposure/ISO and optional white balance.
+
+        This is available for calibration/diagnostics if the locked-auto values
+        are not stable enough for a specific lighting setup.  The explicit
+        AE/AWB locks make the command robust across DepthAI versions/devices
+        where automatic controls may otherwise keep adapting after a manual
+        exposure command has been sent.
+        """
+        ctrl = dai.CameraControl()
+        ctrl.setManualExposure(int(exposure_us), int(iso))
+        if white_balance_k is not None:
+            ctrl.setManualWhiteBalance(int(white_balance_k))
+        ctrl.setAutoExposureLock(True)
+        ctrl.setAutoWhiteBalanceLock(True)
+        return self._send_camera_control(ctrl, "manual exposure/WB", discard_frames)
 
     def isOpened(self) -> bool:
         """Returnerer True hvis kameraet er åpent og kjører."""
@@ -187,6 +265,7 @@ class OAKCamera:
 
     def _cleanup(self) -> None:
         """Release camera resources on context exit."""
+        self._control_queue = None
         if self._pipeline is not None:
             try:
                 # Intentional dunder call: matches the explicit __enter__()
@@ -197,3 +276,19 @@ class OAKCamera:
             self._pipeline = None
         self._queue = None
         self._opened = False
+
+    def _send_camera_control(self, ctrl: dai.CameraControl, label: str,
+                             discard_frames: int = 0) -> bool:
+        """Send a DepthAI CameraControl message through the runtime queue."""
+        if self._control_queue is None:
+            logger.warning("OAKCamera: cannot %s; no runtime control queue", label)
+            return False
+        try:
+            self._control_queue.send(ctrl)
+            if discard_frames > 0:
+                self.discard_frames(discard_frames)
+            logger.info("OAKCamera: %s applied", label)
+            return True
+        except Exception as e:
+            logger.warning("OAKCamera: failed to %s: %s", label, e)
+            return False
