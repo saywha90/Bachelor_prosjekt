@@ -173,7 +173,7 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
 # Use  python src/calibration/09_touch_calibration.py  to recalibrate.
-CAMERA_OFFSET_X = 6.0     # +6 cm forward offset — arm was reaching 6 cm short (2026-05-18)
+CAMERA_OFFSET_X = 1.0     # +6 cm forward offset — arm was reaching 6 cm short (2026-05-18)
 CAMERA_OFFSET_Y = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
 CAMERA_HEIGHT   = 50.0   # cm – camera lens height above table surface
 

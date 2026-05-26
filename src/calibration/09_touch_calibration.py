@@ -46,6 +46,7 @@ import json
 import math
 import tempfile
 import time
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -82,9 +83,25 @@ from ik.solver import ArmIK
 MIN_POINTS = 4
 MAX_POINTS = 20
 AVG_FRAMES = 40            # number of frames to average for centroid
-DETECTION_SETTLE = 10      # discard first N frames (camera auto-exposure)
+DETECTION_SETTLE = 10      # extra frames to discard before detection averaging
 WINDOW_NAME = "Touch Calibration"
 CALIBRATION_FILE = Path(__file__).resolve().parent / "homography_calibration.json"
+
+# Temporal auto-detection clustering.  These are intentionally stricter than
+# the detector's single-frame NMS: between-frame centroid jitter should be small,
+# while distinct 50 mm balls can sit fairly close together in the calibration
+# image.  A large fixed threshold previously merged neighbouring detections and
+# let unstable table/background artifacts survive as calibration points.
+AUTO_CLUSTER_MIN_FRAME_FRACTION = 0.25
+AUTO_CLUSTER_MIN_FRAME_FRACTION_WITH_EXPECTED = 0.20
+AUTO_CLUSTER_MIN_HITS = 5
+AUTO_CLUSTER_MIN_HITS_WITH_EXPECTED = 4
+AUTO_CLUSTER_MIN_MATCH_PX = 14.0
+AUTO_CLUSTER_MAX_MATCH_PX = 28.0
+AUTO_CLUSTER_MATCH_RADIUS_FACTOR = 1.35
+AUTO_CLUSTER_BORDER_RADIUS_FACTOR = 0.95
+AUTO_CLUSTER_MAX_STD_RADIUS_FACTOR = 0.75
+AUTO_CLUSTER_MAX_STD_PX = 12.0
 
 SERIAL_PORT = "/dev/cu.usbmodem101"
 SERIAL_BAUD = 115200
@@ -121,6 +138,55 @@ def _limp_fine_tune_start_height(x: float, y: float, coarse_z: float) -> Tuple[f
 _clicked_points: List[Tuple[int, int]] = []
 _current_mouse = (0, 0)
 _click_limit = 4
+
+
+@dataclass
+class _CentroidSample:
+    """One per-frame detection sample used by touch-calibration averaging."""
+
+    x: float
+    y: float
+    radius: float
+    confidence: float
+    color: BallColor
+    frame_idx: int
+
+
+@dataclass
+class _TemporalBallCluster:
+    """A candidate physical ball tracked across calibration averaging frames."""
+
+    color: BallColor
+    samples: List[_CentroidSample] = field(default_factory=list)
+
+    def add(self, sample: _CentroidSample) -> None:
+        self.samples.append(sample)
+
+    @property
+    def hit_count(self) -> int:
+        return len(self.samples)
+
+    @property
+    def center(self) -> Tuple[float, float]:
+        return (
+            float(np.mean([s.x for s in self.samples])),
+            float(np.mean([s.y for s in self.samples])),
+        )
+
+    @property
+    def avg_radius(self) -> float:
+        return float(np.median([s.radius for s in self.samples]))
+
+    @property
+    def mean_confidence(self) -> float:
+        return float(np.mean([s.confidence for s in self.samples]))
+
+    @property
+    def std_xy(self) -> Tuple[float, float]:
+        return (
+            float(np.std([s.x for s in self.samples])),
+            float(np.std([s.y for s in self.samples])),
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -317,11 +383,235 @@ def _move_to_scan_pose(ser):
     print("[ARM] ✅ Arm is at SCAN_POSE.\n")
 
 
+def _prepare_camera_for_calibration_scan(cam: OAKCamera) -> bool:
+    """Apply calibration-matched manual exposure, with AE/AWB lock as fallback."""
+    print("\n  📷  CAMERA EXPOSURE SETUP")
+    print("       Applying the same deterministic camera controls used by main")
+    print("       detection before touch-calibration ball auto-detection.")
+
+    if bool(getattr(vcfg, "CALIBRATION_USE_DIM_MANUAL_EXPOSURE", True)):
+        exposure_us = int(vcfg.CALIBRATION_DIM_MANUAL_EXPOSURE_US)
+        iso = int(vcfg.CALIBRATION_DIM_MANUAL_ISO)
+        wb_k = int(vcfg.CALIBRATION_DIM_MANUAL_WB_K)
+        discard = int(vcfg.CALIBRATION_DIM_POST_APPLY_DISCARD_FRAMES)
+        print("       Applying calibration-matched fixed controls:")
+        print(f"         exposure={exposure_us} µs, ISO={iso}, WB={wb_k} K")
+        print(f"         discard_after_apply={discard} frames")
+        applied = cam.set_manual_exposure_white_balance(
+            exposure_us=exposure_us,
+            iso=iso,
+            white_balance_k=wb_k,
+            discard_frames=discard,
+        )
+        if applied:
+            print("  🔅  Touch calibration camera manual exposure applied:")
+            print(f"         exposure={exposure_us} µs, ISO={iso}, WB={wb_k} K")
+            print(f"         discarded {discard} post-control frame(s) before auto-detection.")
+            print("       Tune CALIBRATION_DIM_MANUAL_EXPOSURE_US / ISO / WB_K in config/vision.py if needed.")
+            return True
+
+        print("  ⚠️  Could not apply dim manual exposure through DepthAI runtime controls.")
+        print("       Falling back to empty-desk AE/AWB settle + lock.")
+    else:
+        print("       Dim manual exposure disabled in config; using AE/AWB settle + lock.")
+
+    print("       Make sure the OAK-D view shows the unobstructed desk.")
+    print("       The camera will settle exposure/white balance on the empty desk,")
+    print("       then lock those values before ball auto-detection.")
+    input("       Press ENTER when the desk view is unobstructed...")
+
+    cam.enable_auto_exposure_white_balance(discard_frames=2)
+
+    settle_frames = int(vcfg.CALIBRATION_EMPTY_DESK_SETTLE_FRAMES)
+    print(f"  ⏳  Settling AE/AWB on unobstructed desk ({settle_frames} frames)...")
+    for _ in range(settle_frames):
+        ret, frame = cam.read()
+        if not ret or frame is None:
+            continue
+
+    locked = cam.lock_auto_exposure_white_balance(
+        discard_frames=int(vcfg.CALIBRATION_POST_LOCK_DISCARD_FRAMES)
+    )
+    if locked:
+        print("  🔒  AE/AWB locked for calibration auto-detection.")
+    else:
+        print("  ⚠️  Could not lock AE/AWB through DepthAI runtime controls.")
+        print("       Continuing with auto camera controls; keep the desk view unobstructed.")
+    return locked
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  Phase 1 — Auto-detect ball centroids with frame averaging
 # ══════════════════════════════════════════════════════════════════════
 
-def _auto_detect_balls(cam: OAKCamera) -> List[Tuple[float, float]]:
+
+def _cluster_match_threshold(cluster: _TemporalBallCluster, sample: _CentroidSample) -> float:
+    """Return the maximum distance for treating a sample as the same ball."""
+    radius = max(cluster.avg_radius, sample.radius)
+    return float(np.clip(
+        radius * AUTO_CLUSTER_MATCH_RADIUS_FACTOR,
+        AUTO_CLUSTER_MIN_MATCH_PX,
+        AUTO_CLUSTER_MAX_MATCH_PX,
+    ))
+
+
+def _is_border_artifact(sample: _CentroidSample,
+                        frame_shape: Tuple[int, ...]) -> bool:
+    """Reject centres too close to the image border to represent a full ball."""
+    h, w = frame_shape[:2]
+    margin = max(AUTO_CLUSTER_MIN_MATCH_PX,
+                 sample.radius * AUTO_CLUSTER_BORDER_RADIUS_FACTOR)
+    return (
+        sample.x < margin or sample.y < margin or
+        sample.x > (w - margin) or sample.y > (h - margin)
+    )
+
+
+def _add_sample_to_clusters(clusters: List[_TemporalBallCluster],
+                            sample: _CentroidSample,
+                            expected_count: Optional[int] = None) -> None:
+    """Assign a per-frame detection to its nearest safe temporal cluster."""
+    best_idx: Optional[int] = None
+    best_dist = float("inf")
+    best_threshold = 0.0
+
+    for idx, cluster in enumerate(clusters):
+        # Do not merge red/blue candidates across frames.  A false detection of
+        # one colour should not absorb a real ball of the other colour.
+        if cluster.color != sample.color:
+            continue
+        avg_x, avg_y = cluster.center
+        dist = math.hypot(sample.x - avg_x, sample.y - avg_y)
+        threshold = _cluster_match_threshold(cluster, sample)
+        if dist < best_dist:
+            best_idx = idx
+            best_dist = dist
+            best_threshold = threshold
+
+    if best_idx is None or best_dist > best_threshold:
+        clusters.append(_TemporalBallCluster(color=sample.color, samples=[sample]))
+        return
+
+    # Near the boundary between two possible balls, prefer creating a candidate
+    # instead of absorbing it when the user expects many calibration points.
+    # Unstable one-off candidates are removed later by hit-count/stability gates.
+    if (expected_count is not None and len(clusters) < expected_count and
+            best_dist > 0.80 * best_threshold):
+        avg_x, avg_y = clusters[best_idx].center
+        print(f"  ⚠️  Ambiguous ball at ({sample.x:.0f}, {sample.y:.0f}) is "
+              f"{best_dist:.0f}px from cluster at ({avg_x:.0f}, {avg_y:.0f}); "
+              "keeping a separate candidate instead of absorbing it.")
+        clusters.append(_TemporalBallCluster(color=sample.color, samples=[sample]))
+        return
+
+    clusters[best_idx].add(sample)
+
+
+def _remove_duplicate_clusters(clusters: List[_TemporalBallCluster]) -> List[_TemporalBallCluster]:
+    """Merge only truly duplicate temporal clusters after averaging."""
+    if len(clusters) <= 1:
+        return clusters
+
+    ordered = sorted(clusters, key=lambda c: (c.hit_count, c.mean_confidence), reverse=True)
+    kept: List[_TemporalBallCluster] = []
+    for cluster in ordered:
+        cx, cy = cluster.center
+        duplicate_idx: Optional[int] = None
+        for idx, accepted in enumerate(kept):
+            if cluster.color != accepted.color:
+                continue
+            ax, ay = accepted.center
+            dist = math.hypot(cx - ax, cy - ay)
+            threshold = min(
+                _cluster_match_threshold(accepted, cluster.samples[0]),
+                _cluster_match_threshold(cluster, accepted.samples[0]),
+            )
+            # Post-average duplicate merging is stricter than per-frame matching:
+            # two stable centres this far apart are much more likely to be two
+            # physical balls than duplicate observations of one ball.
+            if dist <= threshold * 1.05:
+                duplicate_idx = idx
+                break
+        if duplicate_idx is None:
+            kept.append(cluster)
+        elif cluster.hit_count > kept[duplicate_idx].hit_count:
+            kept[duplicate_idx] = cluster
+    return kept
+
+
+def _finalize_temporal_clusters(clusters: List[_TemporalBallCluster],
+                                total_frames: int,
+                                expected_count: Optional[int] = None) -> List[Tuple[float, float]]:
+    """Validate temporal clusters and return averaged ball centres."""
+    min_fraction = (AUTO_CLUSTER_MIN_FRAME_FRACTION_WITH_EXPECTED
+                    if expected_count else AUTO_CLUSTER_MIN_FRAME_FRACTION)
+    min_hits = (AUTO_CLUSTER_MIN_HITS_WITH_EXPECTED
+                if expected_count else AUTO_CLUSTER_MIN_HITS)
+    min_hits = max(min_hits, int(math.ceil(total_frames * min_fraction)))
+
+    stable: List[_TemporalBallCluster] = []
+    rejected = 0
+    for cluster in _remove_duplicate_clusters(clusters):
+        n = cluster.hit_count
+        avg_cx, avg_cy = cluster.center
+        std_x, std_y = cluster.std_xy
+        std_xy = math.hypot(std_x, std_y)
+        avg_radius = cluster.avg_radius
+        max_std = min(AUTO_CLUSTER_MAX_STD_PX,
+                      max(4.0, avg_radius * AUTO_CLUSTER_MAX_STD_RADIUS_FACTOR))
+
+        if n < min_hits:
+            rejected += 1
+            print(f"       Skipping unstable candidate at ({avg_cx:.1f}, {avg_cy:.1f}) px: "
+                  f"only {n}/{total_frames} frames (need ≥{min_hits}), "
+                  f"color={cluster.color.value}, conf≈{cluster.mean_confidence:.2f}, "
+                  f"r≈{avg_radius:.1f}px.")
+            continue
+        if std_xy > max_std:
+            rejected += 1
+            print(f"       Skipping unstable candidate at ({avg_cx:.1f}, {avg_cy:.1f}) px: "
+                  f"jitter σ={std_xy:.1f}px (limit {max_std:.1f}px), "
+                  f"color={cluster.color.value}, conf≈{cluster.mean_confidence:.2f}, "
+                  f"r≈{avg_radius:.1f}px.")
+            continue
+        stable.append(cluster)
+
+    # Prefer frequently observed, stable, confident candidates.  Hit-count
+    # dominates false positives; jitter is second because unstable background
+    # artifacts may receive deceptively high single-frame detector confidence.
+    stable.sort(
+        key=lambda c: (
+            c.hit_count,
+            -math.hypot(c.std_xy[0], c.std_xy[1]),
+            c.mean_confidence,
+        ),
+        reverse=True,
+    )
+    if expected_count is not None and len(stable) > expected_count:
+        print(f"       Keeping the {expected_count} most stable candidates "
+              f"and dropping {len(stable) - expected_count} extra candidate(s).")
+        stable = stable[:expected_count]
+
+    # Sort touch order deterministically left-to-right, then top-to-bottom.
+    stable.sort(key=lambda c: (c.center[0], c.center[1]))
+
+    averaged: List[Tuple[float, float]] = []
+    for cluster in stable:
+        avg_cx, avg_cy = cluster.center
+        std_x, std_y = cluster.std_xy
+        n = cluster.hit_count
+        print(f"       Ball {len(averaged)+1}: ({avg_cx:.1f}, {avg_cy:.1f}) px  "
+              f"[{n}/{total_frames} frames, σ=({std_x:.1f}, {std_y:.1f}) px, "
+              f"r≈{cluster.avg_radius:.1f}px]")
+        averaged.append((avg_cx, avg_cy))
+
+    if rejected:
+        print(f"       Rejected {rejected} unstable/low-support candidate(s).")
+    return averaged
+
+
+def _auto_detect_balls(cam: OAKCamera,
+                       expected_count: Optional[int] = None) -> Tuple[List[Tuple[float, float]], Optional[np.ndarray]]:
     """Detect all balls in the camera feed, average centroids over many frames.
 
     Returns a list of (cx, cy) pixel coordinates sorted left-to-right.
@@ -329,21 +619,30 @@ def _auto_detect_balls(cam: OAKCamera) -> List[Tuple[float, float]]:
     detector = SimpleBallDetector(
         min_radius=vcfg.BALL_MIN_RADIUS,
         max_radius=vcfg.BALL_MAX_RADIUS,
-        confidence_threshold=0.20,           # lowered for calibration — catch all balls
+        confidence_threshold=0.35,           # raised from 0.20 to reject grey ground false positives
         enable_adaptive_lighting=True,
         max_balls_per_color=MAX_POINTS,       # allow up to MAX_POINTS per color
     )
+    detector_module = sys.modules.get(SimpleBallDetector.__module__)
+    detector_path = Path(getattr(detector_module, "__file__", "unknown"))
+    print("  🔎  Detector build: "
+          f"{getattr(detector_module, 'DETECTOR_BUILD_ID', 'unknown')} "
+          f"from {detector_path.resolve() if detector_path != Path('unknown') else 'unknown'}")
+    print("       Touch-calibration file: "
+          f"{Path(__file__).resolve()}  "
+          f"border_margin={AUTO_CLUSTER_BORDER_RADIUS_FACTOR:.2f}×radius")
 
-    # Let camera auto-exposure settle
-    print(f"  ⏳  Letting camera settle ({DETECTION_SETTLE} frames)...")
+    # Drop a few additional frames so detection starts from current controls.
+    print(f"  ⏳  Discarding {DETECTION_SETTLE} pre-detection frame(s)...")
     for _ in range(DETECTION_SETTLE):
         cam.read()
 
     # Accumulate detections over AVG_FRAMES
     print(f"  ⏳  Averaging ball positions over {AVG_FRAMES} frames...")
-    all_centroids: dict[int, List[Tuple[float, float]]] = {}
+    clusters: List[_TemporalBallCluster] = []
 
     last_frame = None
+    skipped_border = 0
     for frame_idx in range(AVG_FRAMES):
         ret, frame = cam.read()
         if not ret or frame is None:
@@ -355,46 +654,34 @@ def _auto_detect_balls(cam: OAKCamera) -> List[Tuple[float, float]]:
             if ball.color == BallColor.UNKNOWN:
                 continue
             cx, cy = ball.center
-            # Assign to nearest existing cluster or create new one
-            # Threshold = max expected pixel jitter for the same physical ball
-            # between frames, NOT contour filter size.  2*BALL_MAX_RADIUS (300px)
-            # merged distinct balls that were only ~200px apart.
-            cluster_threshold = max(3 * vcfg.BALL_MIN_RADIUS, 40)
-            matched = False
-            for cid, centroid_list in all_centroids.items():
-                avg_x = np.mean([c[0] for c in centroid_list])
-                avg_y = np.mean([c[1] for c in centroid_list])
-                dist = math.hypot(cx - avg_x, cy - avg_y)
-                if dist < cluster_threshold:
-                    if dist > 0.7 * cluster_threshold:
-                        print(f"  ⚠️  Ball at ({cx:.0f}, {cy:.0f}) absorbed into "
-                              f"cluster at ({avg_x:.0f}, {avg_y:.0f}) — check ball spacing")
-                    centroid_list.append((float(cx), float(cy)))
-                    matched = True
-                    break
-            if not matched:
-                all_centroids[len(all_centroids)] = [(float(cx), float(cy))]
+            sample = _CentroidSample(
+                x=float(cx),
+                y=float(cy),
+                radius=float(ball.radius),
+                confidence=float(ball.confidence),
+                color=ball.color,
+                frame_idx=frame_idx,
+            )
+            if _is_border_artifact(sample, frame.shape):
+                skipped_border += 1
+                continue
+            _add_sample_to_clusters(clusters, sample, expected_count=expected_count)
 
-    # Average each cluster
-    averaged: List[Tuple[float, float]] = []
-    for cid, centroid_list in all_centroids.items():
-        if len(centroid_list) < AVG_FRAMES * 0.3:
-            # Ball was detected in < 30% of frames — unreliable, skip
-            continue
-        avg_cx = float(np.mean([c[0] for c in centroid_list]))
-        avg_cy = float(np.mean([c[1] for c in centroid_list]))
-        n = len(centroid_list)
-        std_x = float(np.std([c[0] for c in centroid_list]))
-        std_y = float(np.std([c[1] for c in centroid_list]))
-        print(f"       Ball {len(averaged)+1}: ({avg_cx:.1f}, {avg_cy:.1f}) px  "
-              f"[{n}/{AVG_FRAMES} frames, σ=({std_x:.1f}, {std_y:.1f}) px]")
-        averaged.append((avg_cx, avg_cy))
+    if skipped_border:
+        print(f"       Ignored {skipped_border} near-border sample(s) that cannot be full balls.")
+
+    averaged = _finalize_temporal_clusters(
+        clusters,
+        AVG_FRAMES,
+        expected_count=expected_count,
+    )
 
     return averaged, last_frame
 
 
 def _preview_detections(frame: np.ndarray,
-                        points: List[Tuple[float, float]]) -> Optional[bool]:
+                        points: List[Tuple[float, float]],
+                        expected_count: Optional[int] = None) -> Optional[bool]:
     """Show detected ball positions on the last frame and ask user to confirm.
 
     Returns True if user accepts, False if they want to fall back to manual.
@@ -402,9 +689,12 @@ def _preview_detections(frame: np.ndarray,
     overlay = frame.copy()
     h, w = overlay.shape[:2]
 
-    cv2.rectangle(overlay, (0, 0), (w, 36), (0, 80, 0), -1)
+    count_ok = expected_count is None or len(points) == expected_count
+    banner_color = (0, 80, 0) if count_ok else (0, 120, 200)
+    cv2.rectangle(overlay, (0, 0), (w, 36), banner_color, -1)
+    expected_text = f"/{expected_count}" if expected_count is not None else ""
     cv2.putText(overlay,
-                f"Auto-detected {len(points)} balls.  ENTER=accept  R=retry  M=manual click",
+                f"Auto-detected {len(points)}{expected_text} balls.  ENTER=accept  R=retry  M=manual click",
                 (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
 
     for i, (cx, cy) in enumerate(points):
@@ -1214,6 +1504,13 @@ def main():
         print("║  Step 4: Homography computed with error report.             ║")
         print("╚══════════════════════════════════════════════════════════════╝\n")
 
+        detector_module = sys.modules.get(SimpleBallDetector.__module__)
+        print("[INIT] Running calibration script:", Path(__file__).resolve())
+        print("[INIT] Using detector module:",
+              Path(getattr(detector_module, "__file__", "unknown")).resolve())
+        print("[INIT] Detector build:",
+              getattr(detector_module, "DETECTOR_BUILD_ID", "unknown"))
+
         # Ask how many balls
         while True:
             n_input = input(f"How many balls are on the desk? [{MIN_POINTS}–{MAX_POINTS}] (default 8): ").strip()
@@ -1246,6 +1543,7 @@ def main():
         if not cam.open():
             print("❌ Could not open camera.")
             return
+        _prepare_camera_for_calibration_scan(cam)
 
         # ── Phase 1: Detect ball positions ────────────────────────────────
         pixel_points: Optional[List[Tuple[float, float]]] = None
@@ -1254,7 +1552,7 @@ def main():
         while pixel_points is None:
             if use_auto:
                 print(f"\n  🔍  Auto-detecting {n_balls} balls...")
-                detected, last_frame = _auto_detect_balls(cam)
+                detected, last_frame = _auto_detect_balls(cam, expected_count=n_balls)
 
                 if len(detected) < MIN_POINTS:
                     print(f"  ⚠️  Only found {len(detected)} balls (need at least {MIN_POINTS}).")
@@ -1264,11 +1562,14 @@ def main():
 
                 if len(detected) != n_balls:
                     print(f"  ⚠️  Found {len(detected)} balls but expected {n_balls}.")
-                    print(f"       Proceeding with {len(detected)} detected balls.\n")
+                    print("       Auto-detection will NOT silently continue with the wrong count.")
+                    print("       Press R in the preview to retry after moving balls/lighting,")
+                    print("       press M to click all expected balls manually, or press ENTER")
+                    print(f"       only if you intentionally want to calibrate with {len(detected)} points.\n")
 
                 # Show preview for confirmation
                 if last_frame is not None:
-                    result = _preview_detections(last_frame, detected)
+                    result = _preview_detections(last_frame, detected, expected_count=n_balls)
                     if result is True:
                         pixel_points = detected
                     elif result is False:

@@ -6,7 +6,7 @@ Ensemble-system for pålitelig deteksjon av røde og blå baller med
 Luxonis OAK Series 2 kamera.
 
 Deteksjonsrørledning:
-  1. Multi-range HSV color detection (4 red ranges, 2 blue ranges)
+  1. Multi-range HSV color detection (5 red ranges, 2 blue ranges)
   2. Hough Circle Transform (geometrisk validering, aktiveres hvert N-te frame)
   3. Ensemble voting (slår sammen begge metoder)
   4. Adaptiv lyskompensasjon (CLAHE ved lavt lys)
@@ -30,7 +30,12 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SimpleBallDetector", "BallColor", "DetectedBall"]
+DETECTOR_BUILD_ID = "blue-hough-fallback-per-color-nms-2026-05-26"
+
+BLUE_HUE_MIN = 78
+BLUE_HUE_MAX = 135
+
+__all__ = ["SimpleBallDetector", "BallColor", "DetectedBall", "DETECTOR_BUILD_ID"]
 
 
 class BallColor(Enum):
@@ -271,7 +276,7 @@ class SimpleBallDetector:
     Rørledning per frame:
       1. Lysanalyse — klassifiser som low / medium / high
       2. CLAHE-kompensasjon ved lavt lys
-      3. Multi-range HSV deteksjon (4 red, 2 blue ranges)
+      3. Multi-range HSV deteksjon (5 red, 2 blue ranges)
       4. Hough Circle Transform (geometrisk validering, cachet)
       5. Ensemble merge + NMS
       6. SVM fargeverifisering (sekundær)
@@ -323,14 +328,16 @@ class SimpleBallDetector:
         # Ballen er LYS og mettet — IKKE mørk som tidligere antatt.
         # S_min senket fra 80→50 for å fange matte røde baller under varierende lys.
         self.red_ranges = [
-            # Rød høy side (H wraparound nær 180) — primær range
-            (np.array([160, 120,  40]), np.array([179, 255, 255])),
-            # Rød lav side (H wraparound fra 0) — narrow H to exclude beige
-            (np.array([0,   120,  40]), np.array([10,  255, 255])),
-            # Mørk rød (skygge / lavt lys) — lav-side hue, narrow
-            (np.array([0,    80,  20]), np.array([10,  255, 180])),
-            # Mørk rød (skygge / lavt lys) — høy-side hue
-            (np.array([160,  80,  20]), np.array([179, 255, 180])),
+            # Rød høy side (H wraparound nær 180) — primær range (S lowered 120→60)
+            (np.array([160,  60,  40]), np.array([179, 255, 255])),
+            # Rød lav side (H wraparound fra 0) — extended H 10→20, S lowered 120→60
+            (np.array([0,    60,  40]), np.array([20,  255, 255])),
+            # Mørk rød (skygge / lavt lys) — lav-side hue, S raised 40→55 to reject grey ground
+            (np.array([0,    55,  20]), np.array([20,  255, 255])),
+            # Mørk rød (skygge / lavt lys) — høy-side hue, S raised 40→55 to reject grey ground
+            (np.array([160,  55,  20]), np.array([179, 255, 255])),
+            # Orange-shifted red under bright presentation lights — S raised 30→55 to reject grey ground
+            (np.array([0,    55,  50]), np.array([25,  255, 255])),
         ]
 
         # Multi-range HSV thresholds for BLUE
@@ -338,12 +345,20 @@ class SimpleBallDetector:
         # rød/bakgrunn mer permissiv: de lavere S-gulvene brukes kun i blå-masken,
         # og _validate_contour() krever fortsatt blå hue-dominans for lav-S konturer.
         # Typiske målinger:
+        #   Low-light cyan:   H≈78-100,  S≈45-255, V≈25-145
         #   Lys/cyan-ish blå: H≈85-110,  S≈55-255, V≈60-255
         #   Standard blå:     H≈100-135, S≈90-255, V≈40-255
         #   Mørk navy:        H≈95-135,  S≈70-255, V≈20-190
         self.blue_ranges = [
-            # Lys/cyan-ish blå — lavere metning, men begrenset hue-vindu.
-            (np.array([ 85,  55,  60]), np.array([115, 255, 255])),
+            # Low-light cyan/teal blue under dim manual exposure.
+            # V ceiling raised 145→255: bright cyan highlight pixels (H≈78-90,
+            # V>145) were falling between range 1 (V≤145) and range 2 (H≥85),
+            # leaving only a dim crescent that failed roundness gates.
+            # S floor lowered 45→40 to catch slightly desaturated cyan body.
+            (np.array([ 78,  40,  20]), np.array([100, 255, 255])),
+            # Lys/cyan-ish blå — H floor lowered 85→78 to cover full cyan range
+            # at moderate-to-high saturation.  Shape gates still reject fabric.
+            (np.array([ 78,  50,  50]), np.array([115, 255, 255])),
             # Blå — primær range (standard/mettet blå)
             (np.array([100,  90,  40]), np.array([135, 255, 255])),
             # Mørk marineblå (navy) — lavere S og V, bredere H
@@ -459,9 +474,7 @@ class SimpleBallDetector:
         Returns:
             Liste med validerte DetectedBall
         """
-        combined = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        for lower, upper in ranges:
-            combined = cv2.bitwise_or(combined, cv2.inRange(hsv, lower, upper))
+        combined = self._build_color_mask(hsv, ranges, color)
 
         combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  self.morph_kernel_small)
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, self.morph_kernel_large)
@@ -485,6 +498,259 @@ class SimpleBallDetector:
             if ball:
                 balls.append(ball)
         return balls
+
+    def _build_color_mask(
+        self,
+        hsv: np.ndarray,
+        ranges: List[Tuple[np.ndarray, np.ndarray]],
+        color: BallColor,
+    ) -> np.ndarray:
+        """Build a HSV mask for one colour, with seeded red/orange glare repair.
+
+        Red/orange calibration balls often contain three different pixel classes
+        in the same physical ball: saturated red seed pixels, orange/yellow-shifted
+        body pixels caused by presentation lights, and low-saturation bright
+        specular highlights.  A plain global threshold sees only disconnected red
+        fragments, so the contour is unstable and temporal calibration later sees
+        the ball in only a few frames.
+
+        To avoid reintroducing background false positives, the permissive
+        orange/glare pixels are accepted only when they are spatially connected to
+        the strict red seed mask.  Separate orange objects or bright desk patches
+        without red support are still rejected before contour validation.
+        """
+        strict = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for lower, upper in ranges:
+            strict = cv2.bitwise_or(strict, cv2.inRange(hsv, lower, upper))
+
+        if color == BallColor.BLUE:
+            return self._repair_blue_mask(hsv, strict)
+
+        if color != BallColor.RED:
+            return strict
+
+        hue = hsv[:, :, 0]
+        sat = hsv[:, :, 1]
+        val = hsv[:, :, 2]
+
+        # First recover orange-shifted red body pixels.  H=26..35 is common on
+        # red/orange balls under glare, but is not globally safe enough to add to
+        # red_ranges.  Keep only components that touch the strict red seed.
+        orange_hue = ((hue <= 35) | (hue >= 150))
+        orange_body = np.zeros_like(strict)
+        orange_body[(orange_hue & (sat >= 35) & (val >= 35))] = 255
+        repaired = self._keep_components_touching_seed(orange_body, strict)
+
+        # Some real calibration balls are orange-shifted across the entire
+        # visible body in OAK frames, leaving little or no H<=25 / H>=160 strict
+        # red seed.  The previous seed-only repair therefore saw only unstable
+        # glare fragments, so temporal calibration reported low-support misses.
+        # Promote standalone orange components only when the component itself is
+        # ball-like; irregular orange desk patches still fail shape validation.
+        standalone_orange = self._keep_ball_like_orange_components(orange_body, strict)
+        repaired = cv2.bitwise_or(repaired, standalone_orange)
+
+        # Then fill specular-highlight gaps, but only close to the already
+        # red/orange-supported component.  This repairs split crescents without
+        # letting bright table/background regions become standalone detections.
+        support = cv2.dilate(repaired, self.morph_kernel_large, iterations=1)
+        glare = np.zeros_like(strict)
+        glare[((sat <= 90) & (val >= 165))] = 255
+        repaired = cv2.bitwise_or(repaired, cv2.bitwise_and(glare, support))
+
+        return repaired
+
+    def _repair_blue_mask(self, hsv: np.ndarray, strict: np.ndarray) -> np.ndarray:
+        """Recover shadowed blue/cyan ball pixels without accepting fabric blobs.
+
+        The cyan ball can be geometrically round in the camera image while its
+        lower half falls below the normal blue S/V floor under dim manual
+        exposure.  If only the saturated upper crescent is kept, the later
+        roundness gates correctly reject it as "not a ball".  Repair only pixels
+        that are blue/cyan in hue and spatially close to an existing strict-blue
+        seed, then let the normal contour shape gates decide whether the result
+        is actually round.
+        """
+        hue = hsv[:, :, 0]
+        sat = hsv[:, :, 1]
+        val = hsv[:, :, 2]
+
+        blue_hue = (hue >= BLUE_HUE_MIN) & (hue <= BLUE_HUE_MAX)
+
+        # The low-light repair path must be permissive because the lower half of
+        # the cyan ball can fall to S≈20-35 and V≈20-40.  In medium/high sunlight,
+        # however, grey floor pixels and specular patches often have random blue
+        # hue with S≈15-35; promoting those pixels makes huge false blue regions
+        # that can out-rank the real ball.  Gate repair strength by scene value so
+        # the permissive path is used only when the frame is actually dim.
+        mean_val = float(np.mean(val))
+        dim_scene = mean_val < 75.0
+
+        # Dim blue body/shadow: hue remains blue/cyan, but S/V can drop below
+        # the regular HSV ranges.  Restrict it to a local dilation of strict
+        # blue so black mat texture cannot become a standalone detection.
+        # In normal/sunny scenes use a much tighter support and a higher S floor;
+        # otherwise low-saturation floor/glare pixels around blue seed regions are
+        # swallowed into the mask.
+        local_support = cv2.dilate(
+            strict,
+            self.morph_kernel_large,
+            iterations=3 if dim_scene else 1,
+        )
+        dim_body = np.zeros_like(strict)
+        # S floor lowered 24→16 and V floor 18→12 so the dark underside of a
+        # cyan ball on a black mat is included (it still needs strict-seed
+        # proximity via local_support, so mat texture is not promoted).
+        if dim_scene:
+            dim_body[(blue_hue & (sat >= 16) & (val >= 12))] = 255
+        else:
+            dim_body[(blue_hue & (sat >= 32) & (val >= 20))] = 255
+        repaired = cv2.bitwise_or(strict, cv2.bitwise_and(dim_body, local_support))
+
+        # Blue balls also show cyan/white specular highlights.  Add only highlight
+        # pixels inside the repaired local support so holes do not split/fold the
+        # contour, while unrelated bright tape/desk areas remain excluded.
+        highlight_support = cv2.dilate(repaired, self.morph_kernel_large, iterations=1)
+        highlight = np.zeros_like(strict)
+        if dim_scene:
+            highlight[(blue_hue & (sat <= 60) & (val >= 90))] = 255
+        else:
+            highlight[(blue_hue & (sat <= 60) & (val >= 125))] = 255
+        repaired = cv2.bitwise_or(repaired, cv2.bitwise_and(highlight, highlight_support))
+
+        # Pure specular highlights (near-white glare spot at the top of the ball)
+        # have undefined/random hue because S≈0.  The blue_hue gate above misses
+        # them, leaving a hole that turns the contour into a crescent which then
+        # fails circularity / circle_fill gates.  Recover any very-low-S high-V
+        # pixel that is spatially adjacent to existing blue pixels, regardless of
+        # hue.  The tight dilation radius prevents unrelated bright desk/wall
+        # patches from being absorbed.
+        specular_support = cv2.dilate(
+            repaired,
+            self.morph_kernel_large,
+            iterations=2 if dim_scene else 1,
+        )
+        specular = np.zeros_like(strict)
+        if dim_scene:
+            specular[((sat <= 45) & (val >= 100))] = 255
+        else:
+            # Sunny frames contain large low-S/high-V floor and paper regions.
+            # Recover only true bright specular holes close to existing blue.
+            specular[((sat <= 35) & (val >= 170))] = 255
+        repaired = cv2.bitwise_or(repaired, cv2.bitwise_and(specular, specular_support))
+
+        # Bridge specular-highlight holes and shadow crescents into a more
+        # filled disc before the standard MORPH_CLOSE in _apply_hsv_ranges.
+        # 21×21 at the 0.75× detection scale closes gaps up to ~10 px,
+        # which covers typical cyan-ball specular holes and dim-shadow arcs.
+        _bridge = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (21, 21) if dim_scene else (11, 11),
+        )
+        repaired = cv2.morphologyEx(repaired, cv2.MORPH_CLOSE, _bridge)
+
+        return repaired
+
+    def _keep_ball_like_orange_components(self, mask: np.ndarray, seed: np.ndarray) -> np.ndarray:
+        """Keep standalone orange/red components that are already ball-shaped.
+
+        Seeded repair remains permissive because strict red support proves the
+        component belongs to a red ball.  Unseeded orange components must pass a
+        local circle/solidity/extent gate before they are allowed into the mask;
+        final contour validation then applies the normal confidence and colour
+        gates.  This recovers glare-shifted orange balls without globally making
+        orange table/background pixels valid red detections.
+        """
+        num_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if num_labels <= 1:
+            return np.zeros_like(mask)
+
+        kept = np.zeros_like(mask)
+        min_area = math.pi * (self.min_radius ** 2)
+        for label in range(1, num_labels):
+            component_pixels = labels == label
+            if np.any(seed[component_pixels] > 0):
+                continue
+
+            area_px = int(stats[label, cv2.CC_STAT_AREA])
+            if area_px < min_area:
+                continue
+
+            comp = (component_pixels.astype(np.uint8) * 255)
+            contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
+            contour = max(contours, key=cv2.contourArea)
+            contour_area = cv2.contourArea(contour)
+            if contour_area < min_area:
+                continue
+
+            (enc_x, enc_y), radius = cv2.minEnclosingCircle(contour)
+            if radius < self.min_radius or radius > self.max_radius:
+                continue
+            circle_area = math.pi * (radius ** 2)
+            circle_fill = contour_area / circle_area if circle_area > 0 else 0.0
+            if circle_fill < 0.74:
+                continue
+
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter <= 0:
+                continue
+            circularity = (4 * np.pi * contour_area) / (perimeter ** 2)
+            if circularity < 0.72:
+                continue
+
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            aspect_ratio = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0.0
+            if aspect_ratio < 0.78:
+                continue
+
+            hull = cv2.convexHull(contour)
+            hull_area = cv2.contourArea(hull)
+            solidity = (contour_area / hull_area) if hull_area > 0 else 0.0
+            if solidity < 0.82:
+                continue
+
+            ellipse_aspect = 1.0
+            if len(contour) >= 5:
+                try:
+                    (_ecx, _ecy), (axis_a, axis_b), _angle = cv2.fitEllipse(contour)
+                    major_axis = max(axis_a, axis_b)
+                    minor_axis = min(axis_a, axis_b)
+                    ellipse_aspect = minor_axis / major_axis if major_axis > 0 else 0.0
+                except cv2.error:
+                    ellipse_aspect = 0.0
+            if ellipse_aspect < 0.82:
+                continue
+
+            extent = contour_area / float(bw * bh) if bw > 0 and bh > 0 else 0.0
+            if extent < 0.60:
+                continue
+
+            # Reject polygonal orange objects; a filled circle keeps many more
+            # vertices after approximation than an object edge or rectangular patch.
+            approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+            if len(approx) <= 7:
+                continue
+
+            kept[component_pixels] = 255
+
+        return kept
+
+    @staticmethod
+    def _keep_components_touching_seed(mask: np.ndarray, seed: np.ndarray) -> np.ndarray:
+        """Return connected components from mask that overlap seed pixels."""
+        num_labels, labels = cv2.connectedComponents(mask, connectivity=8)
+        if num_labels <= 1:
+            return np.zeros_like(mask)
+
+        touching_labels = np.unique(labels[seed > 0])
+        touching_labels = touching_labels[touching_labels != 0]
+        if touching_labels.size == 0:
+            return np.zeros_like(mask)
+
+        kept = np.isin(labels, touching_labels)
+        return (kept.astype(np.uint8) * 255)
 
     def detect_with_hsv_multirange(
         self,
@@ -543,7 +809,13 @@ class SimpleBallDetector:
             for (x, y, radius) in circles:
                 # Bestem farge ved å sjekke HSV-verdier i sentrum
                 color = self._determine_color_from_hsv(hsv, (x, y), radius)
-                
+
+                if color == BallColor.UNKNOWN:
+                    fallback_ball = self._recover_blue_from_hough_roi(hsv, (x, y), radius)
+                    if fallback_ball is not None:
+                        detected_balls.append(fallback_ball)
+                        continue
+                 
                 # Kun godkjenn hvis fargen er identifisert som rød eller blå
                 if color != BallColor.UNKNOWN:
                     # Beregn confidence basert på edge strength
@@ -574,16 +846,52 @@ class SimpleBallDetector:
                         local_hsv = hsv[max(0, y-vr):min(hsv.shape[0], y+vr),
                                         max(0, x-vr):min(hsv.shape[1], x+vr)]
                         if local_hsv.size > 0:
-                            local_mask = np.zeros(local_hsv.shape[:2], dtype=np.uint8)
                             ranges = self.red_ranges if color == BallColor.RED else self.blue_ranges
-                            for lower, upper in ranges:
-                                local_mask = cv2.bitwise_or(local_mask, cv2.inRange(local_hsv, lower, upper))
+                            local_mask = self._build_color_mask(local_hsv, ranges, color)
                             
                             local_contours, _ = cv2.findContours(local_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                             if local_contours:
                                 largest = max(local_contours, key=cv2.contourArea)
+                                local_area = cv2.contourArea(largest)
+                                if local_area < math.pi * (self.min_radius ** 2):
+                                    continue
+                                (_lcx, _lcy), local_radius = cv2.minEnclosingCircle(largest)
+                                if local_radius < self.min_radius or local_radius > self.max_radius:
+                                    continue
                                 perimeter = cv2.arcLength(largest, True)
                                 if perimeter > 0:
+                                    local_circularity = (4 * np.pi * local_area) / (perimeter ** 2)
+                                    if local_circularity < 0.70:
+                                        continue
+
+                                    local_circle_area = math.pi * (local_radius ** 2)
+                                    local_circle_fill = local_area / local_circle_area if local_circle_area > 0 else 0.0
+                                    if local_circle_fill < 0.70:
+                                        continue
+
+                                    lx, ly, lw, lh = cv2.boundingRect(largest)
+                                    local_aspect = min(lw, lh) / max(lw, lh) if max(lw, lh) > 0 else 0.0
+                                    if local_aspect < 0.78:
+                                        continue
+
+                                    local_hull = cv2.convexHull(largest)
+                                    local_hull_area = cv2.contourArea(local_hull)
+                                    local_solidity = (local_area / local_hull_area) if local_hull_area > 0 else 0.0
+                                    if local_solidity < 0.80:
+                                        continue
+
+                                    local_ellipse_aspect = 1.0
+                                    if len(largest) >= 5:
+                                        try:
+                                            (_ex, _ey), (axis_a, axis_b), _ang = cv2.fitEllipse(largest)
+                                            major_axis = max(axis_a, axis_b)
+                                            minor_axis = min(axis_a, axis_b)
+                                            local_ellipse_aspect = minor_axis / major_axis if major_axis > 0 else 0.0
+                                        except cv2.error:
+                                            local_ellipse_aspect = 0.0
+                                    if local_ellipse_aspect < 0.80:
+                                        continue
+
                                     epsilon = 0.02 * perimeter
                                     approx = cv2.approxPolyDP(largest, epsilon, True)
                                     # En ren kube, hjørne, eller melkekartong vil ha <= 6 hjørner.
@@ -668,12 +976,14 @@ class SimpleBallDetector:
         if valid_pixels < roi.shape[0] * roi.shape[1] * 0.15:
             return BallColor.UNKNOWN
         
-        # Rød: Hue 0-25 ELLER 145-179 (wraparound) — matcher mask-ranges
-        red_mask = valid_mask & ((hue_ch <= 25) | (hue_ch >= 145))
+        # Rød/orange: Hue 0-35 ELLER 145-179 (wraparound).  The 26-35 extension
+        # matches the seeded red/orange repair mask used for glare-heavy balls.
+        red_mask = valid_mask & ((hue_ch <= 35) | (hue_ch >= 145))
         red_pixels = int(np.sum(red_mask))
         
-        # Blå: Hue 85-135 — konsistent med blå HSV-maskene (inkl. lys/cyan-ish blå).
-        blue_mask = valid_mask & (hue_ch >= 85) & (hue_ch <= 135)
+        # Blå/cyan: Hue 78-135 — konsistent med blå HSV-maskene, including
+        # cyan-shifted balls under dim manual exposure.
+        blue_mask = valid_mask & (hue_ch >= BLUE_HUE_MIN) & (hue_ch <= BLUE_HUE_MAX)
         blue_pixels = int(np.sum(blue_mask))
         
         # Bestemmelse: klar majoritet av gyldige piksler (30%).
@@ -684,6 +994,77 @@ class SimpleBallDetector:
             return BallColor.BLUE
         
         return BallColor.UNKNOWN
+
+    def _recover_blue_from_hough_roi(
+        self,
+        hsv: np.ndarray,
+        center: Tuple[int, int],
+        radius: int,
+    ) -> Optional[DetectedBall]:
+        """Recover a circular blue ball when the HSV contour mask is too sparse.
+
+        The live scene can show a clearly round blue ball on a dark carpet while
+        the HSV contour path still rejects it because highlights/shadows fragment
+        the mask.  Hough supplies reliable circle geometry; this fallback accepts
+        it only when the circular ROI is clearly blue-dominant.
+        """
+        x, y = center
+        h, w = hsv.shape[:2]
+        x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+        y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+        if x0 >= x1 or y0 >= y1:
+            return None
+
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        circle = ((xx - x) ** 2 + (yy - y) ** 2) <= (radius * 0.85) ** 2
+        if not np.any(circle):
+            return None
+
+        roi_hue = hsv[y0:y1, x0:x1, 0][circle]
+        roi_sat = hsv[y0:y1, x0:x1, 1][circle]
+        roi_val = hsv[y0:y1, x0:x1, 2][circle]
+        valid = (roi_sat >= 8) & (roi_val >= 8)
+        if int(np.sum(valid)) < 20:
+            return None
+
+        hue_v = roi_hue[valid]
+        sat_v = roi_sat[valid]
+        val_v = roi_val[valid]
+        blue_hue = (hue_v >= BLUE_HUE_MIN) & (hue_v <= BLUE_HUE_MAX)
+        red_hue = (hue_v <= 35) | (hue_v >= 145)
+        blue_seed = blue_hue & (sat_v >= 35) & (val_v >= 20)
+
+        blue_ratio = float(np.mean(blue_hue))
+        red_ratio = float(np.mean(red_hue))
+        seed_ratio = float(np.mean(blue_seed))
+        not_glare = ~((sat_v < 45) & (val_v > 100))
+        sat_score = (float(np.mean(sat_v[not_glare])) / 255.0
+                     if np.any(not_glare) else float(np.mean(sat_v)) / 255.0)
+
+        if blue_ratio < 0.45:
+            return None
+        if blue_ratio <= red_ratio + 0.20:
+            return None
+        if seed_ratio < 0.08 and sat_score < 0.25:
+            return None
+
+        shape_conf = 0.86
+        color_conf = float(np.clip(max(sat_score, blue_ratio * 0.65), 0.0, 1.0))
+        confidence = float(np.sqrt((shape_conf * 0.80) + (color_conf * 0.20)))
+        if confidence <= self.confidence_threshold:
+            return None
+
+        distance_cm = (self.focal_length_px * self.BALL_DIAMETER_MM) / (radius * 2 * 10.0)
+        return DetectedBall(
+            color=BallColor.BLUE,
+            center=(int(x), int(y)),
+            radius=float(radius),
+            confidence=confidence,
+            detection_method="hough_blue_fallback",
+            distance_cm=round(distance_cm, 1),
+            shape_confidence=shape_conf,
+            color_confidence=color_conf,
+        )
     
     def _validate_contour(self, contour: np.ndarray, color: BallColor, method: str,
                            hsv: Optional[np.ndarray] = None) -> Optional[DetectedBall]:
@@ -751,7 +1132,15 @@ class SimpleBallDetector:
                 min_aspect = 0.65
                 min_vertices = 4
 
-        # Sirkulæritet: ≥0.72 for normale, 0.55 for klippede.
+        # Blue balls under specular or dim lighting appear as arcs/crescents
+        # in the HSV mask because only the lit half (or shadowed half) falls
+        # within the strict HSV ranges.  Relax shape gates so these partial-
+        # disc shapes still pass; the colour gate later confirms blue identity.
+        if color == BallColor.BLUE and not edge_clipped:
+            min_circularity = 0.55
+            min_aspect      = 0.65
+
+        # Sirkulæritet: ≥0.65 for normale, 0.55 for klippede (og blå).
         if circularity < min_circularity:
             return None
 
@@ -771,13 +1160,51 @@ class SimpleBallDetector:
         hull      = cv2.convexHull(contour)
         hull_area = cv2.contourArea(hull)
         solidity  = (area / hull_area) if hull_area > 0 else 0.0
-        if solidity < 0.75:
+        # Blue masks are often partial discs → relaxed solidity floor.
+        _min_sol = 0.65 if (color == BallColor.BLUE and not edge_clipped) else 0.75
+        if solidity < _min_sol:
+            return None
+
+        # Enclosing-circle fill is the most important round-object-only gate:
+        # elongated arms, wrappers, tape strips and jeans folds can have decent
+        # circularity/solidity, but they occupy too little of the circle needed
+        # to enclose them.  A real ball fills most of its enclosing circle.
+        circle_area = math.pi * (radius ** 2)
+        circle_fill = area / circle_area if circle_area > 0 else 0.0
+        if edge_clipped:
+            min_circle_fill = 0.48
+        elif color == BallColor.BLUE:
+            min_circle_fill = 0.60   # relaxed: partial-disc masks fill less
+        else:
+            min_circle_fill = 0.72
+        if circle_fill < min_circle_fill:
+            return None
+
+        # Ellipse fit catches near-oval fabric/arm blobs that still pass the
+        # bounding-box aspect check after anti-aliasing or perspective rotation.
+        ellipse_aspect = 1.0
+        if edge_clipped:
+            min_ellipse_aspect = 0.60
+        elif color == BallColor.BLUE:
+            min_ellipse_aspect = 0.70   # relaxed: crescent → oval fit
+        else:
+            min_ellipse_aspect = 0.82
+        if len(contour) >= 5:
+            try:
+                (_ecx, _ecy), (axis_a, axis_b), _angle = cv2.fitEllipse(contour)
+                major_axis = max(axis_a, axis_b)
+                minor_axis = min(axis_a, axis_b)
+                ellipse_aspect = minor_axis / major_axis if major_axis > 0 else 0.0
+            except cv2.error:
+                ellipse_aspect = 0.0
+        if ellipse_aspect < min_ellipse_aspect:
             return None
 
         # Fargemetning: sample KUN piksler inne i konturen (ikke firkant-ROI).
         # Firkant-ROI inkluderer ~21.5% bakgrunnspikslene i hjørnene og trekker
         # ned sat_score. Konturmask gir rene ballverdier → korrekt confidence.
         sat_score = 0.0
+        red_hue_ratio = 0.0
         blue_hue_ratio = 0.0
         if hsv is not None:
             _cmask = np.zeros(hsv.shape[:2], dtype=np.uint8)
@@ -786,17 +1213,37 @@ class SimpleBallDetector:
             _sat_flat = hsv[:, :, 1][_cmask > 0]
             _val_flat = hsv[:, :, 2][_cmask > 0]
             if _sat_flat.size > 0:
-                # Ekskluder rene glanspiksler (S<30, V>210) fra metningsberegningen
-                _not_glare = ~((_sat_flat < 30) & (_val_flat > 210))
+                # Ekskluder glanspiksler fra metningsberegningen.  Red/orange
+                # balls under presentation lights often produce broad highlights
+                # with S≈30-90 and V≈170-255, not only the pure-white S<30,V>210
+                # case.  Use the broader exclusion only for red, where a hue-ratio
+                # gate below still prevents neutral background from passing.
+                if color == BallColor.RED:
+                    _not_glare = ~((_sat_flat <= 90) & (_val_flat >= 165))
+                else:
+                    # For blue: exclude pure specular highlights (S<45, V>100)
+                    # that were recovered by _repair_blue_mask.  These pixels
+                    # have undefined hue and would dilute blue_hue_ratio and
+                    # pull down sat_score, causing the colour gate to reject
+                    # an otherwise valid cyan ball.
+                    _not_glare = ~((_sat_flat < 45) & (_val_flat > 100))
                 if np.sum(_not_glare) > 5:
                     sat_score = float(np.mean(_sat_flat[_not_glare])) / 255.0
+                    if color == BallColor.RED:
+                        _red_hues = ((_hue_flat[_not_glare] <= 35) |
+                                     (_hue_flat[_not_glare] >= 145))
+                        red_hue_ratio = float(np.mean(_red_hues))
                     if color == BallColor.BLUE:
-                        _blue_hues = (_hue_flat[_not_glare] >= 85) & (_hue_flat[_not_glare] <= 135)
+                        _blue_hues = ((_hue_flat[_not_glare] >= BLUE_HUE_MIN) &
+                                      (_hue_flat[_not_glare] <= BLUE_HUE_MAX))
                         blue_hue_ratio = float(np.mean(_blue_hues))
                 else:
                     sat_score = float(np.mean(_sat_flat)) / 255.0
+                    if color == BallColor.RED:
+                        _red_hues = ((_hue_flat <= 35) | (_hue_flat >= 145))
+                        red_hue_ratio = float(np.mean(_red_hues))
                     if color == BallColor.BLUE:
-                        _blue_hues = (_hue_flat >= 85) & (_hue_flat <= 135)
+                        _blue_hues = (_hue_flat >= BLUE_HUE_MIN) & (_hue_flat <= BLUE_HUE_MAX)
                         blue_hue_ratio = float(np.mean(_blue_hues))
 
         # Kvalitetsscore: normalisert 0-1 for hver komponent.
@@ -805,25 +1252,38 @@ class SimpleBallDetector:
         cir_bonus = float(np.clip((circularity  - 0.65) / 0.35, 0.0, 1.0))
         asp_bonus = float(np.clip((aspect_ratio - 0.75) / 0.25, 0.0, 1.0))
         sol_bonus = float(np.clip((solidity     - 0.75) / 0.25, 0.0, 1.0))
+        fill_bonus = float(np.clip((circle_fill - min_circle_fill) / (1.0 - min_circle_fill), 0.0, 1.0))
+        ell_bonus = float(np.clip((ellipse_aspect - min_ellipse_aspect) / (1.0 - min_ellipse_aspect), 0.0, 1.0))
         col_bonus = float(np.clip((sat_score    - 0.30) / 0.70, 0.0, 1.0))
 
         color_conf = sat_score                                    # ren kontur-metning 0-1
-        shape_conf = cir_bonus * 0.50 + asp_bonus * 0.25 + sol_bonus * 0.25  # normalisert margin
+        shape_conf = (cir_bonus * 0.35 + asp_bonus * 0.15 + sol_bonus * 0.15 +
+                      fill_bonus * 0.25 + ell_bonus * 0.10)  # normalisert margin
 
         # ── Universal fargegate ─────────────────────────────────────────────
         # Shadows from balls on the desk can pass shape checks (roughly circular)
         # but have low saturation. CLAHE can boost shadow sat_score to ~0.30-0.38.
         # Real balls always have sat_score ≥ 0.45+, even matte ones.
+        # Grey/neutral ground surfaces (e.g. textured carpet, concrete) can reach
+        # sat_score ≈ 0.40-0.44 after CLAHE — raised red gate to 0.45 to reject.
         if color == BallColor.BLUE:
             # Lys/cyan-ish blå baller kan ha lavere snittmetning enn røde baller,
-            # særlig etter highlights/CLAHE. Tillat dette kun når konturen fortsatt
-            # er klart blå i hue, slik at rød og nøytral bakgrunn ikke svekkes.
-            if sat_score < 0.28:
+            # særlig ved lav/manuell eksponering der cyan ball-piksler havner rundt
+            # H≈78-90, S≈45-70 og V≈25-70. Tillat lavere metning kun når konturen
+            # er hue-dominert blå/cyan og fortsatt må passere de strenge
+            # round-object gates above, so elongated jeans/arm blobs remain rejected.
+            if sat_score < 0.18:
                 return None
-            if sat_score < 0.40 and blue_hue_ratio < 0.65:
+            if sat_score < 0.40 and blue_hue_ratio < 0.80:
                 return None
-        elif sat_score < 0.40:
-            return None
+        else:
+            # Red/orange balls with broad glare can have lower mean saturation
+            # after repaired highlight pixels are included in the contour.  Permit
+            # that only when the non-glare pixels are still clearly red/orange.
+            if sat_score < 0.35:
+                return None
+            if sat_score < 0.45 and red_hue_ratio < 0.65:
+                return None
 
         # ── Edge-spesifikk fargegate ────────────────────────────────────────
         # Edge-klippede konturer med sub-normal circularity (< 0.65) MÅ kompensere
@@ -835,7 +1295,7 @@ class SimpleBallDetector:
             if color == BallColor.BLUE:
                 if sat_score < 0.35 or blue_hue_ratio < 0.75:
                     return None
-            elif sat_score < 0.45:
+            elif sat_score < 0.45 and red_hue_ratio < 0.75:
                 return None
 
         # ── Fix 3: Proporsjonal confidence ──────────────────────────────────
@@ -843,7 +1303,8 @@ class SimpleBallDetector:
         # kvalitet: 70% base + 30% kvalitetsbonus → range [0.70, 1.00].
         # En god ball (quality≈0.8) → ~94%. En marginal edge-klippet kontur
         # (quality≈0.1) → ~73%, som lettere filtreres bort.
-        quality    = cir_bonus * 0.40 + asp_bonus * 0.20 + sol_bonus * 0.20 + col_bonus * 0.20
+        quality    = (cir_bonus * 0.28 + asp_bonus * 0.14 + sol_bonus * 0.14 +
+                      fill_bonus * 0.20 + ell_bonus * 0.08 + col_bonus * 0.16)
         confidence = 0.70 + float(np.clip(quality * 0.30, 0.0, 0.30))
 
         # Avstandsberegning: d = (f * D_real) / D_pixel
@@ -985,7 +1446,7 @@ class SimpleBallDetector:
             if not duplicate:
                 kept.append(candidate)
 
-        return kept[:self.max_balls_per_color * 2]  # hard cap før per-farge-filter
+        return kept  # per-farge-filteret under sørger for korrekt cap per farge
 
     def _limit_per_color(self, balls: List[DetectedBall]) -> List[DetectedBall]:
         """
@@ -1066,13 +1527,19 @@ class SimpleBallDetector:
             # 5. HSV multi-range detection med adaptiv justering
             red_balls_hsv, blue_balls_hsv = self.detect_with_hsv_multirange(hsv, lighting_info)
             hsv_balls = red_balls_hsv + blue_balls_hsv
+            self.stats['hsv_red_candidates'] = len(red_balls_hsv)
+            self.stats['hsv_blue_candidates'] = len(blue_balls_hsv)
 
             # 6. Hough Circle Transform — always run (interval is always 1)
             self._frame_counter += 1
             hough_balls = self.detect_with_hough(gray, hsv)
+            self.stats['hough_red_candidates'] = len([b for b in hough_balls if b.color == BallColor.RED])
+            self.stats['hough_blue_candidates'] = len([b for b in hough_balls if b.color == BallColor.BLUE])
             
             # 7. Ensemble merge - kombinerer begge metodene
             merged_balls = self.ensemble_merge(hsv_balls, hough_balls)
+            self.stats['merged_red_candidates'] = len([b for b in merged_balls if b.color == BallColor.RED])
+            self.stats['merged_blue_candidates'] = len([b for b in merged_balls if b.color == BallColor.BLUE])
             
             # 8. Post-merge NMS per farge: fjern gjenværende duplikater
             merged_balls = self._post_merge_nms(merged_balls)
