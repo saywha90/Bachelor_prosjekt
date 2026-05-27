@@ -126,7 +126,7 @@ BINS = {
 HOME_POSITION = (20.0, 0.0, 30.0)
 
 # ── Grab / drop heights ──────────────────────────────────────────────
-GRAB_HEIGHT      = 2.0   # z when closing the claw (target center of ball on table)
+GRAB_HEIGHT      = 2.7   # z when closing the claw (target center of ball on table)
 CLEARANCE_HEIGHT = 15.0  # Reduced from 28.0; 15 is plenty of room and prevents IK clamping at far reaches
 
 # ── Distance-based grab height adjustment ─────────────────────────────
@@ -144,7 +144,7 @@ CLEARANCE_HEIGHT = 15.0  # Reduced from 28.0; 15 is plenty of room and prevents 
 #     GRAB_HEIGHT_MAX   — cap so the arm doesn't lift too high and miss
 #                         the ball entirely.
 GRAB_HEIGHT_SLOPE     = 0.05   # cm extra Z per cm of horizontal distance (applied everywhere)
-GRAB_HEIGHT_MAX       = 5.0    # cm – absolute maximum grab height
+GRAB_HEIGHT_MAX       = 5.7    # cm – absolute maximum grab height
 
 # ──────────────────────────────────────────────────────────────────────
 # DEPRECATED — APPROACH_HEIGHT
@@ -173,8 +173,8 @@ SCAN_INTERVAL = 2.0   # pause between reaching SCAN_POSE and capturing a frame
 # If you still see a small systematic error after re-calibrating the
 # homography, you can add a fine-tuning offset here (typically < 3 cm).
 # Use  python src/calibration/09_touch_calibration.py  to recalibrate.
-CAMERA_OFFSET_X = 1.0     # +6 cm forward offset — arm was reaching 6 cm short (2026-05-18)
-CAMERA_OFFSET_Y = 0.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
+CAMERA_OFFSET_X = -1.0     # +6 cm forward offset — arm was reaching 6 cm short (2026-05-18)
+CAMERA_OFFSET_Y = -1.0     # Reset to zero — re-calibrate via 09_touch_calibration.py (2026-04-28)
 CAMERA_HEIGHT   = 50.0   # cm – camera lens height above table surface
 
 # ── Wrist-mounted camera scan pose ──────────────────────────────────
