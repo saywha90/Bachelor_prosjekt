@@ -1314,6 +1314,7 @@ def main():
         logger.error("[INIT] Vision bridge failed to open real camera.")
         logger.error("       Check: (1) USB connection? (2) Re-plug the camera? (3) Power?")
         return  # Stop here instead of falling back to fake data
+    vision.apply_main_manual_exposure()
 
     # ── Clear any latched hardware errors before moving ──────────────
     if USE_REAL_SERIAL:

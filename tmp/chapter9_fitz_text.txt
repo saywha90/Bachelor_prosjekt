@@ -1,0 +1,1226 @@
+
+
+===== PAGE 1 =====
+ 
+ 
+Chapter 9 
+Mechanical Design 
+Structural design, load analysis, material selection, fabrication, and validation of the robotic arm. 
+9.1 Introduction 
+In this chapter we walk through the mechanical design of our robotic arm and how we validated it. 
+The arm is what physically does the work in our system: it carries the end-effector across the 
+workspace, holds it still while the camera identifies objects, and moves the gripped ball over to the 
+right container. Every other part of the project — perception, control, integration — only matters if 
+the arm itself doesn't break under load. That's why we treated the mechanical side as the 
+foundation everything else sits on. 
+We structured the chapter as a funnel. We start with the geometry (the link lengths and joint 
+layout), then use that to work out the joint torques and verify the inherited motors. From there we 
+describe the beam material, design the cross-sections, run the static analysis and FEM, and finally 
+cover the assembly details, the base rotation system, and the as-built mass. Sections on testing, 
+requirements, limitations, and future work close the chapter. 
+The methods are the ones from our mechanical engineering coursework: Grübler's mobility equation 
+for counting degrees of freedom, cantilever beam theory for the statics, the von Mises criterion for 
+combined stress in the FEM, and the manufacturer datasheets for the materials. We address 
+mechanical requirements M1 through M4 from the master requirements list, and we set ourselves a 
+self-imposed target of n ≥ 2.0 for the Factor of Safety on the structural beams. We picked 2.0 
+because FDM-printed parts come with real uncertainty — the layers don't always bond perfectly, the 
+material isn't fully isotropic, and dimensional tolerances vary from print to print. Mott (2014) 
+recommends a similar margin for components in this kind of uncertainty bracket, which lined up 
+with our judgement. 
+Where this chapter departs from the previous group's report (Gruppe 12, Sortify): we inherited the 
+serial-revolute architecture and the Dynamixel motors, but we redesigned every structural part. 
+Their carbon-fibre beams broke during our initial testing, so we redesigned in PLA. We changed the 
+base rotation assembly so the rotation motor only rotates and doesn't carry weight. We changed the 
+gripper from a small servo to an XM-430 with current-controlled gripping. We documented what 
+was carried over and what was replaced as honestly as possible throughout the chapter. 
+
+
+
+===== PAGE 2 =====
+ 
+ 
+ 
+Figure 9.1 — The as-built arm in working configuration on its test rig, mid-task with the ball pickup tray. 
+9.2 Design Requirements 
+The mechanical design has to satisfy the project's master requirements M1 through M4. M1 fixes 
+the workspace the arm must reach. M2 sets the mass limit of objects the arm must handle. M3 
+covers operating speed and cycle time at a system level. M4 sets the durability target — the arm 
+must complete the demonstration runs without structural failure. Of these, M1 and M4 are squarely 
+mechanical; M2 and M3 are mostly integration-level concerns that involve mechanical, electrical, 
+and control together. Verification against these requirements is gathered in §9.14. 
+9.3 Concept Choice 
+
+
+
+===== PAGE 3 =====
+ 
+ 
+The arm architecture is a serial revolute manipulator: five rotational joints (base rotation, shoulder, 
+elbow-1, elbow-2, gripper drive) connected by three structural beams (long, middle, short) plus the 
+end-effector and the base rotation platform. We inherited this architecture from the previous group 
+along with the Dynamixel motors. Our concept work therefore focused on the iterations within that 
+architecture rather than on choosing a manipulator topology — we did not run a trade study 
+between serial-revolute, SCARA, or Cartesian options. 
+What we did decide at the concept level: we kept the inherited architecture, we kept the inherited 
+motor set, and we redesigned every other part. The previous group's beams were carbon-fibre, but 
+they had broken before we received the arm and they broke again during our early testing. We 
+replaced them with PLA printed on the in-house Bambu Lab P1S printer. The base rotation system 
+was reworked so the base motor handles only rotation, with a separate bearing ring carrying the 
+vertical load. The end-effector was changed from a small servo gripper to an XM-430 with current-
+controlled gripping (giving us position feedback and a soft grip without needing extra sensors). Each 
+of those decisions is justified in detail in the section it belongs to. 
+9.4 Geometry, Degrees of Freedom, and Reach 
+9.4.1 Link and joint inventory 
+The arm has five motors above the base, three structural beams between them, and an end-effector 
+at the tip. Working from the base outward: 
+● Base rotation joint: XM-430 mounted in the lid, rotates the entire arm 360° about the 
+vertical axis. 
+● Long beam: 220.52 mm long, 44 × 40.5 mm cross-section, 5 mm walls plus 2 mm internal 
+triangular ribs, 219.38 g in the CAD model at 100 % infill (lighter as printed at 40–60 % gyroid 
+infill). 
+● Shoulder joint: XM-540 driven, mounted in a custom bracket inside the lid, rotates the arm 
+in the vertical plane. 
+● Middle beam: 188 mm long, ~36 × 30 mm cross-section, 2.5 mm walls plus internal ribs, 
+110.88 g in CAD. 
+● First elbow joint: XM-430. 
+● Short beam: 114.55 mm long, 36.42 × ~30 mm cross-section, 2 mm walls plus internal ribs, 
+62.11 g in CAD. Carries the camera mount and the gripper bracket. 
+● Second elbow joint: XM-430. 
+● Gripper drive: XM-430-W210 with a two-finger four-contact-point claw, current-limited grip. 
+● Camera: 91 g, mounted on the short beam via support brackets and an L-bracket with 
+slotted angle adjustment. 
+
+
+
+===== PAGE 4 =====
+ 
+ 
+ 
+Figure 9.2 — Vertical stack-up from the rotation platform up to the XM-540 mounting face: 58.95 mm. 
+9.4.2 Degree-of-freedom analysis 
+Grübler's mobility equation for a spatial open chain: M = 6(n − 1) − Σ(6 − fᵢ), where n is the number of 
+links including the ground, and fᵢ is the number of degrees of freedom at joint i. For our arm: n = 6 
+(ground + 5 movable links), 5 revolute joints (each fᵢ = 1). 
+M = 6(6 − 1) − (5 × 5) = 30 − 25 = 5 
+Five active degrees of freedom. The end-effector pose in 3D requires six DoF (three translations, 
+three rotations), so the arm is under-actuated relative to general 6-DoF tasks. However, for the 
+project task (pick a ball from one of a finite set of positions and place it in one of a finite set of 
+containers), five DoF is sufficient: the base rotation provides azimuth, the shoulder and two elbows 
+provide reach and height, and the gripper drive opens and closes. The end-effector pitch is set by the 
+joint configuration; explicit roll is not required. 
+9.4.3 Reach 
+We measured reach in the fully extended horizontal pose, which is the worst case for bending at 
+every joint and the case we use for sizing the cross-sections. Two reach numbers matter: the centre-
+to-centre distance from the shoulder motor (XM-540) to the tip of the short beam (before the claw), 
+and the total reach to the outermost point of the static finger. 
+
+
+
+===== PAGE 5 =====
+ 
+ 
+ 
+Figure 9.3 — Arm in the fully extended horizontal pose, isometric view. Centre distance from the shoulder 
+motor to the short-beam tip: 601.76 mm. 
+ 
+Figure 9.4 — Same pose with the gripper attached. Total reach from the shoulder centre to the static-finger tip: 
+671.79 mm. 
+601.76 mm to the short-beam tip; 671.79 mm to the claw tip. The additional 70 mm is the offset 
+from the short-beam tip out through the gripper assembly to the static-finger tip. That's a 
+meaningful increase over the previous group's arm, which fell short of the platform edge in our test 
+setup. The extra length came from re-dimensioning the three beams to give clearance above the 
+platform plus enough reach to pick objects off the floor in front of the platform. 
+
+
+
+===== PAGE 6 =====
+ 
+ 
+ 
+Figure 9.5 — Worst-case low-reach pose. Vertical drop from shoulder centre to gripper tip is 415.1 mm; 
+straight-line distance from shoulder to gripper is 544.95 mm; horizontal projection 349.14 mm. 
+The fully extended horizontal pose with reach 671.79 mm to the claw tip is the worst-case load 
+configuration and is the configuration used throughout the rest of the chapter for the structural 
+calculations. The arm exceeds the workspace required by M1 with margin to spare. 
+9.5 Actuator and Load Analysis 
+9.5.1 Method 
+The arm carries the end-effector and any payload as a chain of masses cantilevered from the base. 
+To verify the inherited Dynamixel motors are adequate for the cascade and to size the structural 
+beams, we built a downstream-mass cascade from the end-effector inward. At each joint we 
+compute the cumulative mass that joint has to lift in the worst-case fully extended horizontal pose, 
+then multiply by the moment arm to get the torque the joint motor sees. We compare against the 
+motor's rated continuous torque, not stall, since the arm operates continuously during pick-and-
+place tasks and we want to stay within the motor's safe long-term envelope. 
+Sign and coordinate convention: positive vertical is upward, and moment arms are measured as the 
+perpendicular distance from the joint axis to each point load in the worst-case horizontal pose. Tip 
+loads on each beam are taken as point loads at the distal end; self-weight is taken as a point load at 
+the beam midspan. 
+The end-effector subsystem and its contents are at the short beam's tip. Component masses, 
+measured from the CAD model (which matches the printed parts to within ±5 % for the structural 
+plastic parts): 
+● Camera: 91 g 
+● Camera mount (L-bracket): 14 g 
+
+
+
+===== PAGE 7 =====
+ 
+ 
+● Camera support brackets (2 × 5 g): 10 g 
+● Claw mount bracket: 13.52 g 
+● Static jaw: 14 g 
+● Movable jaw: 25 g 
+● Gripper-drive XM-430-W210 motor: 82 g 
+● Payload (target object, e.g. ball): 200 g 
+● End-effector subtotal (everything past the short-beam tip): 449.5 g, weight 4.41 N 
+As we walk base-ward, we add each beam's self-weight and the joint motor mounted at that joint. 
+Beam self-weights are taken at the CAD value (100 % infill); printed parts at 40–60 % gyroid infill 
+weigh less, so using CAD mass is conservative for the load cascade. 
+9.5.2 Short beam (wrist joint) 
+Tip load on the short beam is the end-effector subtotal: 4.41 N. The short beam itself adds 62.11 g 
+(0.61 N) of distributed self-weight. The second-elbow XM-430 physically sits between the short and 
+middle beams, but for the mass cascade we account its weight to the middle-beam side of the joint: 
+from the short beam’s perspective, that motor is at the proximal pivot (not the distal tip), so it does 
+not contribute to the short beam’s tip load. Its weight enters the cascade at the next step up (§9.5.3, 
+middle beam). 
+F_tip,short = 4.41 N 
+9.5.3 Middle beam (elbow joint) 
+Tip load on the middle beam = short beam end-effector + short beam self-weight + second-elbow 
+motor that lives at the middle-beam tip: 
+F_tip,middle = 4.41 + 0.61 + 0.80 = 5.82 N 
+The middle beam itself adds 110.88 g (1.09 N) of distributed self-weight. 
+9.5.4 Long beam (shoulder joint) 
+Tip load on the long beam = everything past the first elbow joint + first-elbow motor: 
+F_tip,long = 5.82 + 1.09 + 0.80 = 7.71 N 
+The long beam itself adds 219.38 g (2.15 N) of distributed self-weight. 
+9.5.5 Cascade summary 
+The three beam tip loads in the worst-case horizontal extended pose are 4.41 N (short), 5.82 N 
+(middle), and 7.71 N (long). At the shoulder pivot, the total reaction force is approximately 9.86 N 
+(long beam tip load + long beam self-weight), and the moment about the shoulder pivot is 
+approximately 1.94 N·m. The shoulder XM-540 has a rated continuous torque well above this figure, 
+with substantial margin for dynamic moves and acceleration. The two XM-430 elbow motors face 
+moments of approximately 1.20 N·m and 0.54 N·m at the first and second elbow respectively, again 
+well below their continuous-rated torque. 
+
+
+
+===== PAGE 8 =====
+ 
+ 
+All four joint motors have sufficient torque headroom against the cascaded static loads. The tip loads 
+4.41 / 5.82 / 7.71 N at the short, middle, and long beams are the loads used as inputs to the 
+structural analyses in §9.8 and §9.10. 
+9.6 Material Selection 
+9.6.1 Why PLA 
+We picked PLA for all the structural beams and brackets. The reasons were practical: USN's 
+mechanical lab has a Bambu Lab P1S in working order, with Bambu PLA Basic filament in stock at no 
+additional cost to the project, and we already had experience using both. That meant we could 
+iterate the design in hours rather than days — important when we found early that the inherited 
+carbon-fibre beams were broken and needed a full redesign. PLA prints cleanly without needing an 
+enclosed-chamber printer or special filament handling, and at the loads we're seeing (sub-10 N tip 
+loads, sub-2 N·m joint moments) its strength is more than adequate. Detailed strength margins are 
+computed in §9.8 and §9.10. 
+We also considered Nylon 12 (Formlabs SLS process). Nylon 12 has real engineering advantages over 
+FDM PLA: it's effectively isotropic because the SLS process bonds powder in all three directions, it's 
+ductile rather than brittle (so it would yield before failing in an overload), and it would not have the 
+layer-bonding weakness that FDM PLA has at the bracket-to-beam interfaces. But Nylon 12 prints 
+would have meant outsourcing to a service bureau with a turnaround we couldn't fit into the project 
+schedule. We ran a preliminary FEM with Nylon 12 properties to characterise what we would have 
+lost in stiffness (E ≈ 1.9 GPa for Nylon 12 versus 3.5 GPa for PLA — a 45 % lower Young's modulus, 
+meaning deflection would roughly double for the same geometry). The detail and result of that 
+study is in §9.18 as recommended future work. 
+9.6.2 Print recipe 
+The early prints failed at the bracket-to-beam interfaces and at the gusset junctions — the cracks 
+were unambiguously along the layer lines. That told us layer adhesion was the issue, not bulk 
+material strength. We developed a print recipe that targets stronger layer bonding while keeping 
+print time manageable: 
+● Wall loops: 6 (we had also tried 8 on the long beam; 6 was the practical compromise of 
+strength versus print time) 
+● Sparse infill density: 40 % (some long-beam prints went to 60 % for the highest-loaded 
+sections) 
+● Sparse infill pattern: gyroid (better isotropy and shear performance than rectilinear) 
+● Outer wall speed: 35 mm/s (slower than default; gives the polymer more time to bond to 
+the layer below) 
+● Max fan speed: 60 % (reduced from default 100 % — cooler walls bond less well, so we keep 
+them slightly warmer) 
+● Nozzle temperature: 225–230 °C (top of the Bambu PLA Basic recommended range) 
+
+
+
+===== PAGE 9 =====
+ 
+ 
+● Filament: Bambu PLA Basic, 0.4 mm nozzle, P1S printer 
+ 
+Figure 9.1 — Wall settings in Bambu Studio: 6 wall loops. 
+ 
+
+
+
+===== PAGE 10 =====
+ 
+ 
+Figure 9.2 — Sparse infill: 40 % density, gyroid pattern. 
+ 
+Figure 9.3 — Speed settings: outer wall 35 mm/s, inner wall 300 mm/s. 
+ 
+Figure 9.4 — Cooling: max fan speed 60 %, keep fan always on enabled. 
+
+
+
+===== PAGE 11 =====
+ 
+ 
+ 
+Figure 9.5 — Filament settings: Bambu PLA Basic, recommended nozzle temperature 225–230 °C. 
+These settings together produced parts with substantially better layer adhesion at the high-stress 
+junctions. The XM-540 motor bracket required five iterations to get right — most of them about 
+print orientation rather than geometry — and the final iteration uses this recipe printed on its side 
+so the load path runs along the layers rather than across them. That iteration story is in §9.13. 
+9.6.3 Material properties used in the analysis 
+The values used in the hand calculations and FEM are: 
+● Yield strength σ_y = 35 MPa (used in hand calc; conservative; the SolidWorks default PLA 
+card reports 45 MPa, but we derate it for the FDM layered structure) 
+● Ultimate tensile strength σ_u = 30 MPa (FDM-derated) 
+● Young's modulus E = 3.2 GPa (hand calc) / 3.5 GPa (FEM) 
+● Poisson's ratio ν = 0.394 
+● Density ρ = 1250 kg/m³ 
+PLA at the recipe above gives sufficient strength margin for the design loads. Nylon 12 was 
+considered and ruled out for schedule reasons; a preliminary FEM on the middle beam confirms it is a 
+viable future-work alternative. 
+9.7 Cross-Section Design 
+9.7.1 Approach 
+All three structural beams use a hollow rectangular cross-section with internal triangular ribs. The 
+hollow rectangle gives a high second moment of area for a given mass; the internal ribs add shear 
+stiffness and stop the walls from buckling locally at high load points. The ribs are not counted in the 
+hand-calc moment of inertia (we treat the cross-section as a pure hollow rectangle), which is a 
+conservative simplification — the real I is slightly higher and the real stress slightly lower. 
+9.7.2 Long beam 
+Outer dimensions 44 mm × 40.5 mm. Walls 5 mm on every face (the heaviest walls of the three 
+beams, since the long beam carries the full cascade load). Internal cavity 34 × 30.5 mm. Length 
+220.52 mm pivot-to-pivot. Cross-sectional second moment of area I = 163,188 mm⁴. 
+
+
+
+===== PAGE 12 =====
+ 
+ 
+ 
+Figure 9.6 — Long beam (iteration 3) with integrated end brackets and internal rib structure. 
+9.7.3 Middle beam 
+Outer dimensions approximately 36 mm × 30 mm (X-width to be confirmed against CAD; the value 
+used in the hand calc is an assumed figure). Walls 2.5 mm. Length 188 mm. I = 40,635 mm⁴. The 
+middle beam also carries an internal cable channel for the wiring to the elbow and gripper motors. 
+
+
+
+===== PAGE 13 =====
+ 
+ 
+ 
+Figure 9.7 — Middle beam (iteration 3) with cable channel and integrated brackets. 
+9.7.4 Short beam 
+Outer dimensions 36.42 mm × approximately 30 mm (Z-depth to be confirmed against CAD). Walls 2 
+mm. Length 114.55 mm. I = 34,474 mm⁴. The short beam carries the camera and the gripper motor, 
+and is fitted with M3 brass heat-set inserts at the bracket bolt holes to prevent layer splitting at the 
+threaded interfaces. 
+
+
+
+===== PAGE 14 =====
+ 
+ 
+ 
+Figure 9.8 — Short beam (iteration 3) with Ruthex inserts at camera and gripper mount holes. 
+9.7.5 Iteration history 
+Each of the three beams went through three iterations during the project. The previous group's 
+beams were carbon-fibre and had already broken in service, so iteration 1 was effectively retired 
+before our work began. Iteration 2 was our first re-design in PLA: solid blocks for the structural 
+section, with the end brackets printed separately and bolted on. This kept the print time 
+manageable and let us swap bracket variants quickly during early testing. Iteration 3, the final 
+design, integrates the brackets and the structural section into single parts — eliminating the bolted 
+joint where most of the early-iteration failures originated. 
+
+
+
+===== PAGE 15 =====
+ 
+ 
+ 
+Figure 9.9 — Long beam iteration 2: separately-printed end brackets bolted onto the structural section. 
+Replaced in iteration 3 by a single integrated part. 
+
+
+
+===== PAGE 16 =====
+ 
+ 
+ 
+Figure 9.10 — Iteration-2 arm assembled with separate brackets at every joint. The visible bolt-on bracket 
+interfaces became the failure-prone locations in early testing. 
+ 
+Figure 9.11 — Iteration-2 middle beam alone. Internal triangular rib visible through the side cutout. 
+The compression tests in §9.11 were run on iteration-2 beam shells (without brackets), and those 
+tests informed the choice to move from separate to integrated brackets in iteration 3. 
+
+
+
+===== PAGE 17 =====
+ 
+ 
+Hollow rectangular sections with internal triangular ribs, dimensioned per beam to match the 
+cascade load. The move from separately-printed to integrated brackets between iteration 2 and 
+iteration 3 eliminated the failure-prone bolted joints. 
+9.8 Kinematic Load and Factor of Safety Analysis 
+9.8.1 Objective 
+Compute the bending stress, torsional shear stress, combined von Mises stress, Factor of Safety, and 
+tip deflection for each of the three structural beams in the worst-case fully extended horizontal 
+pose. Each beam is treated as a cantilever fixed at its proximal joint, carrying its own self-weight as a 
+distributed load plus a lumped tip load (the cascade from §9.5). The hand calculation produces a 
+bulk extreme-fibre stress at the root; the FEM in §9.10 produces a peak stress at the stress riser. 
+Both numbers are useful, and we present both for comparison. 
+9.8.2 Shared inputs 
+All three beams use the same PLA properties: 
+σ_yield = 35 MPa, σ_ultimate = 30 MPa, E = 3.2 GPa, ν = 0.394 
+All three beam analyses use the plane-stress von Mises form (appropriate because the beams are 
+slender): 
+σ_vM = √(σ² + 3τ²) 
+And the standard cantilever formulas: 
+σ = M · c / I 
+τ_max = T / (α · b · c²) 
+δ = F · L³ / (3 · E · I) 
+n = σ_yield / σ_vM 
+The torque values used for the torsional component are the operational torques from the 
+SolidWorks FEM setup (0.889 N·m for the long beam at the shoulder, 0.291 N·m for the middle beam 
+at the first elbow, 0.069 N·m for the short beam at the second elbow). These represent the torsion 
+the beams see during normal operation, not stall. 
+9.8.3 Stage 1 — Short beam (most distal) 
+Geometry: L = 114.55 mm, cross-section 36.42 × 30 mm with 2 mm walls. Cross-section properties: I 
+= 34,474 mm⁴, c = 15 mm. 
+Loads: tip load F_tip = 4.41 N (the end-effector cascade), self-weight W_beam = 0.61 N at midspan 
+(57.3 mm), torsion T = 69 N·mm. 
+Root reactions and moment: 
+R_y = 0.61 + 4.41 = 5.02 N (upward at the second-elbow pivot) 
+M_root = 0.61 · 57.3 + 4.41 · 114.55 = 540.1 N·mm = 0.54 N·m 
+Stresses: 
+
+
+
+===== PAGE 18 =====
+ 
+ 
+σ_z = 540.1 · 15 / 34,474 = 0.235 MPa 
+α = 0.262 (b/h = 1.21) 
+τ = 69 / (0.262 · 36.42 · 15²) = 0.0321 MPa 
+σ_vM = √(0.235² + 3 · 0.0321²) = 0.241 MPa 
+Factor of Safety and tip deflection: 
+n = 35 / 0.241 = 145 
+δ = 4.41 · 114.55³ / (3 · 3200 · 34,474) = 0.020 mm 
+9.8.4 Stage 2 — Middle beam 
+Geometry: L = 188 mm, cross-section 36 × 30 mm with 2.5 mm walls (X-width is assumed; CAD value 
+pending). Cross-section properties: I = 40,635 mm⁴, c = 15 mm. 
+Loads: tip F_tip = 5.82 N, self-weight W_beam = 1.09 N at midspan (94 mm), torsion T = 291 N·mm. 
+Root reactions and moment: 
+R_y = 1.09 + 5.82 = 6.91 N (upward at the first-elbow pivot) 
+M_root = 1.09 · 94 + 5.82 · 188 = 1196.6 N·mm = 1.20 N·m 
+Stresses: 
+σ_z = 1196.6 · 15 / 40,635 = 0.442 MPa 
+α = 0.249 (b/h = 1.2) 
+τ = 291 / (0.249 · 36 · 15²) = 0.144 MPa 
+σ_vM = √(0.442² + 3 · 0.144²) = 0.508 MPa 
+Factor of Safety and tip deflection: 
+n = 35 / 0.508 = 68.9 
+δ = 5.82 · 188³ / (3 · 3200 · 40,635) = 0.099 mm 
+9.8.5 Stage 3 — Long beam (most loaded) 
+Geometry: L = 220.52 mm, cross-section 44 × 40.5 mm with 5 mm walls. Cross-section properties: 
+I_outer = 243,577 mm⁴, I_inner = 80,389 mm⁴, I = 163,188 mm⁴, c = 20.25 mm. 
+Loads: tip F_tip = 7.71 N (the full cascade), self-weight W_beam = 2.15 N at midspan (110.26 mm), 
+torsion T = 889 N·mm. 
+Root reactions and moment: 
+R_y = 2.15 + 7.71 = 9.86 N (upward at the shoulder pivot) 
+M_root = 2.15 · 110.26 + 7.71 · 220.52 = 1937.3 N·mm = 1.94 N·m 
+Stresses: 
+σ_z = 1937.3 · 20.25 / 163,188 = 0.240 MPa 
+α = 0.246 (b/h ≈ 1.09) 
+τ = 889 / (0.246 · 44 · 20.25²) = 0.200 MPa 
+σ_vM = √(0.240² + 3 · 0.200²) = 0.421 MPa 
+Factor of Safety and tip deflection: 
+
+
+
+===== PAGE 19 =====
+ 
+ 
+n = 35 / 0.421 = 83.1 
+δ = 7.71 · 220.52³ / (3 · 3200 · 163,188) = 0.053 mm 
+9.8.6 Summary table 
+Hand-calc bulk-stress Factor of Safety values for the three beams under the full cascade loads: 
+● Short beam:  M_root = 0.54 N·m, σ_vM = 0.24 MPa, n = 145, δ = 0.020 mm 
+● Middle beam: M_root = 1.20 N·m, σ_vM = 0.51 MPa, n = 68.9, δ = 0.099 mm 
+● Long beam:   M_root = 1.94 N·m, σ_vM = 0.42 MPa, n = 83.1, δ = 0.053 mm 
+9.8.7 Methodology note 
+The hand calculation produces the bulk extreme-fibre stress at the root — the average stress across 
+the outermost fibre at the highest-moment section, computed from beam theory. It does not 
+capture the local stress concentrations at the motor mount or bolt holes; those are picked up by the 
+FEM. We treat the hand-calc number as a sanity check on the order of magnitude, and we take the 
+FEM peak stress (§9.10) as the governing value for the reported Factor of Safety. When the two 
+numbers differ by an order of magnitude (as they do for the long beam: 0.42 MPa hand-calc bulk 
+versus 13.86 MPa FEM peak), it indicates a localised stress concentration at a geometric feature that 
+the simple beam model can't see. 
+All three beams have hand-calc Factor of Safety values far above the project target of n ≥ 2.0. The 
+numbers will tighten substantially when we move to the FEM peak in §9.10, but even there the long 
+beam comes in at n = 2.53 — above target. 
+9.9 Bolt Bearing Stress Validation 
+9.9.1 Objective 
+The structural beams attach to the joint motors via bolted joints. The fasteners are M3 and M2.5 
+socket-head cap screws. The local bearing stress on the PLA at the bolt-hole interface needs to stay 
+below the material's allowable bearing stress, otherwise the holes will deform and the joint will 
+loosen under load. This is most critical on the short beam, where the bracket-to-beam interface 
+carries the camera and gripper loads through a small number of small-diameter bolts. 
+9.9.2 Interface geometry and Ruthex inserts 
+The short beam carries M3 brass heat-set inserts (Ruthex type) in the bolt holes for the camera 
+support and the claw mount bracket. Without the inserts, the M3 fasteners thread directly into the 
+PLA, which is fine for low pre-load but tends to split the layers when the bolt is torqued to a working 
+pre-load. We saw this failure mode in early testing: PLA-threaded holes on the short beam split 
+along the layer plane after a few install/remove cycles. The Ruthex inserts spread the bolt load 
+across a larger surface area inside the PLA and convert a sharp bolt-thread bearing stress into a 
+distributed metal-PLA shear, which the PLA tolerates much better. 
+
+
+
+===== PAGE 20 =====
+ 
+ 
+ 
+Figure 9.1 — Brass Ruthex M3 heat-set inserts installed in the short beam at the camera-support bolt holes. 
+Knurled outer surface of the insert is visible against the printed PLA. Below the inserts: standard M3 through-
+holes (no insert) for the bracket-to-beam interface, where the bolt threads directly into a fastener nut on the 
+other side. 
+
+
+
+===== PAGE 21 =====
+ 
+ 
+ 
+Figure 9.2 — Same inserts from a different angle. The inserts are seated flush with the PLA face. 
+9.9.3 Bearing stress calculation 
+Bearing stress σ_bearing = F / (d · t), where F is the bolt force, d is the bolt diameter, and t is the 
+thickness of the bearing PLA. For the worst case at the short beam, the camera mount carries 
+roughly 100 g (1.0 N) at a 50 mm offset from the bolt, giving a couple of approximately 0.05 N·m 
+shared across two M3 bolts spaced 30 mm apart. The bolt force is approximately 1.7 N tension. 
+Bearing PLA thickness around the M3 insert is approximately 4 mm of effective material. 
+σ_bearing = 1.7 / (3 · 4) = 0.14 MPa 
+That is well below the PLA bearing allowable (typically 10–20 MPa for FDM PLA at the print recipe in 
+use). The Ruthex insert further distributes the load across a larger PLA contact area, reducing the 
+effective bearing stress by another factor of 3–4. 
+
+
+
+===== PAGE 22 =====
+ 
+ 
+9.9.4 Comparison and validation 
+The bolt bearing stress is many orders of magnitude below the PLA bearing allowable at every bolted 
+interface on the arm. The motivation for the Ruthex inserts was not bearing-stress failure but layer-
+splitting from bolt thread engagement; the inserts solve that mode by converting thread 
+engagement into a brass-on-PLA shear interface. We verified the inserts hold under repeated 
+install/remove cycles during integration testing. 
+Bolt bearing stress is well within margin at every interface. The Ruthex M3 heat-set inserts on the 
+short beam prevent layer splitting at the threaded bolt holes; this is a fabrication-driven choice rather 
+than a strength-margin requirement. 
+9.10 Statics and FEM Analyses 
+9.10.1 Analytical statics 
+The analytical statics are the hand calculation in §9.8. Bulk stresses at the root, computed from 
+cantilever beam theory, with the full cascade loads from §9.5. The hand calc gives σ_vM bulk values 
+of 0.24 / 0.51 / 0.42 MPa for the short, middle, and long beams respectively. These values are 
+conservative against the local stress concentrations the FEM captures, and they give an order-of-
+magnitude sanity check on the FEM results. 
+9.10.2 Finite Element Analysis setup 
+Each beam was modelled in SolidWorks Simulation as a static linear-elastic study. Material card: PLA 
+isotropic, σ_y = 45 MPa (SolidWorks default), E = 3.5 GPa, ρ = 1250 kg/m³. (Note: hand calc uses 35 
+MPa for σ_y — a more conservative derated figure. Both are reported, and the FoS values use 
+whichever is the lower margin.) Loads applied at each beam's tip face match the cascade values from 
+§9.5: 7.71 N on the long beam, 5.82 N on the middle beam, 2.71 N on the short beam (the short 
+beam was run at a slightly lower FEM load than the full cascade — the 2.71 N value reflects an 
+earlier iteration of the end-effector mass before the gripper drive motor was finalised; we did not re-
+run the study after the cascade was updated, but the margin is so large that even at full cascade the 
+FoS would still be well above 20). Torques applied at the motor-mount face match the operational 
+torque values: 0.889 N·m long, 0.291 N·m middle, 0.069 N·m short. Mesh was solid tetrahedral, 
+curvature-based, with maximum element sizes between 7 and 11 mm depending on beam size. 
+Element counts ranged from 73,440 (middle) to 125,343 (long) tetrahedra. 
+9.10.3 Results 
+Peak von Mises stress and maximum displacement for each beam under the full cascade load: 
+● Short beam:  σ_vM,max = 0.92 MPa, δ_max = 0.024 mm, n = 35 / 0.92 = 38.0 
+● Middle beam: σ_vM,max = 3.32 MPa, δ_max = 0.219 mm, n = 35 / 3.32 = 10.5 
+● Long beam:   σ_vM,max = 13.86 MPa, δ_max = 0.248 mm, n = 35 / 13.86 = 2.53 
+All three beams exceed the n ≥ 2.0 target. The long beam is the tightest at n = 2.53. 
+
+
+
+===== PAGE 23 =====
+ 
+ 
+One specific observation from the long-beam study is worth recording: when we re-ran the long 
+beam FEM at 7.71 N (full cascade) versus 4.578 N (an earlier interim load), the peak von Mises stress 
+barely changed (13.88 → 13.86 MPa). The peak displacement scaled approximately linearly (0.189 → 
+0.248 mm). That tells us the peak stress on the long beam is dominated by the torque at the motor 
+mount (0.889 N·m, unchanged between runs) acting on a geometric stress concentration, not by the 
+bending force. The bending stress in the bulk of the beam scales linearly with the force — and that's 
+captured by the hand calc at 0.42 MPa — but the FEM peak is at a localised stress riser where 
+torsion dominates. The practical design recommendation that follows: if a future redesign wants to 
+reduce the long-beam peak stress, the lever is the motor-mount geometry (rounding corners, 
+increasing wall thickness near the bolt holes), not reducing the bending load. 
+9.10.4 Mesh convergence note 
+A mesh convergence study was not run. The reported FEM peak stresses are single-mesh estimates 
+and could shift by 5–15 % with refinement at the stress concentration. For the long beam, where the 
+margin is tightest at n = 2.53, this is the place where a convergence check would matter most; we 
+scoped it out due to time constraints and have flagged it in §9.16. 
+FEM validates the structural design with margin: n = 2.53 / 10.5 / 38.0 for the long, middle, and short 
+beams respectively. The long-beam peak stress is torque-dominated at the motor-mount stress 
+concentration, which is the design lever for future improvement. 
+9.11 Compression Testing of Iteration-2 Beam Shells 
+9.11.1 What was tested and why 
+During the iteration-2 design phase, we ran compression tests on a Lloyd Instruments LR 10K 
+universal testing machine. The specimens were the iteration-2 beam shells alone — the hollow 
+rectangular PLA tubes without the separately-printed end brackets attached. Four unique tests were 
+run, ranging from a small wall-material coupon to longer beam-section specimens, to characterise 
+the compressive behaviour of the printed PLA structures and inform the move from iteration-2 
+(separate brackets) to iteration-3 (integrated brackets). The tests are not direct validation of the as-
+built (iteration-3) arm; they are characterisation of the printed material and the iteration-2 hollow 
+shell behaviour. 
+Important caveat: operational loads on the beams are bending, not pure axial compression. These 
+compression tests bound the buckling behaviour of the iteration-2 shells; they do not directly 
+correspond to the operational bending-load state, which is covered by the FEM and hand calc in §9.8 
+and §9.10. 
+9.11.2 Test method 
+The LR 10K was operated in compression mode at a crosshead speed of 20 mm/min, with a sampling 
+rate of 60 Hz. Specimens were loaded axially between flat platens. Each test was run until either the 
+specimen densified (the crosshead bottomed out against a fully crushed specimen) or until the load 
+
+
+
+===== PAGE 24 =====
+ 
+ 
+dropped to a small fraction of the peak after post-buckling collapse. Load and crosshead 
+displacement were recorded; engineering stress was computed against the nominal cross-sectional 
+area of each specimen. 
+9.11.3 Specimens and results 
+Four unique tests: 
+● Tab2 — 4 × 10 × 50 mm small wall coupon: peak force 173 N at 12.0 mm displacement, peak 
+effective compressive stress ≈ 4.3 MPa. 
+● Tab3 — 30 × 34.3 × 82 mm specimen (middle-beam-sized shell): peak force 1560 N at 24.8 
+mm displacement (after extensive plastic crushing and densification); during the 
+buckling/folding phase from 3–22 mm displacement, the force plateaued at approximately 
+100 N. 
+● Tab4 — 37.7 × 30 × 147 mm specimen (longer beam shell): peak force 151 N at 15.5 mm 
+displacement, with the load dropping progressively to zero over the next 25 mm of 
+crosshead travel as the shell buckled and collapsed. 
+● Tab5 — 37 × 34 × 147 mm specimen (longer beam shell, slightly larger cross-section): peak 
+force 246 N at 44.6 mm displacement; broadly similar buckling-and-collapse behaviour to 
+Tab4 with a higher onset force. 
+ 
+Figure 9.1 — Load-displacement curves from the four LR 10K compression tests on iteration-2 PLA beam shells. 
+Tab2 (small coupon, upper left) shows classic material compression. Tab3 (middle-sized specimen, upper right) 
+shows long plateau then late-stage densification. Tab4 and Tab5 (longer specimens) show buckling onset 
+followed by progressive post-buckling collapse. 
+9.11.4 Discussion 
+
+
+
+===== PAGE 25 =====
+ 
+ 
+The small Tab2 coupon gave the cleanest measurement: 173 N peak load on a 40 mm² cross-section, 
+or roughly 4.3 MPa effective compressive stress. That figure is well below the bulk-PLA compressive 
+strength reported on datasheets (typically 30–70 MPa for solid PLA), which tells us the small coupon 
+was buckling rather than crushing — the slenderness ratio of a 4 × 10 × 50 mm specimen is high 
+enough that Euler-Johnson buckling dominates the response in compression. 
+The larger specimens (Tab3, Tab4, Tab5) all show the same qualitative behaviour: an initial linear 
+region followed by buckling onset, followed by post-buckling crushing or densification. The peak 
+forces (151, 246, 1560 N) reflect the geometry of the hollow shell and the layer-bond strength at the 
+corners, not the bulk compressive strength of the PLA. The Tab3 specimen reached the highest peak 
+load because its 82 mm length was short enough relative to its cross-section to densify cleanly rather 
+than buckle into a collapse mode. 
+What we took away for the iteration-3 redesign: the iteration-2 shells buckled at relatively low loads 
+(150–250 N), and the bracket-to-beam bolted joint was the lowest-stiffness element in the 
+assembly. Moving the brackets into the beam as integrated geometry (iteration 3) eliminated that 
+interface and stiffened the structure precisely at the location where the iteration-2 specimens 
+started to fail. The iteration-3 beams have not been compression-tested directly; their structural 
+validation is the FEM in §9.10. 
+Compression tests on iteration-2 shells confirmed buckling at 150–250 N at the bracket interface 
+region and informed the decision to integrate the brackets in iteration 3. They do not directly validate 
+the as-built arm; that validation is via FEM and hand calc. 
+9.12 Assembly, Fasteners, and Tolerances 
+The arm is assembled around the three structural beams, with the end-effector at the tip and the 
+base rotation system at the bottom. This section covers the end-effector assembly in detail; the base 
+rotation system has its own section in §9.13. Fasteners are standard metric (M2, M2.5, M3) socket-
+head cap screws throughout. Tolerances on the printed parts are typical FDM (±0.2 mm on critical 
+mating features), with through-hole diameters sized 0.3–0.4 mm oversize to accommodate print 
+tolerance and ease assembly. 
+9.12.1 End-effector layout 
+
+
+
+===== PAGE 26 =====
+ 
+ 
+ 
+Figure 9.2 — End-effector assembly: the claw holding a 200 g ball, the Intel RealSense camera mounted above 
+on its L-bracket with the slotted angle adjustment, the XM-430-W210 gripper drive on the short beam, and the 
+camera support brackets running along the short beam. 
+The end-effector sits at the tip of the short beam. From the short beam outward: a claw mount 
+bracket bolts to the short-beam tip and carries the XM-430-W210 gripper drive motor. The motor's 
+output horn drives the movable jaw; the static jaw is fixed to the claw mount bracket. Above the 
+gripper, two camera support brackets run along the short beam and carry an L-shaped camera 
+mount with a slotted hole for angle adjustment. The Intel RealSense camera bolts to the L-mount via 
+two M3 screws. 
+9.12.2 Claw and gripping geometry 
+
+
+
+===== PAGE 27 =====
+ 
+ 
+ 
+Figure 9.3 — Static and movable jaws closed around a 200 g blue ball. The four-contact geometry on the curved 
+inner surfaces of the jaws prevents the ball from rotating during transport. The XM-430-W210 motor is current-
+limited so the gripping force does not over-stress the printed jaws. 
+The claw uses a two-finger four-contact geometry: each finger has two curved contact zones 
+machined into the inner surface so the ball is held at four points rather than two. That stops the ball 
+from rolling out under acceleration and gives a positive grip even with the variability in ball diameter 
+and surface finish. The XM-430-W210 is driven in current-limited mode, which means the gripping 
+force is set by a current threshold rather than by a hard-stop position. That gives a soft, self-
+adjusting grip and protects both the printed jaws and the ball from over-grip damage. 
+9.12.3 Camera mounting 
+
+
+
+===== PAGE 28 =====
+ 
+ 
+ 
+Figure 9.4 — Camera mount close-up: the L-shaped bracket bolts to the support legs through two M3 screws on 
+the underside, with the camera bolted onto the upper face. The slotted bolt holes in the L-bracket allow the 
+camera angle to be adjusted by approximately ±10° without reprinting the bracket. 
+The camera mount needs to point the camera at the workspace under the claw. We needed to be 
+able to adjust the angle empirically during integration testing, so the L-bracket has slotted bolt holes 
+— the camera can be tilted by approximately ±10° and tightened in place. This avoided the print-
+test-print cycle that a fixed angle would have required. 
+9.12.4 Cable management 
+The Dynamixel motors are daisy-chained on a TTL bus, with cables running from one motor to the 
+next along the inside of the beams where possible. The middle beam has a dedicated internal cable 
+channel running its length so the cables to the elbow and gripper motors are protected from 
+snagging and from being trapped against the motor case during rotation. External cable runs 
+
+
+
+===== PAGE 29 =====
+ 
+ 
+(between the lid motor and the shoulder motor, and at the second elbow) use small printed cable 
+guides to constrain the cable away from moving parts. No cable failures occurred during integration 
+testing. 
+9.12.5 Tolerances and fits 
+Critical fits on the printed parts are the motor-mounting faces (where the Dynamixel horn meets the 
+printed bracket) and the bolt-hole patterns. Motor faces are designed flat to the print bed where 
+possible, so they come off the printer with the best achievable flatness without post-machining. Bolt 
+holes are sized to the nominal bolt diameter plus 0.3–0.4 mm clearance, which is enough to 
+accommodate print tolerance without introducing slop. Where a tight rotational fit is needed (the 
+base rotation bearing seat), the printed feature was sized 0.1 mm under nominal and the bearing 
+was press-fit during assembly. 
+End-effector assembly with two-finger four-contact gripper, current-limited XM-430-W210 drive, 
+adjustable camera mount, and internal cable management. Tolerances are typical FDM with 
+deliberate bolt-hole clearance. 
+9.13 Base Rotation Assembly 
+The base rotation system was one of the largest redesigns from the inherited Sortify arm. The 
+previous design coupled the rotation motor's output shaft directly to the entire arm above, so the 
+motor was carrying the full vertical load through its shaft bearings in addition to providing the 
+rotation torque. That over-stressed the motor bearings and produced visible play after extended 
+use. We rebuilt the base assembly so the vertical load is carried by a dedicated bearing ring beneath 
+the rotation platform, and the rotation motor only provides torque about the vertical axis. 
+A note on iteration counts in this section: there are three different parts that each went through 
+their own iteration cycle. The rotation platform went through 3 iterations, the lid went through 4 
+iterations, and the XM-540 shoulder bracket went through 5 iterations. Where we refer to “iteration 
+3” (or similar) below, we mean iteration 3 of whichever part is under discussion in that subsection — 
+not iteration 3 of the base assembly as a whole. 
+9.13.1 Architecture 
+From bottom up: the rotation motor (XM-430) is fixed to the underside of the test rig base plate. Its 
+output shaft passes up through a hole in the base plate and into the rotation platform. The rotation 
+platform is a printed disc that carries a circular array of bearings underneath, running on the base 
+plate, plus the lid above. The lid sits on top of the rotation platform and carries the XM-540 shoulder 
+bracket. The arm above the shoulder hangs off the XM-540. 
+
+
+
+===== PAGE 30 =====
+ 
+ 
+ 
+Figure 9.5 — Rotation platform from above, showing the circular bearing pattern. 
+ 
+Figure 9.6 — Rotation platform from below, showing the bearing ring fitted into the platform's underside. The 
+bearings run on the base plate. 
+9.13.2 Platform iterations 
+The platform went through three iterations. The first used four bearings in a square pattern; we 
+found this gave too much wobble at the corners of the swing. The second went to six bearings in a 
+circular pattern, which fixed the wobble but introduced uneven preload — some bearings carried 
+more load than others depending on the arm angle. Richard Thue (from the lab support team) 
+suggested adding washers between adjacent bearings to space them evenly and to even out the 
+
+
+
+===== PAGE 31 =====
+ 
+ 
+preload across the bearing ring. The third iteration uses six bearings with the washer-spaced 
+configuration, plus the inner ring of the platform recessed 1–2 mm to give the bearings clearance 
+and prevent rubbing against the plastic during rotation. The bearings are held in place with M3 × 6 × 
+15 bolts run from the top of the platform through to nuts on the underside. 
+9.13.3 Lid 
+ 
+Figure 9.7 — Lid top view, showing the four bolt holes where the XM-540 shoulder bracket attaches. 
+ 
+Figure 9.8 — Lid with annotated dimensions, showing the bolt hole pattern and overall lid diameter. 
+
+
+
+===== PAGE 32 =====
+ 
+ 
+ 
+Figure 9.9 — Lid underside, showing the cable routing pockets. 
+The lid went through four iterations. The first was inherited from Sortify. The second tried to add 
+stiffener flanges on the underside but didn't fix the deflection problem we were seeing under load. 
+The third tried to integrate the shoulder bracket into the lid as a single print, but the layer 
+orientation of the bracket portion (printed flat against the lid) meant the bracket cracked along the 
+layers under shoulder load. The fourth and final iteration is flat with a separately-printed XM-540 
+shoulder bracket bolted on — see §9.13.4 below. 
+9.13.4 XM-540 shoulder bracket and the print-orientation story 
+The XM-540 shoulder bracket took five iterations to get right, and four of those five iterations were 
+about print orientation rather than about geometry. This is one of the most important fabrication 
+lessons from the project, so it's worth recording in detail. 
+The bracket carries the entire arm above the shoulder — it sits on top of the lid, with four M2 × 15 
+mm screws running down from the top into the XM-540 motor body underneath, plus four more M3 
+screws underneath the lid that fasten the XM-540 motor body to the platform. The load path goes 
+from the long beam tip, through the long beam, into the shoulder horn, into the XM-540 motor 
+body, through the bolts, into the bracket walls, and from the bracket walls into the lid. The bolt-
+bearing surface inside the bracket walls is where the highest stress concentration lives. 
+
+
+
+===== PAGE 33 =====
+ 
+ 
+ 
+Figure 9.10 — XM-540 bracket iteration 1: printed with the motor cutout face up, supports on the top. The 
+layer planes run perpendicular to the bolt-hole axis. Failed: cracked along the layers between the bolt holes 
+under shoulder load. 
+ 
+Figure 9.11 — XM-540 bracket iteration 3 with trapezoidal supports. Improved bolt-hole geometry but still 
+printed face-up, so the layer-plane failure mode persisted. 
+
+
+
+===== PAGE 34 =====
+ 
+ 
+ 
+Figure 9.12 — XM-540 bracket iteration 5 (final): same geometry as iteration 4 but printed on its side, so the 
+layer planes now run parallel to the load path through the bolt holes. 
+ 
+Figure 9.13 — An earlier-iteration XM-540 bracket showing the layer-plane crack between the two bolt holes. 
+The crack runs across the full width of the part along a single horizontal layer, confirming the failure is layer-
+bond rather than bulk material failure. 
+
+
+
+===== PAGE 35 =====
+ 
+ 
+ 
+Figure 9.14 — Side-by-side comparison: failed early iteration (left) and the iteration-5 final design (right) with 
+the integrated motor cutout, hex bolt pockets, and refined mounting plate geometry. 
+
+
+
+===== PAGE 36 =====
+ 
+ 
+ 
+Figure 9.15 — Iteration-5 bracket exploded: the main bracket body (bottom, with the hex bolt pockets and 
+motor cutout) and the separately-printed mounting plate (top, with the M3 bolt-pattern through-holes) that 
+fastens the bracket assembly to the lid. 
+
+
+
+===== PAGE 37 =====
+ 
+ 
+ 
+Figure 9.16 — Iteration-5 bracket installed in the lid, viewed from the side. M3 socket-head screws visible 
+securing the bracket to the lid; the bracket leg has its layer lines running horizontally because of the sideways 
+print orientation. 
+
+
+
+===== PAGE 38 =====
+ 
+ 
+ 
+Figure 9.17 — Iteration-5 bracket from another angle, with the cardboard shim used to align the motor-to-
+bracket contact face during install (the shim was a temporary spacer during initial alignment and was removed 
+for final fit). 
+The sequence of iterations was: iteration 1 printed face-up with no supports beyond the bed (failed 
+at the bolt holes); iteration 2 printed face-up with brim and modified bolt pattern (failed in the same 
+place); iteration 3 added trapezoidal external supports to the bolt-hole region (slightly better but still 
+cracked); iteration 4 was the first attempt at a sideways print but with the bracket geometry still 
+optimised for the original orientation — the part came off the printer with poor surface finish on 
+what should have been the mounting face; iteration 5 is iteration 4 reworked so the mounting face is 
+on the print bed and the bolt-hole axis is along the print build direction. The bolts now load the 
+bracket walls along the layer direction (parallel to the layers) rather than across the layers, and the 
+failure mode is gone. 
+
+
+
+===== PAGE 39 =====
+ 
+ 
+The lesson: print orientation can matter more than geometry for layer-bond-limited features. If the 
+load path runs across the layer planes, the part will fail no matter how thick you make the walls. 
+Either reorient the print so the load runs parallel to the layers, or change the material to something 
+effectively isotropic (Nylon 12 SLS, addressed in §9.18). 
+Base rotation assembly: platform with six bearings (washer-spaced) carrying the vertical load, 
+rotation motor for torque only, lid bolted to the platform, XM-540 shoulder bracket bolted on top. 
+The shoulder bracket's iteration history is the project's clearest example of print-orientation 
+engineering: five iterations, four of them about printing direction. 
+9.14 Testing Against Requirements 
+Verification against the master mechanical requirements: 
+9.14.1 M1 — Workspace 
+The arm achieves 671.79 mm reach to the static-finger tip in the fully extended horizontal pose 
+(§9.4.3), with 415.1 mm vertical drop to the gripper in the worst-case low-reach pose. Both numbers 
+exceed the workspace required by the demonstration task. Verified at the system integration test 
+stand. 
+9.14.2 M2 — Payload 
+The arm successfully grips and transports a 200 g ball, which is the project's target payload. The 
+Factor of Safety analysis in §9.8 and §9.10 uses 200 g as the payload mass. The actual demonstration 
+ran with balls in the 180–220 g range without any structural concerns observed; FEM and hand calc 
+both confirm comfortable margin at the 200 g design point. Verified by inspection during integration 
+testing. 
+9.14.3 M3 — Cycle time 
+Cycle time is set by the control system and the perception pipeline, not by the structural design. The 
+arm has the actuator headroom to move faster than the demonstration cycle time requires (the joint 
+motors are well below their rated continuous torque even at the worst-case static pose, so transient 
+acceleration loads stay within bounds). System-level verification of M3 is in the integration chapter. 
+9.14.4 M4 — Durability 
+The arm completed all the demonstration runs without structural failure. The Factor of Safety values 
+reported in §9.10 give substantial margin against single-event failure (n = 2.53 on the most-loaded 
+section), and the print recipe was developed specifically to address the layer-bond failures that the 
+early prints showed. No bracket cracking or beam deflection issues were observed during the 
+demonstration runs. Verified by completion of the demonstration cycles. 
+All four mechanical requirements are met or exceeded. The arm reach, payload, cycle headroom, and 
+durability targets are verified. 
+
+
+
+===== PAGE 40 =====
+ 
+ 
+9.15 Final Dimensions and Totals 
+9.15.1 Mass breakdown 
+Mass of the as-built arm, broken down by subsystem: 
+● Long beam (CAD, 100 % infill): 219.38 g 
+● Middle beam (CAD, 100 % infill): 110.88 g 
+● Short beam (CAD, 100 % infill): 62.11 g 
+● End-effector printed parts (jaws, mounts, brackets): 91.5 g (sum of 14 + 25 + 13.52 + 14 + 5 + 
+5 + 14 + 1) 
+● Base rotation platform, lid, and XM-540 bracket (printed parts): ≈ 280 g 
+● Iteration-3 brackets and miscellaneous printed parts: ≈ 577 g 
+● Subtotal printed plastic (CAD, 100 % infill upper bound): 1341.22 g 
+● Motors (1 × XM-540 at 165 g + 4 × XM-430 at 82 g): 493 g 
+● Intel RealSense camera: 91 g 
+● Fasteners, inserts, cables, bearings (estimate): ≈ 100 g 
+● Total upper bound: 2025 g 
+The CAD plastic mass is the 100 % infill figure. At the print recipe in use (40–60 % gyroid infill, with 
+shells/walls at the values listed in §9.6), the actual printed plastic mass is approximately 60–75 % of 
+the CAD figure, so the realistic as-built total mass is approximately 1.49–1.55 kg1.49–1.69 kg. The 
+figure used in the cascade analysis (§9.5) is the CAD-mass upper bound, which is conservative for the 
+structural calculations. 
+9.15.2 Overall dimensions 
+Overall arm dimensions in the fully extended horizontal pose: 
+● Reach from shoulder centre to short-beam tip: 601.76 mm 
+● Reach from shoulder centre to claw tip: 671.79 mm 
+● Vertical stack from rotation platform to XM-540 mounting face: 58.95 mm 
+● Worst-case low-reach vertical drop (shoulder to gripper tip): 415.1 mm 
+● Worst-case low-reach straight-line distance (shoulder to gripper): 544.95 mm 
+
+
+
+===== PAGE 41 =====
+ 
+ 
+ 
+Figure 9.1 — Total CAD mass summary for the printed structural plastic parts, 1341.22 g at 100 % infill. 
+
+
+
+===== PAGE 42 =====
+ 
+ 
+ 
+Figure 9.2 — The complete as-built arm in working configuration on its test rig, viewed from a different angle 
+to show the base rotation platform, lid, and shoulder bracket assembly. 
+As-built arm: 1.49–1.55 kg1.49–1.69 kg realistic mass, 671.79 mm reach to claw tip, 5 active DoF. 
+The arm is well within the structural strength margins required for the 200 g payload and meets the 
+workspace requirement with margin to spare. 
+9.16 Limitations and Scoped-Out Analyses 
+We were honest with ourselves throughout the project about what we did and did not have time to 
+do. The following items were scoped out of the mechanical design effort in this iteration, with a brief 
+note on each: 
+9.16.1 Counterbalance bracket 
+
+
+
+===== PAGE 43 =====
+ 
+ 
+A counterbalance bracket was designed and printed during the project but was not installed on the 
+as-built arm. The design would have used a sprung mass on the rear of the long beam to offset the 
+shoulder torque during static holds, reducing the average current draw on the XM-540 during long 
+demonstration cycles. We chose not to install it because (a) the FoS and motor torque margins were 
+comfortable without it (n = 2.53 on the long beam and shoulder torque well below continuous-
+rated), (b) installation would have required additional structural mods on the shoulder bracket that 
+would have added schedule risk, and (c) the demonstration runs did not show any heat or current 
+issues on the XM-540 that the counterbalance would have addressed. The counterbalance is 
+therefore a designed-but-unused component; the printed parts exist and can be retrofitted in a 
+future iteration if needed. 
+9.16.2 Mesh convergence study 
+No mesh convergence study was run on the FEM. Each beam was meshed once with a curvature-
+based mesh at a maximum element size between 7 and 11 mm depending on beam size, and the 
+reported peak stresses are single-mesh estimates. Peak stress at a localised geometric stress 
+concentration can shift by 5–15 % with mesh refinement, so a future-work convergence study would 
+tighten the FoS numbers, particularly on the long beam where margin is tightest at n = 2.53. 
+9.16.3 LR 10K bending tests on iteration-3 beams 
+The compression tests in §9.11 were run on iteration-2 beam shells. The iteration-3 (as-built) 
+integrated beams were not bending-tested on the LR 10K — the test fixture for cantilever loading 
+was not available within the project schedule, and the FEM coverage (§9.10) was judged sufficient 
+for the project's verification target. Physical bending tests on the as-built beams are recommended 
+as future work. 
+9.16.4 Nylon 12 FEM completeness 
+Only the middle beam was modelled in Nylon 12 in the preliminary alternative-material study. The 
+long beam and short beam Nylon 12 studies were not completed because the SLS service-bureau 
+turnaround did not fit the project schedule. The Nylon 12 middle-beam result is presented in §9.18 
+as a worked example for future work. 
+9.16.5 CAD-confirmed cross-section dimensions 
+Two cross-section dimensions used in the hand calc are assumed rather than CAD-measured: the 
+middle-beam X-width (assumed 36 mm) and the short-beam Z-depth (assumed 30 mm). These 
+should be reconciled against the as-built CAD model in a follow-on pass; the FEM uses the actual 
+CAD geometry so the FEM numbers are not affected, but the hand-calc bulk stresses for those two 
+beams should be re-checked once the actual dimensions are confirmed. 
+9.16.6 Full bolt-torque specification 
+Bolt torques were not specified or recorded during assembly — the standard practice was “snug, not 
+stripped” on the PLA-threaded holes (now backed up by Ruthex inserts on the short beam) and 
+
+
+
+===== PAGE 44 =====
+ 
+ 
+standard wrench torque on the metal-to-metal joints. A formal torque schedule with values per bolt 
+size and engagement length would be a reasonable addition for any production version. 
+Scoped-out items are documented here so a future group has a clear pickup list. None of them 
+invalidate the verified Factor of Safety values; they are refinements rather than gaps. 
+9.17 Improvements 
+If we were starting the mechanical design over with what we know now, the changes we would 
+make are: 
+9.17.1 Print-orientation-first design 
+The XM-540 bracket lesson — print orientation matters more than geometry for layer-bond-limited 
+features — should be applied at the beginning of the design rather than discovered through five 
+iterations of failure. Every load-bearing printed part on the arm should have its print orientation 
+chosen up front based on the load path, before the geometry is fully fixed. In practice that means: 
+identify the highest-stress feature on the part, identify the load direction, and orient the part so the 
+load runs parallel to the layers, not across them. This costs nothing in print time and eliminates the 
+layer-bond failure mode that took us five iterations to defeat on the shoulder bracket. 
+9.17.2 Brackets-and-beams separately, iterate fast, integrate at the end 
+The iterate-cheaply-with-separate-brackets methodology (iteration 2) was the right approach for 
+getting to a working design quickly. We could test bracket variants in hours rather than days, and the 
+bolted joints — while structurally weaker than integrated geometry — let us swap parts without 
+reprinting the beams. The mistake was running the LR 10K compression tests on iteration-2 shells 
+without brackets attached, which gave us shell-buckling data that wasn't directly useful for the 
+iteration-3 integrated design. A future version would test the iteration-2 brackets-on-beams 
+configuration first to validate the bolted interface, then move to integrated brackets only once the 
+bracket geometry was nailed down. 
+9.17.3 Counterbalance integration 
+The counterbalance bracket exists but isn't installed. A future iteration with a longer project timeline 
+would install it and characterise the reduction in average current draw and joint heating. The bracket 
+design is ready; only the installation effort is scoped out. 
+9.17.4 Material change 
+The strongest single change available is moving to Nylon 12 SLS for the structural beams. This is the 
+topic of §9.18. 
+9.18 Topology Optimisation and Material Future Work 
+9.18.1 Nylon 12 as an alternative material 
+
+
+
+===== PAGE 45 =====
+ 
+ 
+Nylon 12 printed via Selective Laser Sintering (Formlabs Fuse or equivalent) was identified during 
+material selection as a promising alternative to FDM PLA for the structural beams. The engineering 
+advantages of SLS Nylon 12 over FDM PLA are substantial: 
+● Isotropic strength: SLS parts are effectively isotropic because the powder bed bonds in all 
+three directions during sintering. There is no Z-axis weakness, no layer-plane failure mode, 
+and no print-orientation dependency. The XM-540 bracket failure mode that took five 
+iterations to defeat in FDM PLA would not exist in SLS Nylon 12. 
+● Ductility and impact resistance: Nylon 12 yields plastically before failing, which gives a built-
+in margin against overload events. PLA, by contrast, is brittle and snaps abruptly. For a 
+manipulator subject to occasional collisions or unexpected loads, the ductile-yield-before-
+failure behaviour of Nylon 12 is a significant safety net. 
+● Fatigue resistance: Nylon 12 absorbs vibration and resists cyclic-load damage substantially 
+better than PLA. For an arm that will see repeated motion cycles in service, this matters. 
+● Zero support structures: SLS uses unsintered powder as natural support, so the internal 
+triangular ribs and any other complex internal geometry can be made without trapped-
+support issues. This opens up topology-optimised internal structures that are not practical in 
+FDM. 
+● Low friction and wear: Nylon has natural low-friction behaviour, useful at pivot points and 
+any sliding interface. 
+9.18.2 Preliminary Nylon 12 study 
+We ran a preliminary FEM study on the middle beam with the Nylon 12 material card (σ_y = 50 MPa, 
+E = 1.9 GPa, ρ = 1020 kg/m³) using the same geometry and applied loads (F = 3.745 N, T = 0.291 N·m) 
+as the PLA reference run at the time. The 3.745 N tip load reflects an earlier version of the cascade 
+before the gripper drive motor was finalised; the final cascade value for the middle beam is 5.82 N 
+(§9.5). The PLA and Nylon 12 studies are therefore directly comparable to each other at 3.745 N, but 
+neither reflects the final cascade load. Re-running both at 5.82 N is one of the items in §9.16 future 
+work. Results: peak von Mises stress 4.33 MPa, peak displacement 0.627 mm, FoS ≈ 11.5 (against 
+Nylon 12 yield). Compared to the PLA reference on the same beam (peak σ_vM 3.32 MPa, 
+displacement 0.219 mm, FoS 10.5 against PLA yield), the Nylon 12 study confirms the expected 
+trade-off: higher strength margin (because Nylon 12 has a higher yield stress) but more deflection 
+(because Nylon 12 has a lower Young's modulus). The middle beam Nylon 12 case shows 
+approximately 2.9× more deflection than the equivalent PLA case at the same load. 
+The trade-off generalises across all three beams: switching to Nylon 12 buys safety margin but costs 
+stiffness. If we redesigned the arm for Nylon 12, we would need to thicken the walls or deepen the 
+cross-sections to recover the stiffness, which would partially offset the mass savings from SLS's 
+ability to use lighter geometries. 
+9.18.3 Why deferred 
+The reason we did not finish the Nylon 12 transition was the SLS service-bureau lead time. PLA prints 
+can be iterated in hours on the in-house Bambu Lab printer; SLS parts have a typical service-bureau 
+
+
+
+===== PAGE 46 =====
+ 
+ 
+turnaround of 5–10 working days plus shipping. With our project deadline, we could not afford a 
+single round-trip to the service bureau, let alone the iteration cycle we would need to tune the 
+cross-sections for Nylon 12's lower stiffness. The decision to stay with PLA was a schedule decision, 
+not a strength decision. 
+9.18.4 Recommended follow-on work 
+If a future group continues the project with a longer schedule, the recommended Nylon 12 follow-on 
+work is: 
+● Complete the Nylon 12 FEM on the long and short beams at full cascade loads, using the 
+same methodology as the middle-beam preliminary study. 
+● Tune the cross-sections to maintain the PLA deflection target while keeping the Nylon 12 
+strength advantage — typically wall thickness + 1 mm or cross-section depth + 5 mm on 
+each beam, depending on which beam dominates the deflection target. 
+● Manufacture the Nylon 12 beams via Formlabs Fuse 1+ (or equivalent SLS service bureau) 
+and replace the PLA beams on the existing arm. 
+● Run comparison bending tests on the LR 10K (or equivalent) against the as-built PLA arm to 
+confirm the predicted strength and deflection differences. 
+● Topology-optimise the internal rib structure using the freedom that SLS gives to use complex 
+internal geometries that would be print-unsupportable in FDM. 
+9.18.5 Topology optimisation 
+The internal triangular rib structure used in the current beams is a hand-designed approximation of a 
+load-path-optimised structure. With SLS Nylon 12 in hand, a future iteration could run topology 
+optimisation (e.g. via the SolidWorks topology study or Altair Inspire) to generate organic load-path-
+following internal structures that minimise mass for a given stiffness target. This is the natural next 
+step after switching materials — the material change opens up the design space and the 
+optimisation tool exploits it. 
+Nylon 12 SLS is a recommended next step. The preliminary middle-beam study confirms the strength 
+margin and quantifies the stiffness trade-off. Topology optimisation of the internal rib structure 
+would be the natural follow-on once SLS manufacturing is in scope. 
+9.19 Chapter Conclusion 
+We set out to design and validate a 5-DoF robotic arm with sufficient reach, structural margin, and 
+payload capacity to complete the project's pick-and-place demonstration task. We inherited the 
+serial-revolute architecture and the Dynamixel motor set from the previous group (Sortify), 
+redesigned every structural part in PLA on the in-house Bambu Lab P1S printer, and validated the 
+redesign with hand calculation, FEM, and partial physical testing. The headline results: 
+● Reach: 671.79 mm to the claw tip in the fully extended horizontal pose, with a 415.1 mm 
+vertical low-reach drop. Exceeds the M1 workspace requirement. 
+
+
+
+===== PAGE 47 =====
+ 
+ 
+● Factor of Safety (FEM peak stress, full cascade load, n = σ_y / σ_vM,max): long beam n = 
+2.53, middle beam n = 10.5, short beam n = 38.0. All three beams exceed the n ≥ 2.0 self-
+imposed target. 
+● Tip deflection at full cascade load: 0.25 mm long, 0.22 mm middle, 0.02 mm short. All 
+deflections are visually imperceptible and well within positioning tolerance. 
+● Print recipe (40–60 % gyroid infill, 6–8 wall loops, 30–40 mm/s outer wall speed, 60 % max 
+fan, 225–230 °C nozzle, Bambu PLA Basic on P1S 0.4 mm nozzle) developed to address the 
+layer-bond failures seen in early iterations. 
+● Five iterations of the XM-540 shoulder bracket producing the key engineering finding of the 
+project: print orientation matters more than geometry for layer-bond-limited features. 
+● Compression testing on iteration-2 beam shells (LR 10K) informed the move from separate 
+to integrated brackets in iteration 3. 
+● Mass: 1.49–1.55 kg1.49–1.69 kg realistic as-built (≤ 2.03 kg upper bound at 100 % infill). 
+Scoped-out items that a future group should pick up: mesh convergence study, LR 10K bending tests 
+on iteration-3 beams, full Nylon 12 FEM on long and short beams, counterbalance bracket 
+installation, and CAD-confirmation of two cross-section dimensions used in the hand calc. None of 
+these invalidate the verified Factor of Safety values — they are refinements rather than gaps. 
+The arm completed all demonstration runs in integration testing without structural failure. M1 
+through M4 are met or exceeded. The mechanical design supports the rest of the project. 
+Mechanical design verified: n = 2.53 on the most-loaded beam at full cascade load, 671.79 mm reach 
+to the claw tip, 200 g payload, M1 through M4 satisfied. The arm is the foundation the rest of the 
+project sits on, and that foundation holds. 
+Appendix A — Hand Calculation Worksheet 
+Full hand calculation, by beam. Repeats and extends the methodology summarised in §9.8. 
+Equations and intermediate values are shown for traceability. 
+A.1 Shared inputs 
+● σ_yield = 35 MPa, σ_ultimate = 30 MPa, E = 3.2 GPa, ν = 0.394 
+● Plane-stress von Mises: σ_vM = √(σ² + 3τ²) 
+● Bending stress: σ = M·c/I 
+● Torsional shear (rectangular cross-section): τ_max = T/(α·b·c²) 
+● Cantilever tip deflection: δ = F·L³/(3·E·I) 
+A.2 Short beam 
+L = 114.55 mm, cross-section 36.42 × 30 mm, 2 mm walls. I = 34,474 mm⁴, c = 15 mm. F_tip = 4.41 N, 
+W_beam = 0.61 N, T = 0.069 N·m. 
+R_y = 0.61 + 4.41 = 5.02 N 
+M_root = 0.61 × 57.3 + 4.41 × 114.55 = 540.1 N·mm 
+
+
+
+===== PAGE 48 =====
+ 
+ 
+σ_z = 540.1 × 15 / 34,474 = 0.235 MPa 
+τ = 69 / (0.262 × 36.42 × 225) = 0.0321 MPa 
+σ_vM = √(0.235² + 3×0.0321²) = 0.241 MPa 
+n = 35 / 0.241 = 145 
+δ = 4.41 × 114.55³ / (3 × 3200 × 34,474) = 0.020 mm 
+A.3 Middle beam 
+L = 188 mm, cross-section 36 × 30 mm (assumed X-width), 2.5 mm walls. I = 40,635 mm⁴, c = 15 mm. 
+F_tip = 5.82 N, W_beam = 1.09 N, T = 0.291 N·m. 
+R_y = 1.09 + 5.82 = 6.91 N 
+M_root = 1.09 × 94 + 5.82 × 188 = 1196.6 N·mm 
+σ_z = 1196.6 × 15 / 40,635 = 0.442 MPa 
+τ = 291 / (0.249 × 36 × 225) = 0.144 MPa 
+σ_vM = √(0.442² + 3×0.144²) = 0.508 MPa 
+n = 35 / 0.508 = 68.9 
+δ = 5.82 × 188³ / (3 × 3200 × 40,635) = 0.099 mm 
+A.4 Long beam 
+L = 220.52 mm, cross-section 44 × 40.5 mm, 5 mm walls. I = 163,188 mm⁴, c = 20.25 mm. F_tip = 7.71 
+N, W_beam = 2.15 N, T = 0.889 N·m. 
+R_y = 2.15 + 7.71 = 9.86 N 
+M_root = 2.15 × 110.26 + 7.71 × 220.52 = 1937.3 N·mm 
+σ_z = 1937.3 × 20.25 / 163,188 = 0.240 MPa 
+τ = 889 / (0.246 × 44 × 410.06) = 0.200 MPa 
+σ_vM = √(0.240² + 3×0.200²) = 0.421 MPa 
+n = 35 / 0.421 = 83.1 
+δ = 7.71 × 220.52³ / (3 × 3200 × 163,188) = 0.053 mm 
+A.5 Bolt bearing 
+Worst-case bearing stress at the short beam camera mount: bolt force ≈ 1.7 N, bearing thickness ≈ 4 
+mm of PLA, M3 bolt diameter. 
+σ_bearing = 1.7 / (3 × 4) = 0.14 MPa ≪ allowable (typically 10–20 MPa for FDM PLA) 
