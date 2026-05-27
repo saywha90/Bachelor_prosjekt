@@ -23,8 +23,8 @@ CAMERA_HFOV_DEG = 81.0
 # Used by main.py via VisionBridge.apply_main_manual_exposure().  Keep this
 # lower than calibration exposure when sunlight/bright floor glare washes out
 # blue balls in the live sorting loop.
-MAIN_DETECTION_MANUAL_EXPOSURE_US = 8000
-MAIN_DETECTION_MANUAL_ISO = 200
+MAIN_DETECTION_MANUAL_EXPOSURE_US = 2000000
+MAIN_DETECTION_MANUAL_ISO = 800
 MAIN_DETECTION_MANUAL_WB_K = 4500
 MAIN_DETECTION_POST_APPLY_DISCARD_FRAMES = 8
 
@@ -39,8 +39,8 @@ CALIBRATION_USE_DIM_MANUAL_EXPOSURE = True
 # Conservative fixed scan exposure for bright lab/OAK-D calibration lighting.
 # Tune these three values together if the preview is still washed out or too
 # dark.
-CALIBRATION_DIM_MANUAL_EXPOSURE_US = 14000
-CALIBRATION_DIM_MANUAL_ISO = 200
+CALIBRATION_DIM_MANUAL_EXPOSURE_US = 2000000
+CALIBRATION_DIM_MANUAL_ISO = 800
 CALIBRATION_DIM_MANUAL_WB_K = 4500
 CALIBRATION_DIM_POST_APPLY_DISCARD_FRAMES = 8
 
