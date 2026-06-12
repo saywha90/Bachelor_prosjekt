@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 vision_bridge.py
 ================
@@ -8,15 +10,14 @@ using a **perspective transform (homography)**.
 
 Calibration
 -----------
-The camera is mounted on a pillar beside the arm base, looking forward and
-slightly downward across the workspace.  A simple pinhole back-projection
-would fail because of the oblique viewing angle.
+The camera is wrist-mounted and moved to a fixed SCAN_POSE before each
+scan.  A homography calibrated at that pose maps any pixel ``(u, v)``
+→ ``(x_cm, y_cm)`` on the workspace plane (Z = 0).
 
-Instead we define four physical corners of the sorting workspace (measured
-in cm relative to the arm shoulder origin) and their corresponding pixel
-positions in the camera frame.  ``cv2.getPerspectiveTransform`` gives us a
-3×3 homography that maps any pixel ``(u, v)`` → ``(x_cm, y_cm)`` on the
-workspace plane (Z = 0).
+Calibration data is stored in ``src/calibration/homography_calibration.json``
+and loaded at construction time.  The JSON also records the motor positions
+(``calibrated_at_scan_pose``) and tolerance used during calibration so we
+can verify the arm is in the correct pose before scanning.
 
 Usage
 -----
@@ -24,7 +25,7 @@ Usage
 
     from vision_bridge import VisionBridge
 
-    bridge = VisionBridge()         # uses defaults or env toggle
+    bridge = VisionBridge()         # loads homography from JSON
     bridge.open()                   # opens OAK camera
     detections = bridge.scan_for_balls()
     # → [{"colour": "red", "x": 20.3, "y": 5.1, "z": 0.0}, ...]
@@ -33,68 +34,67 @@ Usage
 Author: Bachelor Project 2026 – Autonomia
 """
 
+import json
+import logging
 import sys
-import math
+import time
+from collections import deque
 from pathlib import Path
+from types import TracebackType
 from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 
-# ── Make the vision package importable from src/IK/ ──────────────────
-_VISION_DIR = str(Path(__file__).resolve().parent.parent / "vision")
-if _VISION_DIR not in sys.path:
-    sys.path.insert(0, _VISION_DIR)
-_SRC_DIR = str(Path(__file__).resolve().parent.parent)
-if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
+# ── Unified import path ───────────────────────────────────────────────
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".."))
 
-from vision.oak_camera import OAKCamera
-from vision.enhanced_detector import SimpleBallDetector, BallColor
-import vision.config as vcfg
+from vision.camera import OAKCamera
+from vision.detector import SimpleBallDetector, BallColor, DetectedBall
+from config import vision as vcfg
+
+from config.arm import (
+    CAMERA_OFFSET_X, CAMERA_OFFSET_Y, SCAN_POSE, SCAN_POSE_TOLERANCE,
+    CALIBRATION_FILE, CLAW_OPEN_POS,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Homography Calibration Points
+#  Homography Calibration Points  (dev-reference defaults)
 # ══════════════════════════════════════════════════════════════════════
 #
-#  HOW TO CALIBRATE (one-time setup):
+# These hardcoded values are kept as a *reference only*.  At runtime the
+# calibration is loaded from ``homography_calibration.json`` (see
+# ``VisionBridge.__init__``).  Run  python -m src.calibration.09_touch_calibration
+# to regenerate the JSON after any physical repositioning.
 #
-#  1. Place 4 markers at known positions on your workspace (e.g. the
-#     corners of an A3 sheet).  Measure their (x, y) in cm from the
-#     arm's shoulder origin.
+# _DEFAULT_WORKSPACE_PX = np.float32([
+#     [   9,   17],      # TL (top-left)
+#     [ 619,   16],      # TR (top-right)
+#     [ 618,  381],      # BR (bottom-right)
+#     [  23,  378]       # BL (bottom-left)
+# ])
 #
-#  2. Run  python src/vision/test_enhanced_detector.py  and hover your
-#     mouse over each marker.  OpenCV shows pixel coords in the window
-#     title or via cv2.setMouseCallback.
-#
-#  3. Fill in the two arrays below so that each row in WORKSPACE_PX
-#     corresponds to the same physical corner in WORKSPACE_CM.
-#
-#  Order: top-left, top-right, bottom-right, bottom-left
-#  (when looking at the camera image).
-#
-# ──────────────────────────────────────────────────────────────────────
+# _DEFAULT_WORKSPACE_CM = np.float32([
+#     [28.0,  22.0],   # top-left      → 28cm far, 22cm left
+#     [28.0, -22.0],   # top-right     → 28cm far, 22cm right
+#     [10.0, -22.0],   # bottom-right  → 10cm near, 22cm right
+#     [10.0,  22.0],   # bottom-left   → 10cm near, 22cm left
+# ])
 
-# Pixel coordinates of the 4 workspace corners in the camera frame
-# TODO: Replace with your actual measured pixel positions
-WORKSPACE_PX = np.float32([
-    [100, 60],       # top-left      in camera image
-    [540, 60],       # top-right     in camera image
-    [580, 360],      # bottom-right  in camera image
-    [60,  360],      # bottom-left   in camera image
-])
+# ── Calibration JSON path (imported from config.arm) ─────────────────
+_CALIBRATION_FILE = CALIBRATION_FILE
 
-# Corresponding real-world positions in cm (arm shoulder = origin)
-#   x = forward (away from arm base)
-#   y = left(+) / right(−)
-# TODO: Replace with your actual measured workspace corners
-WORKSPACE_CM = np.float32([
-    [35.0,  15.0],   # top-left      → far-left of workspace
-    [35.0, -15.0],   # top-right     → far-right of workspace
-    [10.0, -15.0],   # bottom-right  → near-right of workspace
-    [10.0,  15.0],   # bottom-left   → near-left of workspace
-])
+
+# Colour → BGR mapping for OpenCV drawing
+_COLOUR_BGR = {
+    "red":  (0, 0, 255),
+    "blue": (255, 130, 0),
+}
+_WINDOW_NAME = "OAK-D Live View"
 
 
 class VisionBridge:
@@ -105,14 +105,15 @@ class VisionBridge:
         - ``use_camera=False`` → returns canned fake detections (for
           testing the state machine and 3-D visualiser without hardware)
 
+    At construction time, loads the homography calibration from
+    ``src/calibration/homography_calibration.json``.  If the JSON also
+    contains ``calibrated_at_scan_pose`` and ``tolerance``, those are
+    stored for runtime pose verification (see :meth:`verify_pose`).
+
     Parameters
     ----------
     use_camera : bool
         Set ``True`` to use the real OAK camera.
-    workspace_px : np.ndarray, optional
-        4×2 array of workspace corner pixel coordinates.
-    workspace_cm : np.ndarray, optional
-        4×2 array of corresponding real-world cm coordinates.
     """
 
     # ── Fake detections for simulation mode ───────────────────────────
@@ -124,18 +125,158 @@ class VisionBridge:
     def __init__(
         self,
         use_camera: bool = False,
-        workspace_px: Optional[np.ndarray] = None,
-        workspace_cm: Optional[np.ndarray] = None,
-    ):
+    ) -> None:
         self.use_camera = use_camera
         self._cam: Optional[OAKCamera] = None
         self._detector: Optional[SimpleBallDetector] = None
         self._homography: Optional[np.ndarray] = None
 
-        # Build homography matrix from calibration points
-        px = workspace_px if workspace_px is not None else WORKSPACE_PX
-        cm = workspace_cm if workspace_cm is not None else WORKSPACE_CM
-        self._homography = cv2.getPerspectiveTransform(px, cm)
+        # ── FPS & debug statistics tracking ───────────────────────────
+        self._fps_prev_time: float = time.time()
+        self._fps_frame_count: int = 0
+        self._fps_value: float = 0.0
+        self._total_scans: int = 0
+        self._conf_history: deque[float] = deque(maxlen=500)
+        self._CONF_SMOOTH: int = 30  # rolling average window size
+        self._manual_exposure_warning_shown: bool = False
+
+        # ── Load homography calibration from JSON ─────────────────────
+        if not _CALIBRATION_FILE.is_file():
+            raise FileNotFoundError(
+                "No homography calibration found. "
+                "Run 'python -m src.calibration.09_touch_calibration' first."
+            )
+
+        with open(_CALIBRATION_FILE, "r") as fh:
+            cal = json.load(fh)
+
+        workspace_px = np.float32(cal["workspace_px"])
+        workspace_cm = np.float32(cal["workspace_cm"])
+
+        # The homography may be pre-computed in the JSON (3×3 list-of-lists)
+        # or we can derive it from the four corner pairs.
+        if "homography" in cal:
+            self._homography = np.float64(cal["homography"])
+        else:
+            self._homography = cv2.getPerspectiveTransform(
+                workspace_px, workspace_cm
+            )
+
+        # Scan-pose verification data (backwards-compatible with older JSONs).
+        # M1-M4 remain tied to the calibrated homography pose, while M5 is
+        # always the configured open-claw position used by SCAN_POSE commands.
+        self._calibrated_scan_pose: dict = dict(SCAN_POSE)
+        self._calibrated_scan_pose.update(cal.get("calibrated_at_scan_pose", {}))
+        calibrated_m5 = self._calibrated_scan_pose.get("m5")
+        self._calibrated_scan_pose["m5"] = CLAW_OPEN_POS
+        if calibrated_m5 is not None and int(calibrated_m5) != CLAW_OPEN_POS:
+            logger.warning(
+                "[VISION] Calibration metadata has stale SCAN_POSE m5=%d; "
+                "using CLAW_OPEN_POS=%d for scan-pose validation",
+                int(calibrated_m5),
+                CLAW_OPEN_POS,
+            )
+        self._scan_pose_tolerance: int = cal.get(
+            "tolerance", SCAN_POSE_TOLERANCE
+        )
+
+        logger.info(
+            "[VISION] ✅ Loaded calibration from %s  "
+            "(scan_pose=%s, tolerance=%d)",
+            _CALIBRATION_FILE.name,
+            self._calibrated_scan_pose,
+            self._scan_pose_tolerance,
+        )
+
+    # ── Pose verification ─────────────────────────────────────────────
+
+    def verify_pose(self, current_motor_positions: dict) -> bool:
+        """Check if the arm is at the calibrated SCAN_POSE within tolerance.
+
+        Args:
+            current_motor_positions: dict with keys ``"m1"`` through ``"m5"``
+                and int step values.
+
+        Returns:
+            True if all motors are within tolerance of the calibrated scan
+            pose.
+        """
+        ok = True
+        for motor_key in ("m1", "m2", "m3", "m4", "m5"):
+            expected = self._calibrated_scan_pose.get(motor_key)
+            actual = current_motor_positions.get(motor_key)
+            if expected is None or actual is None:
+                continue
+            delta = abs(int(actual) - int(expected))
+            if delta > self._scan_pose_tolerance:
+                logger.warning(
+                    "[VISION] ⚠️  Motor %s is %d steps from SCAN_POSE "
+                    "(expected %d, got %d, tolerance %d)",
+                    motor_key, delta, expected, actual,
+                    self._scan_pose_tolerance,
+                )
+                ok = False
+        return ok
+
+    def apply_main_manual_exposure(
+        self,
+        *,
+        verbose: bool = True,
+        discard_frames: Optional[int] = None,
+    ) -> bool:
+        """Apply fixed manual exposure to the main camera.
+
+        Main detection uses its own deterministic exposure/ISO/WB workflow so
+        the runtime loop can be tuned independently from touch calibration.
+        This is a no-op in simulation mode.  Real-camera scans reapply this
+        before capture so the camera cannot drift back toward AE/AWB values
+        during long runtimes.
+        """
+        exposure_us = int(vcfg.MAIN_DETECTION_MANUAL_EXPOSURE_US)
+        iso = int(vcfg.MAIN_DETECTION_MANUAL_ISO)
+        wb_k = int(vcfg.MAIN_DETECTION_MANUAL_WB_K)
+        discard = (
+            int(vcfg.MAIN_DETECTION_POST_APPLY_DISCARD_FRAMES)
+            if discard_frames is None else int(discard_frames)
+        )
+
+        if verbose:
+            print("\n  📷  MAIN CAMERA EXPOSURE SETUP")
+            print("       Applying main fixed controls before detection:")
+            print(f"         exposure={exposure_us} µs, ISO={iso}, WB={wb_k} K")
+
+        if not self.use_camera:
+            if verbose:
+                print("       Simulation camera mode — no hardware exposure controls applied.")
+            return True
+
+        if self._cam is None:
+            logger.error("[VISION] Cannot apply manual exposure; camera is not opened")
+            if verbose:
+                print(f"  ⚠️  Manual exposure {exposure_us} µs was NOT applied: camera is not opened.")
+            return False
+
+        applied = self._cam.set_manual_exposure_white_balance(
+            exposure_us=exposure_us,
+            iso=iso,
+            white_balance_k=wb_k,
+            discard_frames=discard,
+        )
+        if applied:
+            self._manual_exposure_warning_shown = False
+            if verbose:
+                print(f"  🔅  Main detection camera manual exposure applied: {exposure_us} µs.")
+        else:
+            if verbose:
+                print(f"  ⚠️  Could not apply main detection manual exposure {exposure_us} µs.")
+                print("       Continuing with current camera controls.")
+            elif not self._manual_exposure_warning_shown:
+                logger.warning(
+                    "[VISION] Could not reapply fixed manual exposure %d µs; continuing with current camera controls",
+                    exposure_us,
+                )
+                self._manual_exposure_warning_shown = True
+        return applied
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -148,18 +289,20 @@ class VisionBridge:
             ``True`` if ready (always ``True`` in simulation mode).
         """
         if not self.use_camera:
-            print("[VISION] Simulation mode — no camera needed")
+            logger.info("[VISION] Simulation mode — no camera needed")
             return True
 
-        print("[VISION] Opening OAK-D camera...")
+        logger.info("[VISION] Opening OAK-D camera...")
         self._cam = OAKCamera(resolution=vcfg.CAMERA_RESOLUTION)
         if not self._cam.open():
-            print("[VISION] ❌ Could not open camera")
+            logger.error("[VISION] ❌ Could not open camera")
             return False
 
         focal_px = self._cam.get_focal_length_px(hfov_deg=vcfg.CAMERA_HFOV_DEG)
-        print(f"[VISION] ✅ Camera ready  ({vcfg.CAMERA_RESOLUTION[0]}×"
-              f"{vcfg.CAMERA_RESOLUTION[1]}, f={focal_px:.1f}px)")
+        logger.info(
+            f"[VISION] ✅ Camera ready  ({vcfg.CAMERA_RESOLUTION[0]}×"
+            f"{vcfg.CAMERA_RESOLUTION[1]}, f={focal_px:.1f}px)"
+        )
 
         self._detector = SimpleBallDetector(
             min_radius=vcfg.BALL_MIN_RADIUS,
@@ -169,16 +312,17 @@ class VisionBridge:
             max_balls_per_color=4,
             focal_length_px=focal_px,
         )
-        print("[VISION] ✅ Detector initialised")
+        logger.info("[VISION] ✅ Detector initialised")
         return True
 
-    def close(self):
-        """Release camera resources."""
+    def close(self) -> None:
+        """Release camera resources and close any OpenCV display windows."""
         if self._cam is not None:
             self._cam.release()
             self._cam = None
         self._detector = None
-        print("[VISION] Camera released")
+        cv2.destroyAllWindows()
+        logger.info("[VISION] Camera released")
 
     # ── Coordinate transform ──────────────────────────────────────────
 
@@ -199,7 +343,224 @@ class VisionBridge:
         transformed = cv2.perspectiveTransform(point, self._homography)
         x_cm = float(transformed[0, 0, 0])
         y_cm = float(transformed[0, 0, 1])
+
+        # Apply camera mounting offset
+        # The homography maps to camera-frame coordinates; shift to shoulder-frame
+        x_cm += CAMERA_OFFSET_X
+        y_cm += CAMERA_OFFSET_Y
+
         return round(x_cm, 1), round(y_cm, 1)
+
+    # ── Live camera display ───────────────────────────────────────────
+
+    def _draw_debug_hud(
+        self,
+        overlay: np.ndarray,
+        balls: List[DetectedBall],
+        fps: float,
+    ) -> None:
+        """Draw a semi-transparent debug statistics panel in the top-left corner.
+
+        The panel shows FPS, detection count, rolling average confidence,
+        tracker status, detector method breakdown, and per-ball detail
+        lines including circularity / aspect-ratio / shape & colour scores.
+
+        Parameters
+        ----------
+        overlay : np.ndarray
+            The BGR frame to draw on **in-place**.
+        balls : list
+            ``DetectedBall`` objects for the current frame.
+        fps : float
+            Current frames-per-second measurement.
+        """
+        FONT = cv2.FONT_HERSHEY_SIMPLEX
+        FONT_SCALE = 0.45
+        THICKNESS = 1
+        LINE_H = 18
+        PAD_X = 8
+        PAD_TOP = 6
+        WHITE = (255, 255, 255)
+        CYAN = (255, 255, 0)
+        YELLOW = (0, 255, 255)
+        GREEN = (0, 255, 0)
+        RED_C = (0, 0, 255)
+        GREY = (180, 180, 180)
+
+        # -- Build text lines -----------------------------------------------
+        lines: List[Tuple[str, Tuple[int, int, int]]] = []
+
+        # FPS
+        lines.append((f"FPS: {fps:.1f}", GREEN if fps >= 10 else YELLOW))
+
+        # Detection count
+        n_red = sum(1 for b in balls if b.color == BallColor.RED)
+        n_blue = sum(1 for b in balls if b.color == BallColor.BLUE)
+        lines.append((f"Detected: {len(balls)} ball(s)  (R:{n_red} B:{n_blue})", WHITE))
+
+        # Rolling average confidence
+        for b in balls:
+            self._conf_history.append(b.confidence)
+        recent = list(self._conf_history)[-self._CONF_SMOOTH:] if self._conf_history else []
+        avg_conf = int(sum(recent) / len(recent) * 100) if recent else 0
+        lines.append((f"Avg confidence: {avg_conf}%", WHITE))
+
+        # Detector statistics (method breakdown)
+        if self._detector is not None:
+            stats = self._detector.get_statistics()
+            lines.append(
+                (f"HSV:{stats.get('total_hsv_detections', 0)}  "
+                 f"Hough:{stats.get('total_hough_detections', 0)}  "
+                 f"Ensemble:{stats.get('ensemble_detections', 0)}",
+                 GREY)
+            )
+            light = stats.get('lighting_level', '?')
+            lines.append((f"Lighting: {light}", GREY))
+
+        # Tracker status
+        active_tracks = sum(1 for b in balls if getattr(b, 'track_id', 0) > 0)
+        lines.append((f"Tracker: {active_tracks} active track(s)", CYAN))
+
+        # Total scans
+        lines.append((f"Scan #{self._total_scans}", GREY))
+
+        # Separator
+        lines.append(("---", WHITE))
+
+        # Per-ball detail lines
+        for b in balls:
+            colour_name = b.color.value
+            if colour_name == "unknown":
+                continue
+            cx, cy = b.center
+            x_cm, y_cm = self.pixel_to_cm(float(cx), float(cy))
+            conf_pct = int(b.confidence * 100)
+            method = getattr(b, 'detection_method', '?')
+            shape_c = getattr(b, 'shape_confidence', 0.0)
+            color_c = getattr(b, 'color_confidence', 0.0)
+            tid = getattr(b, 'track_id', 0)
+            tid_s = f"#{tid}" if tid > 0 else "#?"
+            dist_s = f" {b.distance_cm:.0f}cm" if getattr(b, 'distance_cm', None) else ""
+
+            lines.append(
+                (f"{tid_s} {colour_name.upper()} {conf_pct}% [{method}]{dist_s}",
+                 RED_C if colour_name == "red" else (255, 130, 0))
+            )
+            lines.append(
+                (f"   pos=({x_cm},{y_cm})cm  shp={shape_c:.2f} col={color_c:.2f}",
+                 GREY)
+            )
+
+        # -- Compute panel dimensions ----------------------------------------
+        text_lines = [t for t, _ in lines if t.strip() and t != "---"]
+        sep_count = sum(1 for t, _ in lines if t == "---")
+        max_w = max(
+            (cv2.getTextSize(t, FONT, FONT_SCALE, THICKNESS)[0][0]
+             for t in text_lines),
+            default=120,
+        )
+        box_w = min(PAD_X * 2 + max_w + 12, overlay.shape[1])
+        box_h = min(
+            PAD_TOP * 2 + LINE_H * len(text_lines) + 10 * sep_count + LINE_H,
+            overlay.shape[0],
+        )
+
+        # -- Draw semi-transparent dark background ---------------------------
+        roi = overlay[0:box_h, 0:box_w].copy()
+        dark = np.full_like(roi, (10, 10, 10))
+        cv2.addWeighted(dark, 0.78, roi, 0.22, 0, roi)
+        overlay[0:box_h, 0:box_w] = roi
+        cv2.rectangle(overlay, (0, 0), (box_w - 1, box_h - 1), (80, 80, 80), 1)
+
+        # -- Render text lines -----------------------------------------------
+        y_pos = PAD_TOP
+        for text, color in lines:
+            if text == "---":
+                y_pos += 5
+                cv2.line(overlay, (PAD_X // 2, y_pos),
+                         (box_w - PAD_X // 2, y_pos), (60, 60, 60), 1)
+                y_pos += 5
+                continue
+            if not text.strip():
+                y_pos += LINE_H // 2
+                continue
+            y_pos += LINE_H
+            # Shadow for readability
+            cv2.putText(overlay, text, (PAD_X + 1, y_pos + 1),
+                        FONT, FONT_SCALE, (0, 0, 0), THICKNESS + 1, cv2.LINE_AA)
+            cv2.putText(overlay, text, (PAD_X, y_pos),
+                        FONT, FONT_SCALE, color, THICKNESS, cv2.LINE_AA)
+
+    def show_frame(self, frame: np.ndarray, balls: List[DetectedBall]) -> None:
+        """Draw detection overlays on *frame* and display it in an OpenCV window.
+
+        This is a **non-blocking** display helper.  For every detected ball
+        it draws circles, colour labels with confidence percentages and
+        detection-method tags, and world coordinates.  A debug statistics
+        panel is rendered in the top-left corner showing FPS, detection
+        counts, rolling average confidence, detector method breakdown,
+        tracker status, and per-ball shape/colour quality scores.
+
+        Parameters
+        ----------
+        frame : np.ndarray
+            The BGR camera frame (will be annotated on a **copy**).
+        balls : list
+            ``DetectedBall`` objects returned by the detector.
+        """
+        # ── FPS measurement ───────────────────────────────────────────
+        self._fps_frame_count += 1
+        now = time.time()
+        elapsed = now - self._fps_prev_time
+        if elapsed >= 1.0:
+            self._fps_value = self._fps_frame_count / elapsed
+            self._fps_frame_count = 0
+            self._fps_prev_time = now
+
+        overlay = frame.copy()
+
+        for ball in balls:
+            colour_name = ball.color.value          # "red" / "blue" / "unknown"
+            if colour_name == "unknown":
+                continue
+
+            cx, cy = ball.center
+            radius = int(ball.radius)
+            bgr = _COLOUR_BGR.get(colour_name, (200, 200, 200))
+
+            # Circle around the ball (thicker outline + inner ring)
+            cv2.circle(overlay, (cx, cy), radius, (0, 0, 0), 4)
+            cv2.circle(overlay, (cx, cy), radius, bgr, 2)
+            # Small filled dot at centre
+            cv2.circle(overlay, (cx, cy), 4, (0, 0, 0), -1)
+            cv2.circle(overlay, (cx, cy), 3, (255, 255, 255), -1)
+
+            # World coordinates via homography
+            x_cm, y_cm = self.pixel_to_cm(float(cx), float(cy))
+
+            # Per-ball label: COLOUR  conf%  [method]  (x, y) cm
+            conf_pct = int(ball.confidence * 100)
+            method = getattr(ball, 'detection_method', '')
+            method_tag = f" [{method}]" if method else ""
+            label = f"{colour_name.upper()} {conf_pct}%{method_tag} ({x_cm}, {y_cm}) cm"
+
+            # Text slightly above the circle with dark shadow for readability
+            text_y = max(cy - radius - 8, 14)
+            text_x = cx - radius
+            cv2.putText(
+                overlay, label, (text_x + 1, text_y + 1),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA,
+            )
+            cv2.putText(
+                overlay, label, (text_x, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, bgr, 1, cv2.LINE_AA,
+            )
+
+        # ── Debug HUD panel (top-left) ────────────────────────────────
+        self._draw_debug_hud(overlay, balls, self._fps_value)
+
+        cv2.imshow(_WINDOW_NAME, overlay)
+        cv2.waitKey(1)
 
     # ── Main scanning interface ───────────────────────────────────────
 
@@ -208,8 +569,18 @@ class VisionBridge:
 
         In camera mode, captures ``num_frames`` and picks the detection
         set with the highest total confidence (reduces single-frame noise).
+        The best frame is also displayed in a live OpenCV window with
+        detection overlays.
 
         In simulation mode, returns canned fake detections.
+
+        .. important::
+
+           The caller (typically ``main.py``) is responsible for moving
+           the arm to ``SCAN_POSE`` **before** calling this method.
+           VisionBridge does not have direct access to the serial/motor
+           layer; use :meth:`verify_pose` from the caller if you want
+           an explicit check.
 
         Parameters
         ----------
@@ -223,16 +594,30 @@ class VisionBridge:
             ``"z"`` (float, cm).  Ready for ``run_sorting_cycle()``.
         """
         if not self.use_camera:
-            print("[VISION] 📷 Returning fake detections (simulation mode)")
+            logger.info("[VISION] 📷 Returning fake detections (simulation mode)")
             return list(self._FAKE_DETECTIONS)  # shallow copy
 
         if self._cam is None or self._detector is None:
-            print("[VISION] ❌ Camera not opened — call open() first")
+            logger.error("[VISION] ❌ Camera not opened — call open() first")
             return []
+
+        # ── Start of new scan round ───────────────────────────────────────
+        self._total_scans += 1
+
+        # Re-send fixed manual controls before each scan.  DepthAI manual
+        # controls are runtime messages, so this low-noise refresh prevents
+        # long-running sessions from drifting back into AE/AWB behaviour.
+        self.apply_main_manual_exposure(verbose=False)
+
+        # Clear stale Kalman tracks from any previous scan round.
+        # Between scans the arm may have picked up / removed a ball, so old
+        # tracks would produce phantom detections for the first few frames.
+        self._detector.reset_tracker()
 
         # Capture num_frames and keep the best detection set
         best_balls = []
         best_score = -1.0
+        best_frame: Optional[np.ndarray] = None
 
         for _ in range(num_frames):
             ret, frame = self._cam.read()
@@ -245,9 +630,14 @@ class VisionBridge:
             if score > best_score:
                 best_score = score
                 best_balls = balls
+                best_frame = frame
+
+        # Show the best frame (or the last captured frame) in the live window
+        if best_frame is not None:
+            self.show_frame(best_frame, best_balls)
 
         if not best_balls:
-            print("[VISION] 📷 No balls detected")
+            logger.info("[VISION] 📷 No balls detected")
             return []
 
         # Convert DetectedBall objects → arm-frame dicts
@@ -264,59 +654,29 @@ class VisionBridge:
                 "colour": colour,
                 "x": x_cm,
                 "y": y_cm,
-                "z": 0.0,       # balls are on the table surface
+                "z": 0.0,  # Ball is on table surface; camera height (CAMERA_HEIGHT) used only for calibration reference
             })
 
         colour_summary = ", ".join(
             f"{d['colour'].upper()} at ({d['x']}, {d['y']})"
             for d in detections
         )
-        print(f"[VISION] 📷 Detected {len(detections)} ball(s): {colour_summary}")
+        logger.info(f"[VISION] 📷 Detected {len(detections)} ball(s): {colour_summary}")
         return detections
 
-    # ── Visual servoing helper ────────────────────────────────────────
-
-    def refine_detection(self, approximate_colour: str) -> Optional[dict]:
-        """Take a fresh image and return the best detection matching *colour*.
-
-        Used during the APPROACHING state (after the 80% move) to get an
-        updated position for the final 20% correction.
-
-        Parameters
-        ----------
-        approximate_colour : str
-            ``"red"`` or ``"blue"`` — filters detections to this colour only.
-
-        Returns
-        -------
-        dict or None
-            Updated ``{"colour", "x", "y", "z"}`` or ``None`` if the ball
-            is no longer visible (arm may be occluding it).
-        """
-        if not self.use_camera:
-            # In simulation mode, pretend the ball hasn't moved
-            print("  📸 [VISION] Correction image — no change (simulation)")
-            return None
-
-        detections = self.scan_for_balls(num_frames=3)
-        matches = [d for d in detections if d["colour"] == approximate_colour]
-
-        if not matches:
-            print(f"  📸 [VISION] Correction — {approximate_colour} ball not visible")
-            return None
-
-        # Return the highest-confidence match (scan_for_balls already
-        # uses pick-best logic, so just take the first)
-        best = matches[0]
-        print(f"  📸 [VISION] Correction — {approximate_colour} now at "
-              f"({best['x']}, {best['y']})")
-        return best
+    # refine_detection() removed — wrist-mounted camera occludes ball during approach (see ADR 003)
 
     # ── Context manager ───────────────────────────────────────────────
 
     def __enter__(self) -> "VisionBridge":
-        self.open()
+        if not self.open():
+            raise RuntimeError("Failed to open VisionBridge")
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
