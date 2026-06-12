@@ -235,4 +235,4 @@ MIT — see [LICENSE](LICENSE) for details.
 ---
 
 **Team Autonomia — Bachelor 2026**  
-*[Student Name 1], [Student Name 2], [Student Name 3] · [University Name] · Supervisor: [Supervisor Name]*
+*Umran Mohamad Ali, Mohammed, Ole Aleksander Hageløkken, Farden, Filmon · Supervisor: Dag Andreas Hals Samuelsen*
