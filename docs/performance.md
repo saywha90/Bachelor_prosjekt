@@ -50,13 +50,45 @@ The 12-step pipeline in [`SimpleBallDetector.detect_balls()`](../src/vision/dete
 
 ## 2  Pick-and-Place Performance
 
+### Final MVP Validation (measured)
+
+The final MVP validation session ran 20 consecutive autonomous sorting
+cycles (10 red + 10 blue balls, 50 mm) without restarting the system,
+under standard laboratory lighting, after completed touch and bin
+calibration. Started with
+`python src/main.py --real-serial --real-camera`.
+
+| Metric | Result |
+|--------|--------|
+| Net balls sorted correctly | **20 / 20 (100 %)** |
+| Blue balls picked and placed | 10 / 10 |
+| Red balls picked and placed | 10 / 10 |
+| Unrecovered failures | 0 |
+| Grip-verification rejections | 1 (cycle 7 — unstable grasp correctly rejected, recovered by retry on the next scan) |
+| Average cycle time | 12.75 s (min 12.13 s, max 16.68 s) |
+| Throughput | ~4.7 balls/min |
+
+| Phase | Avg (s) | Min (s) | Max (s) | n |
+|-------|--------:|--------:|--------:|--:|
+| Scan | 3.11 | 2.87 | 5.83 | 20 |
+| Approach | 1.67 | 1.55 | 1.77 | 20 |
+| Grab | 1.54 | 1.41 | 2.89 | 20 |
+| Sort | 2.78 | 2.68 | 2.94 | 20 |
+| Drop | 3.64 | 3.31 | 4.15 | 20 |
+| **Total cycle** | **12.75** | **12.13** | **16.68** | 20 |
+
+The maximum scan and grab times include the retry-recovered cycle-7
+grip rejection.
+
+### Other Metrics
+
 | Metric | Value | Method |
 |--------|-------|--------|
 | Pick success rate (target) | ≥ 80 % | README — target across 5 workspace positions in [`08_pick_test.py`](../src/calibration/08_pick_test.py) |
-| Pick success rate (measured) | TBD | Run [`python src/calibration/08_pick_test.py`](../src/calibration/08_pick_test.py) at the 5 standard positions (Centre, Near, Far, Left, Right). Score: pass / partial / fail per position. |
-| End-to-end cycle time | TBD | Time from first ball detection to arm returning to HOME after drop, averaged over 20 consecutive cycles. Expected: 8–15 s depending on reach distance. |
+| Pick success rate (measured) | 100 % net (20/20) | Final MVP validation above; one grip attempt was rejected by grip verification and recovered on retry |
+| End-to-end cycle time | 12.75 s avg over 20 cycles | Final MVP validation above (expected range was 8–15 s) |
 | IK positioning accuracy (after sag calibration) | TBD | At 5 reach distances (12–36 cm), compare commanded Z with ruler-measured claw-tip height. Target: ± 3 mm after quadratic sag correction. |
-| Claw grip reliability (50 mm balls) | TBD | 20 consecutive grab–lift–release cycles at centre position. Count clean grips vs. drops. |
+| Claw grip reliability (50 mm balls) | 20/20 verified grips | Final MVP validation above; adaptive grip verification rejected 1 unstable grasp (recovered) |
 
 ### Cycle Phase Timing (estimated)
 
@@ -129,7 +161,7 @@ This timing data is intended for the performance evaluation section of the thesi
 |--------|-------|--------|
 | Failure recovery time | TBD | Induce an overload error (block a motor), measure time from error detection to resumed operation after 12 V power cycle and restart. |
 | Mean time between failures | TBD | Run continuous sorting for 60 min, record any motor errors, detection failures, or communication timeouts. |
-| Consecutive successful sorts | TBD | Count the longest uninterrupted sequence of pass-rated picks in a multi-ball test run (≥ 20 balls). |
+| Consecutive successful sorts | 20 | Final MVP validation session (Section 2): 20/20 balls sorted correctly with 0 unrecovered failures. |
 | Motor overload incidence | TBD | Track overload error flags (bit 5) via [`check_motor_errors.py`](../src/diagnostics/check_motor_errors.py) over 50 cycles. |
 
 ---

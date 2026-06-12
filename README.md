@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red)
 
-A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using an OAK-D camera, computes inverse kinematics, and sorts them into bins — achieving 98–100% detection accuracy at 20–25 FPS with a target pick success rate of ≥ 80%.
+A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using an OAK-D camera, computes inverse kinematics, and sorts them into bins. In the final MVP validation, the system sorted **20/20 balls correctly** across consecutive autonomous cycles with zero unrecovered failures, averaging 12.75 s per cycle (~4.7 balls/min).
 
 <!-- TODO: Add a photo of the robot arm in action -->
 <!-- ![Autonomia arm sorting balls](docs/images/arm-in-action.jpg) -->
@@ -170,13 +170,37 @@ autonomia/
 
 ## Key Results
 
+### Final MVP Validation — 20/20 balls sorted (100%)
+
+The MVP required ≥ 10 consecutive autonomous sorting cycles with > 90% detection rate, > 80% pick success, and 100% correct bin placement given correct colour classification. The final validation session exceeded all criteria over 20 consecutive cycles (10 red + 10 blue balls), run without restarting the system:
+
+| Metric | Result |
+|--------|--------|
+| Net balls sorted correctly | **20 / 20 (100%)** |
+| Blue balls picked and placed | 10 / 10 |
+| Red balls picked and placed | 10 / 10 |
+| Unrecovered failures | 0 |
+| Grip-verification rejections | 1 (correctly rejected an unstable grasp; recovered by retry on the next scan) |
+
+| Phase | Avg (s) | Min (s) | Max (s) |
+|-------|--------:|--------:|--------:|
+| Scan | 3.11 | 2.87 | 5.83 |
+| Approach | 1.67 | 1.55 | 1.77 |
+| Grab | 1.54 | 1.41 | 2.89 |
+| Sort | 2.78 | 2.68 | 2.94 |
+| Drop | 3.64 | 3.31 | 4.15 |
+| **Total cycle** | **12.75** | **12.13** | **16.68** |
+
+Average throughput: **~4.7 balls/min**. The maximum scan and grab times include the single retry-recovered grip rejection.
+
+### Vision Pipeline
+
 | Metric | Result |
 |--------|--------|
 | Red ball detection | 98–100% accuracy |
 | Blue ball detection | 97–100% accuracy |
 | False positive rate | < 2% |
 | Processing speed | 20–25 FPS |
-| Pick success | Target: ≥ 80% across workspace (Step 08 verification pending) |
 
 Three vision approaches were evaluated: CNN-based detection failed due to insufficient training data and 200–500 ms latency; a complex Kalman + hand-detection pipeline proved too fragile; the current HSV + Hough + SVM ensemble delivers reliable real-time performance.
 
