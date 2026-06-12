@@ -10,7 +10,8 @@ A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using
 <p align="center">
   <img src="docs/images/arm-demo.gif" alt="Autonomia arm autonomously detecting, picking and sorting balls" width="600">
 </p>
-<p align="center"><em>The arm detecting, picking and sorting balls autonomously (5× speed) — <a href="docs/images/arm-demo.mp4">full video</a></em></p>
+<p align="center"><em>The arm detecting, picking and sorting balls autonomously (5× speed) — <a href="docs/images/arm-demo.mp4">full video</a></em><br>
+<sub><strong>NB:</strong> In the first cycle the red ball appears to land in the blue bin — it was correctly dropped into the red bin but bounced over into the blue one. Not a missort.</sub></p>
 
 ## Quick Start
 
