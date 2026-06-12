@@ -8,9 +8,9 @@
 A vision-guided 4-DOF robotic arm that autonomously detects coloured balls using an OAK-D camera, computes inverse kinematics, and sorts them into bins. In the final MVP validation, the system sorted **20/20 balls correctly** across consecutive autonomous cycles with zero unrecovered failures, averaging 12.75 s per cycle (~4.7 balls/min).
 
 <p align="center">
-  <img src="docs/images/demo.gif" alt="Autonomia arm autonomously detecting, picking and sorting balls" width="600">
+  <img src="docs/images/arm-demo.gif" alt="Autonomia arm autonomously detecting, picking and sorting balls" width="600">
 </p>
-<p align="center"><em>The arm detecting, picking and sorting balls autonomously (5× speed) — <a href="docs/images/demo.mp4">full video</a></em></p>
+<p align="center"><em>The arm detecting, picking and sorting balls autonomously (5× speed) — <a href="docs/images/arm-demo.mp4">full video</a></em></p>
 
 ## Quick Start
 
